@@ -306,20 +306,22 @@ def convert_ncnn(model_path: Path, args) -> int:
         if param is None:
             print(f"  WARNING: NCNN param not found, skipping FP16")
         else:
-            fp16_param = model_path.parent / (model_path.stem + "_fp16.ncnn.param")
-            fp16_bin   = model_path.parent / (model_path.stem + "_fp16.ncnn.bin")
-            shutil.copy2(param, fp16_param)
+            fp16_bin = model_path.parent / (model_path.stem + "_fp16.ncnn.bin")
+            # Delete stale .ncnn.bin so _find_pnnx_output picks up the fresh
+            # FP16 output (not the old FP32 one)
+            old_bin = model_path.with_suffix(".ncnn.bin")
+            if old_bin.exists():
+                old_bin.unlink()
             _run_pnnx("1")
             tmp_b = _find_pnnx_output(model_path, ".ncnn.bin")
             if tmp_b is not None and tmp_b.exists():
                 os.replace(str(tmp_b), str(fp16_bin))
+                print(f"  FP16 bin: {fp16_bin} ({fp16_bin.stat().st_size/1024:.0f} KB)")
             # Re-run FP32 to restore FP32 weights
             print("  Re-running FP32...")
             _run_pnnx("0")
-            # Re-locate param/bin after FP32 re-run
             param = _find_pnnx_output(model_path, ".ncnn.param")
             bin_  = _find_pnnx_output(model_path, ".ncnn.bin")
-            print(f"  FP16: {fp16_param} / {fp16_bin}")
 
     if param is None or bin_ is None:
         print("  NCNN conversion FAILED - no NCNN output files found")

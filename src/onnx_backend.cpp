@@ -395,7 +395,7 @@ bool ONNXBackend::PrepareInputs(float*& fd, size_t& fe, const char*, bool random
         if(i>=input_bufs_.size()){input_bufs_.resize(i+1,nullptr);input_buf_elems_.resize(i+1,0);input_external_.resize(i+1,false);}
         if(input_bufs_[i]&&!input_external_[i])free(input_bufs_[i]);
         if(ext&&ext[i]&&extc&&extc[i]==n){input_bufs_[i]=(float*)ext[i];input_external_[i]=true;}
-        else{float*b=(float*)malloc(n*sizeof(float));if(!b)return false;if(random){for(size_t j=0;j<n;++j)b[j]=(float)rand()/(float)RAND_MAX;}else memset(b,0,n*sizeof(float));input_bufs_[i]=b;input_external_[i]=false;}
+        else{float*b=(float*)malloc(n*sizeof(float));if(!b){LOGE("ONNX: malloc(%zu) failed at input %zu, due to %s, %d",n*sizeof(float),i,strerror(errno),errno);return false;}if(random){for(size_t j=0;j<n;++j)b[j]=(float)rand()/(float)RAND_MAX;}else memset(b,0,n*sizeof(float));input_bufs_[i]=b;input_external_[i]=false;}
         input_buf_elems_[i]=n;}
     fd=num_inputs_>0?input_bufs_[0]:nullptr;fe=num_inputs_>0?input_buf_elems_[0]:0;return true;
 }
@@ -440,7 +440,7 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double& total, double& ma
     }
 
     odata.resize(num_outputs_);oelems.resize(num_outputs_);oshapes.resize(num_outputs_);odims.resize(num_outputs_);
-    for(size_t i=0;i<num_outputs_;++i){size_t n=output_elems_[i];float*b=(float*)malloc(n*sizeof(float));if(!b){LOGE("ONNX: malloc(%zu) failed at output %zu",n*sizeof(float),i);return false;}memcpy(b,snaps[i].data(),n*sizeof(float));odata[i]=b;oelems[i]=n;auto&sh=oshapes[i];sh.fill(0);for(size_t d=0;d<output_shapes_[i].size()&&d<MAX_DIMENSIONS;++d)sh[d]=(size_t)output_shapes_[i][d];odims[i]=output_shapes_[i].size();}
+    for(size_t i=0;i<num_outputs_;++i){size_t n=output_elems_[i];float*b=(float*)malloc(n*sizeof(float));if(!b){LOGE("ONNX: malloc(%zu) failed at output %zu, due to %s, %d",n*sizeof(float),i,strerror(errno),errno);return false;}memcpy(b,snaps[i].data(),n*sizeof(float));odata[i]=b;oelems[i]=n;auto&sh=oshapes[i];sh.fill(0);for(size_t d=0;d<output_shapes_[i].size()&&d<MAX_DIMENSIONS;++d)sh[d]=(size_t)output_shapes_[i][d];odims[i]=output_shapes_[i].size();}
 
     ort_->ReleaseMemoryInfo(mem_info_);mem_info_=nullptr;
     return true;

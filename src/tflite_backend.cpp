@@ -303,7 +303,7 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double& total,
     for (size_t i = 0; i < num_outputs_; ++i) {
         size_t n = output_elems_[i];
         float* buf = (float*)malloc(n * sizeof(float));
-        if (!buf) { LOGE("TFLite: malloc(%zu) failed at output %zu", n * sizeof(float), i); return false; }
+        if (!buf) { LOGE("TFLite: malloc(%zu) failed at output %zu, due to %s, %d", n * sizeof(float), i, strerror(errno), errno); return false; }
         memcpy(buf, snaps[i].data(), n * sizeof(float));
         odata[i] = buf; oelems[i] = n;
         auto& sh = oshapes[i]; sh.fill(0);

@@ -128,7 +128,7 @@ bool ResultCollector::ExportCsv(const char* path, const char* date,
                                  const char* time, const char* app_name) const {
     FILE* f = fopen(path, "w");
     if (!f) {
-        LOGE("Failed to open CSV: %s", path);
+        LOGE("Failed to open CSV: %s, due to %s, %d", path, strerror(errno), errno);
         return false;
     }
 
@@ -181,7 +181,7 @@ bool ResultCollector::AppendCsv(const BenchmarkRecord& rec, const char* path,
 
     FILE* f = fopen(path, "a");
     if (!f) {
-        LOGE("Failed to open CSV for append: %s", path);
+        LOGE("Failed to open CSV for append: %s, due to %s, %d", path, strerror(errno), errno);
         return false;
     }
 

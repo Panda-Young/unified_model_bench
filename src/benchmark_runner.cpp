@@ -173,7 +173,9 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult& variant,
 
         /* Read shapes file to get element counts */
         FILE* f = fopen(ncnn_shapes.c_str(), "r");
-        if (f) {
+        if (!f) {
+            LOGW("NCNN shapes file not found: %s, due to %s, %d", ncnn_shapes.c_str(), strerror(errno), errno);
+        } else {
             char line[512];
             std::vector<size_t> sizes;
             while (fgets(line, sizeof(line), f)) {

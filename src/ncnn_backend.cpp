@@ -74,7 +74,7 @@ private:
  * -------------------------------------------------------------------------*/
 bool NCNNBackend::ReadShapesFile(const char* shapes_path) {
     FILE* f = fopen(shapes_path, "r");
-    if (!f) { LOGE("NCNN: cannot open shapes file: %s", shapes_path); return false; }
+    if (!f) { LOGE("NCNN: cannot open shapes file: %s, due to %s, %d", shapes_path, strerror(errno), errno); return false; }
 
     int num_in = 0, num_out = 0;
     (void)num_in; (void)num_out; /* read from file but used only for validation */
@@ -176,11 +176,11 @@ bool NCNNBackend::Initialize(const char* model_path, int num_threads) {
     net_->opt.lightmode = true;
     net_->opt.use_packing_layout = true;
 
-    /* For Vulkan_FP16: prefer FP16-converted model (_fp16.ncnn.param).
+    /* For Vulkan_FP16: prefer FP16-converted model.
      * The FP16 model has weights already quantized, giving smaller and
-     * more accurate results than runtime FP32→FP16 conversion. */
+     * more accurate results than runtime FP32→FP16 conversion.
+     * .param is shared with FP32 (identical structure), only .bin differs. */
     if (id_ == BackendId::NCNN_VULKAN_FP16) {
-        /* FP16 model: share .param with FP32, only .bin differs */
         std::string fp16_bin = base + "_fp16.ncnn.bin";
         FILE* test_fp16 = fopen(fp16_bin.c_str(), "r");
         if (test_fp16) {
@@ -218,11 +218,14 @@ bool NCNNBackend::Initialize(const char* model_path, int num_threads) {
 
     /* Load model */
     if (net_->load_param(path.c_str()) != 0) {
-        LOGE("NCNN: failed to load param: %s", path.c_str());
+        LOGE("NCNN: failed to load param: %s, due to %s, %d",
+             path.c_str(), strerror(errno), errno);
+        LOGE("NCNN: possible cause - missing/unsupported layer type, or file not found");
         return false;
     }
     if (net_->load_model(bin_path.c_str()) != 0) {
-        LOGE("NCNN: failed to load bin: %s", bin_path.c_str());
+        LOGE("NCNN: failed to load bin: %s, due to %s, %d",
+             bin_path.c_str(), strerror(errno), errno);
         return false;
     }
 
@@ -366,7 +369,7 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double& total,
     for (size_t i = 0; i < num_outputs_; ++i) {
         size_t n = output_elems_[i];
         float* buf = (float*)malloc(n * sizeof(float));
-        if (!buf) { LOGE("NCNN: malloc(%zu) failed at output %zu", n * sizeof(float), i); return false; }
+        if (!buf) { LOGE("NCNN: malloc(%zu) failed at output %zu, due to %s, %d", n * sizeof(float), i, strerror(errno), errno); return false; }
         memcpy(buf, snaps[i].data(), n * sizeof(float));
         odata[i] = buf; oelems[i] = n;
         auto& sh = oshapes[i]; sh.fill(0);
