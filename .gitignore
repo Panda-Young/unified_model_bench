@@ -1,0 +1,49 @@
+# Build outputs
+*.exe
+*.o
+*.obj
+*.ilk
+*.pdb
+*.exp
+
+# Libraries
+*.lib
+*.dll
+*.so
+
+# Benchmark outputs
+*.csv
+*.xlsx
+output/
+unified_bench_arm64-v8a
+
+# Test models (user-provided)
+*.onnx
+*.tflite
+*.ncnn.bin
+*.ncnn.param
+*.shapes
+*.mnn
+model_cache/
+
+# Python
+__pycache__/
+
+# Dependencies (large binaries, copy manually or via script)
+deps/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.txt
+!README.md
