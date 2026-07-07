@@ -984,10 +984,8 @@ def main():
 
     _fmt_file("NCNN",   model_path.with_suffix(".ncnn.param"))
     _fmt_file("NCNN",   model_path.with_suffix(".ncnn.bin"))
-    fp16_p = model_path.parent / (model_path.stem + "_fp16.ncnn.param")
     fp16_b = model_path.parent / (model_path.stem + "_fp16.ncnn.bin")
-    if fp16_p.exists() or fp16_b.exists():
-        _fmt_file("NCNN-F16", fp16_p)
+    if fp16_b.exists():
         _fmt_file("NCNN-F16", fp16_b)
 
     _fmt_file("MNN",    model_path.with_suffix(".mnn"))
