@@ -217,17 +217,20 @@ bool NCNNBackend::Initialize(const char* model_path, int num_threads) {
     }
 
     /* Load model */
+    LOGI("NCNN: loading param: %s", path.c_str());
     if (net_->load_param(path.c_str()) != 0) {
         LOGE("NCNN: failed to load param: %s, due to %s, %d",
              path.c_str(), strerror(errno), errno);
         LOGE("NCNN: possible cause - missing/unsupported layer type, or file not found");
         return false;
     }
+    LOGI("NCNN: param loaded, loading bin: %s", bin_path.c_str());
     if (net_->load_model(bin_path.c_str()) != 0) {
         LOGE("NCNN: failed to load bin: %s, due to %s, %d",
              bin_path.c_str(), strerror(errno), errno);
         return false;
     }
+    LOGI("NCNN: model loaded successfully");
 
     init_ms_ = std::chrono::duration<double, std::milli>(
         std::chrono::high_resolution_clock::now() - t0).count();
