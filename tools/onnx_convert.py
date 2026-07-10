@@ -200,19 +200,25 @@ def verify_ncnn(onnx_path: str, ncnn_param: str, ncnn_bin: str) -> int:
     ref_outs = sess.run(None, feed)
 
     def _run(label, vulkan):
+        net = ncnn.Net()
+        if vulkan:
+            if ncnn.get_gpu_count() == 0:
+                print(f"\n  {label}: SKIP - no Vulkan GPU")
+                return True
+            net.opt.use_vulkan_compute = True
+            net.opt.use_fp16_packed = False
+            net.opt.use_fp16_storage = False
+            net.opt.use_fp16_arithmetic = False
         try:
-            net = ncnn.Net()
-            if vulkan:
-                if ncnn.get_gpu_count() == 0:
-                    print(f"\n  {label}: SKIP - no Vulkan GPU")
-                    return True
-                net.opt.use_vulkan_compute = True
-                net.opt.use_fp16_packed = False
-                net.opt.use_fp16_storage = False
-                net.opt.use_fp16_arithmetic = False
             net.load_param(ncnn_param)
             net.load_model(ncnn_bin)
-            ex = net.create_extractor()
+        except Exception as e:
+            msg = str(e).split('\n')[0] if str(e) else str(type(e).__name__)
+            print(f"\n  {label}: FAIL - model load error: {msg}")
+            return False
+
+        ex = net.create_extractor()
+        try:
             for i in range(len(inputs_info)):
                 mat = ncnn.Mat(np.ascontiguousarray(feed[inputs_info[i][0]].squeeze(0)))
                 ex.input(f"in{i}", mat.clone())
@@ -222,8 +228,8 @@ def verify_ncnn(onnx_path: str, ncnn_param: str, ncnn_bin: str) -> int:
                 outs.append(np.array(m))
         except Exception as e:
             msg = str(e).split('\n')[0] if str(e) else str(type(e).__name__)
-            print(f"\n  {label}: SKIP - ncnn runtime error: {msg}")
-            return True  # Model was generated, verification env issue
+            print(f"\n  {label}: SKIP - inference error: {msg}")
+            return True
 
         print(f"\n  === {label} ===")
         all_ok = True
@@ -475,7 +481,21 @@ def convert_ncnn(model_path: Path, args) -> int:
             subprocess.run(cmd, check=True)
 
     # FP32
-    _run_pnnx("0")
+    try:
+        _run_pnnx("0")
+    except Exception as e:
+        msg = str(e).split('\n')[0] if str(e) else str(type(e).__name__)
+        print(f"  pnnx failed: {msg}")
+        # Clean up partial NCNN outputs
+        for suffix in (".ncnn.param", ".ncnn.bin", ".shapes",
+                       ".pnnx.param", ".pnnx.bin", ".pnnx.onnx"):
+            p = model_path.with_suffix(suffix)
+            if p.exists():
+                p.unlink(missing_ok=True)
+        fp16_b = model_path.parent / (model_path.stem + "_fp16.ncnn.bin")
+        if fp16_b.exists():
+            fp16_b.unlink(missing_ok=True)
+        return (False, f"pnnx failed: {msg}")
 
     def _find_pnnx_output(lookup_path: Path, suffix: str) -> Path | None:
         """Find pnnx output file and rename to original model name if needed.
@@ -513,7 +533,15 @@ def convert_ncnn(model_path: Path, args) -> int:
             old_bin = model_path.with_suffix(".ncnn.bin")
             if old_bin.exists():
                 old_bin.unlink()
-            _run_pnnx("1")
+            try:
+                _run_pnnx("1")
+            except Exception as e:
+                msg = str(e).split('\n')[0] if str(e) else str(type(e).__name__)
+                print(f"  pnnx FP16 failed: {msg} (FP32 model already generated)")
+                # Restore FP32 bin
+                _run_pnnx("0")
+                param = _find_pnnx_output(pnnx_input, ".ncnn.param")
+                bin_  = _find_pnnx_output(pnnx_input, ".ncnn.bin")
             tmp_b = _find_pnnx_output(model_path, ".ncnn.bin")
             if tmp_b is not None and tmp_b.exists():
                 os.replace(str(tmp_b), str(fp16_bin))
@@ -554,20 +582,45 @@ def convert_ncnn(model_path: Path, args) -> int:
     if not getattr(args, 'no_cleanup', False):
         clean_pnnx_intermediates(model_dir, keep_pcnn=getattr(args, 'keep_pcnn', False))
 
-    # Verify (run in subprocess to isolate from potential ncnn crashes)
+    # Verify (run in subprocess with timeout to avoid hangs from broken models)
     if not args.no_verify:
         print("\n  Verifying NCNN...")
+        verify_script = f"""
+import sys, numpy as np
+sys.path.insert(0, r'{os.path.dirname(__file__)}')
+from onnx_convert import verify_ncnn
+try:
+    ret = verify_ncnn(r'{str(model_path)}', r'{str(param)}', r'{str(bin_)}')
+except Exception as e:
+    print(f'  Verify exception: {{e}}')
+    ret = 2
+sys.exit(ret)
+"""
         try:
-            ret = verify_ncnn(str(model_path), str(param), str(bin_))
+            r = subprocess.run([sys.executable, "-c", verify_script],
+                               capture_output=True, text=True, timeout=120,
+                               encoding="utf-8", errors="replace")
+            print(r.stdout, end="")
+            if r.stderr.strip():
+                for line in r.stderr.strip().split('\n')[-5:]:
+                    print(f"    {line.strip()}")
+            ret = r.returncode
             if ret != 0:
-                for f in (param, bin_):
+                for f in (param, bin_, model_path.with_suffix(".shapes")):
                     try: os.remove(f)
                     except OSError: pass
                 print("  NCNN conversion FAILED verification")
                 return (False, "verification failed")
+        except subprocess.TimeoutExpired:
+            print("  NCNN verify timed out after 120s (model likely has unsupported ops)")
+            for f in (param, bin_, model_path.with_suffix(".shapes")):
+                try: os.remove(f)
+                except OSError: pass
+            print("  NCNN conversion FAILED verification")
+            return (False, "verify timed out")
         except Exception as e:
             msg = str(e).split('\n')[0] if str(e) else str(type(e).__name__)
-            print(f"  NCNN verify skipped (runtime error: {msg})")
+            print(f"  NCNN verify error: {msg}")
             print("  Model files preserved - use --no-verify to skip verification")
 
     print(f"  NCNN OK: {param} / {bin_}")
@@ -675,25 +728,55 @@ def convert_mnn(model_path: Path, args) -> int:
 
     print(f"  Running: {' '.join(cmd)}")
     try:
-        subprocess.run(cmd, check=False, timeout=300)
+        result = subprocess.run(cmd, capture_output=True, text=True,
+                                timeout=300, encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            # Print MNNConvert's stderr for diagnosis
+            err_msg = result.stderr.strip() or result.stdout.strip() or "unknown error"
+            err_lines = err_msg.split('\n')
+            brief = ' | '.join(line.strip() for line in err_lines[-5:] if line.strip())
+            print(f"  MNNConvert failed (exit={result.returncode}): {brief[:200]}")
+            if result.stderr.strip():
+                for line in result.stderr.strip().split('\n')[-10:]:
+                    print(f"    {line.strip()}")
+            # Remove partial output
+            if mnn_path.exists():
+                mnn_path.unlink(missing_ok=True)
+                print(f"  Removed partial output: {mnn_path.name}")
+            return (False, f"MNNConvert exited with code {result.returncode}")
+    except FileNotFoundError:
+        print(f"  MNNConvert not found: {mnnconvert}")
+        print("  Ensure MNNConvert is in tools/mnn_convert/ or PATH")
+        if mnn_path.exists():
+            mnn_path.unlink(missing_ok=True)
+        return (False, "MNNConvert not found")
     except subprocess.TimeoutExpired:
-        print("  MNNConvert timed out")
+        print("  MNNConvert timed out after 300s")
+        if mnn_path.exists():
+            mnn_path.unlink(missing_ok=True)
         return (False, "MNNConvert timed out")
     except Exception as e:
-        print(f"  Note: MNNConvert exited: {e}")
+        print(f"  MNNConvert error: {e}")
+        if mnn_path.exists():
+            mnn_path.unlink(missing_ok=True)
+        return (False, str(e))
 
     if not mnn_path.exists() or mnn_path.stat().st_size == 0:
-        print("  MNNConvert failed - no output")
+        print("  MNNConvert produced no output")
         return (False, "MNNConvert produced no output")
 
     print(f"  MNN model: {mnn_path} ({mnn_path.stat().st_size / 1024:.0f} KB)")
 
     if not args.no_verify:
-        ret = verify_mnn(model_path, mnn_path)
-        if ret == 2:
-            mnn_path.unlink(missing_ok=True)
-            print("  MNN conversion FAILED verification")
-            return (False, "verification failed")
+        try:
+            ret = verify_mnn(model_path, mnn_path)
+            if ret == 2:
+                mnn_path.unlink(missing_ok=True)
+                print("  MNN conversion FAILED verification")
+                return (False, "verification failed")
+        except Exception as e:
+            print(f"  MNN verify skipped: {e}")
+            print("  Model preserved - use --no-verify to skip verification")
 
     return (True, None)
 
@@ -1206,11 +1289,17 @@ def main():
     print("-" * 80)
 
     def _fmt_file(fmt: str, path: Path):
-        if path.exists():
+        fmt_key = fmt.lower().split("-")[0].split("_")[0]  # "NCNN" / "NCNN-F16" -> "ncnn", "MNN"->"mnn", "TFLite"->"tflite"
+        r = results.get(fmt_key)
+        failed = r is not None and not r[0]
+        if path.exists() and not failed:
             sz = f"{path.stat().st_size / 1024:.0f} KB"
             print(f"{fmt:<8} {str(path):<40} {sz:>8} {'OK':<20}")
         else:
             reason = _reason(fmt)
+            # Remove partial file if conversion failed
+            if failed and path.exists():
+                path.unlink(missing_ok=True)
             print(f"{fmt:<8} {str(path):<40} {'---':>8} {f'FAIL {reason}':<20}")
 
     def _reason(fmt: str) -> str:

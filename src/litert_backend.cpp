@@ -20,7 +20,6 @@
 #include <cstring>
 #include <cstdio>
 #include <chrono>
-#include <cerrno>
 
 #if defined(_WIN32)
 #include <malloc.h>
@@ -39,56 +38,6 @@
 #include "litert/c/litert_tensor_buffer_requirements.h"
 #include "litert/c/litert_layout.h"
 #include "litert/c/options/litert_qualcomm_options.h"
-
-/* ---------------------------------------------------------------------------
- * SoC detection helpers (run-time, no hardcoded mapping in C++)
- *
- * Reads ro.soc.model and maps to Qualcomm runtime version directory.
- * Add new SoCs to the SOC_MAP table as needed.
- * -------------------------------------------------------------------------*/
-struct SocEntry {
-    const char* soc_model;
-    const char* hex_ver;
-};
-
-static const SocEntry SOC_MAP[] = {
-    {"SM8850", "v81"}, {"SM8750", "v79"},
-    {"SM8650", "v75"}, {"SM7750", "v73"},
-    {"SM8550", "v73"}, {"SC8380XP", "v73"}, {"SM7635", "v73"},
-    {"SM8475", "v69"}, {"SM8450", "v69"}, {"SM7450", "v69"},
-    {"SC8280X", "v68"}, {"SC7280X", "v68"},
-    {"SM8350P", "v68"}, {"SM8350", "v68"},
-    {"SM7325", "v68"}, {"QCM6490", "v68"},
-    {nullptr, nullptr}
-};
-
-static std::string detect_runtime_version() {
-    std::string soc;
-#if !defined(_WIN32)
-    FILE* fp = popen("getprop ro.soc.model", "r");
-    if (fp) {
-        char buf[128] = {};
-        if (fgets(buf, sizeof(buf), fp)) {
-            size_t len = strlen(buf);
-            while (len > 0 && (buf[len-1] == '\n' || buf[len-1] == '\r'))
-                buf[--len] = '\0';
-            soc = buf;
-        }
-        if (pclose(fp) != 0)
-            LOGW("LiteRT: pclose(getprop) failed: %s, %d", strerror(errno), errno);
-    }
-#else
-    (void)soc;
-#endif
-    if (soc.empty()) { LOGW("LiteRT: could not detect SoC, default v79"); return "v79"; }
-    if (soc.size() >= 2 && soc.front() == '[' && soc.back() == ']')
-        soc = soc.substr(1, soc.size() - 2);
-    LOGI("LiteRT: SoC=%s", soc.c_str());
-    for (const SocEntry* e = SOC_MAP; e->soc_model; ++e)
-        if (soc == e->soc_model) return e->hex_ver;
-    LOGW("LiteRT: unknown SoC '%s', default v79", soc.c_str());
-    return "v79";
-}
 
 /* ---------------------------------------------------------------------------
  * LiteRTBackend
