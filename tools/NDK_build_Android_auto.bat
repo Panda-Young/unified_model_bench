@@ -43,8 +43,13 @@ set NCNN_LIB=%ROOT%\deps\ncnn\lib\android\arm64-v8a
 set MNN_INC=%ROOT%\deps\mnn\include
 set MNN_LIB=%ROOT%\deps\mnn\lib\arm64-v8a
 
+REM LiteRT (Google next-gen TFLite runtime)
+set LITERT_INC=%ROOT%\deps\litert\litert_cc_sdk
+set LITERT_LIB_DIR=%ROOT%\deps\litert\liteRT_runtime\android_arm64
+set LITERT_LIB_PATH=%LITERT_LIB_DIR%\libLiteRt.so
+
 REM === Full build: ALL backends ===
-set CXXFLAGS=-std=c++17 -O2 -DNDEBUG -Wall -Wno-unknown-pragmas -DHAVE_ONNX_BACKEND -DHAVE_TFLITE_BACKEND -DHAVE_NCNN_BACKEND -DHAVE_MNN_BACKEND -I"%INC%" -I"%ONNX_INC%" -I"%TFLITE_INC%" -I"%NCNN_INC%" -I"%MNN_INC%"
+set CXXFLAGS=-std=c++17 -O2 -DNDEBUG -Wall -Wno-unknown-pragmas -DHAVE_ONNX_BACKEND -DHAVE_TFLITE_BACKEND -DHAVE_NCNN_BACKEND -DHAVE_MNN_BACKEND -DHAVE_LITERT_BACKEND -I"%INC%" -I"%ONNX_INC%" -I"%TFLITE_INC%" -I"%NCNN_INC%" -I"%MNN_INC%" -I"%LITERT_INC%"
 
 echo ============================================================
 echo  Building %OUT%
@@ -70,9 +75,12 @@ call "%CXX%" %CXXFLAGS% -c "%SRC%\onnx_backend.cpp"         -o "%ROOT%\onnx_back
 call "%CXX%" %CXXFLAGS% -c "%SRC%\tflite_backend.cpp"       -o "%ROOT%\tflite_backend.o"     || exit /b 1
 call "%CXX%" %CXXFLAGS% -c "%SRC%\ncnn_backend.cpp"         -o "%ROOT%\ncnn_backend.o"       || exit /b 1
 call "%CXX%" %CXXFLAGS% -c "%SRC%\mnn_backend.cpp"          -o "%ROOT%\mnn_backend.o"        || exit /b 1
+call "%CXX%" %CXXFLAGS% -c "%SRC%\litert_backend.cpp"       -o "%ROOT%\litert_backend.o"     || exit /b 1
 
 echo Linking...
-call "%CXX%" -o "%ROOT%\%OUT%" "%ROOT%\*.o" -L"%TFLITE_LIB%" -ltensorflowlite_c -ltensorflowlite_gpu_delegate -L"%ONNX_LIB%" -lonnxruntime -L"%NCNN_LIB%" -lncnn -L"%MNN_LIB%" -lMNN -static-libstdc++ -landroid -llog -lm -ldl -Wl,--allow-shlib-undefined || exit /b 1
+set "TFLITE_FLEX="
+if exist "%TFLITE_LIB%\libtensorflowlite_flex.so" set "TFLITE_FLEX=-ltensorflowlite_flex"
+call "%CXX%" -o "%ROOT%\%OUT%" "%ROOT%\*.o" -L"%TFLITE_LIB%" -ltensorflowlite_c -ltensorflowlite_gpu_delegate %TFLITE_FLEX% -L"%ONNX_LIB%" -lonnxruntime -L"%NCNN_LIB%" -lncnn -L"%MNN_LIB%" -lMNN "%LITERT_LIB_PATH%" -static-libstdc++ -landroid -llog -lm -ldl -Wl,--allow-shlib-undefined || exit /b 1
 
 del "%ROOT%\*.o" 2>nul
 
@@ -182,6 +190,10 @@ if errorlevel 1 (
     echo Pushing TFLite .so...
     adb push "%TFLITE_LIB%\libtensorflowlite_c.so" /data/local/tmp/bench_test/ || exit /b 1
     adb push "%TFLITE_LIB%\libtensorflowlite_gpu_delegate.so" /data/local/tmp/bench_test/ || exit /b 1
+    if exist "%TFLITE_LIB%\libtensorflowlite_flex.so" (
+        echo Pushing TFLite Flex delegate...
+        adb push "%TFLITE_LIB%\libtensorflowlite_flex.so" /data/local/tmp/bench_test/ || exit /b 1
+    )
 ) else ( echo TFLite .so already on device, skip. )
 
 REM --- Push MNN libs ---
@@ -194,11 +206,40 @@ if errorlevel 1 (
     adb push "%MNN_LIB%\libc++_shared.so" /data/local/tmp/bench_test/ 2>nul
 ) else ( echo MNN .so already on device, skip. )
 
+REM --- Push LiteRT libs ---
+adb shell "test -f /data/local/tmp/bench_test/libLiteRt.so" >nul 2>&1
+if errorlevel 1 (
+    echo Pushing LiteRT .so files...
+    if exist "%LITERT_LIB_DIR%\libLiteRt.so" (
+        adb push "%LITERT_LIB_DIR%\libLiteRt.so" /data/local/tmp/bench_test/ || exit /b 1
+    )
+    if exist "%LITERT_LIB_DIR%\libLiteRtClGlAccelerator.so" (
+        adb push "%LITERT_LIB_DIR%\libLiteRtClGlAccelerator.so" /data/local/tmp/bench_test/ 2>nul
+    )
+) else ( echo LiteRT .so already on device, skip. )
+
+REM --- Push LiteRT NPU dispatch library to qnn/ dir (reuses SOC/HEXVER from QNN section above) ---
+if defined HEXVER (
+    set "DISPATCH_VER=!HEXVER:hexagon-=!"
+    set "LITERT_NPU_ROOT=%ROOT%\deps\litert\litert_npu_runtime_libraries"
+    set "DISPATCH_SRC=!LITERT_NPU_ROOT!\qualcomm_runtime_!DISPATCH_VER!\src\main\jni\arm64-v8a\libLiteRtDispatch_Qualcomm.so"
+    if exist "!DISPATCH_SRC!" (
+        echo Pushing LiteRT Qualcomm dispatch for !DISPATCH_VER!...
+        adb push "!DISPATCH_SRC!" /data/local/tmp/bench_test/qnn/ || echo WARNING: Dispatch push failed
+    ) else (
+        echo WARNING: Dispatch library not found: !DISPATCH_SRC!
+    )
+) else (
+    echo WARNING: HEXVER not set, skip LiteRT NPU dispatch push.
+)
+
+echo.
+
 echo.
 echo ============================================================
 echo  Running FULL benchmark (warmup=5, repeat=100)...
 echo ============================================================
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=/data/local/tmp/bench_test:/data/local/tmp/bench_test/qnn ADSP_LIBRARY_PATH=/data/local/tmp/bench_test/qnn/hexagon ./%OUT% test_model.onnx --warmup 5 --repeat 100 --threads 4 --csv summary.csv"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=/data/local/tmp/bench_test:/data/local/tmp/bench_test/qnn ADSP_LIBRARY_PATH=/data/local/tmp/bench_test/qnn/hexagon ./%OUT% test_model.onnx --warmup 1 --repeat 1 --threads 4 --csv summary.csv"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.

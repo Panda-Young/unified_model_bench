@@ -35,6 +35,9 @@ extern BackendPtr CreateNcnnBackend(BackendId id);
 #ifdef HAVE_MNN_BACKEND
 extern BackendPtr CreateMnnBackend(BackendId id);
 #endif
+#ifdef HAVE_LITERT_BACKEND
+extern BackendPtr CreateLitertBackend(BackendId id);
+#endif
 
 /* ---------------------------------------------------------------------------
  * Public API
@@ -64,7 +67,7 @@ std::vector<BackendConfig> GetAvailable(ModelFormat format) {
         bool match = false;
         switch (format) {
         case ModelFormat::ONNX:   match = is_onnx_backend(static_cast<BackendId>(id)); break;
-        case ModelFormat::TFLITE: match = is_tflite_backend(static_cast<BackendId>(id)); break;
+        case ModelFormat::TFLITE: match = is_tflite_backend(static_cast<BackendId>(id)) || is_litert_backend(static_cast<BackendId>(id)); break;
         case ModelFormat::NCNN:   match = is_ncnn_backend(static_cast<BackendId>(id)); break;
         case ModelFormat::MNN:    match = is_mnn_backend(static_cast<BackendId>(id)); break;
         default: break;
@@ -105,6 +108,12 @@ void InitDefaults() {
     Register(BackendId::TFLITE_XNNPACK, {BackendId::TFLITE_XNNPACK, BackendType::TFLITE_DEL, "XNNPACK", "", false}, CreateTfliteBackend);
     Register(BackendId::TFLITE_NNAPI,   {BackendId::TFLITE_NNAPI,   BackendType::TFLITE_DEL, "NNAPI",   "", false}, CreateTfliteBackend);
     Register(BackendId::TFLITE_GPU,     {BackendId::TFLITE_GPU,     BackendType::TFLITE_DEL, "GPU",     "", false}, CreateTfliteBackend);
+    Register(BackendId::TFLITE_NPU,     {BackendId::TFLITE_NPU,     BackendType::TFLITE_DEL, "NPU",     "", false}, CreateTfliteBackend);
+#  endif
+#  ifdef HAVE_LITERT_BACKEND
+    Register(BackendId::LITERT_CPU, {BackendId::LITERT_CPU, BackendType::LITERT, "LiteRT_CPU", "", true},  CreateLitertBackend);
+    Register(BackendId::LITERT_GPU, {BackendId::LITERT_GPU, BackendType::LITERT, "LiteRT_GPU", "", false}, CreateLitertBackend);
+    Register(BackendId::LITERT_NPU, {BackendId::LITERT_NPU, BackendType::LITERT, "LiteRT_NPU", "", false}, CreateLitertBackend);
 #  endif
 #  ifdef HAVE_NCNN_BACKEND
     Register(BackendId::NCNN_CPU,         {BackendId::NCNN_CPU,         BackendType::NCNN, "NCNN_CPU",         "", true},  CreateNcnnBackend);
@@ -132,6 +141,10 @@ void InitDefaults() {
 #  endif
 #  ifdef HAVE_TFLITE_BACKEND
     Register(BackendId::TFLITE_CPU, {BackendId::TFLITE_CPU, BackendType::TFLITE_DEL, "CPU", "", true}, CreateTfliteBackend);
+#  endif
+#  ifdef HAVE_LITERT_BACKEND
+    Register(BackendId::LITERT_CPU, {BackendId::LITERT_CPU, BackendType::LITERT, "LiteRT_CPU", "", true},  CreateLitertBackend);
+    Register(BackendId::LITERT_GPU, {BackendId::LITERT_GPU, BackendType::LITERT, "LiteRT_GPU", "", false}, CreateLitertBackend);
 #  endif
 #  ifdef HAVE_NCNN_BACKEND
     Register(BackendId::NCNN_CPU,         {BackendId::NCNN_CPU,         BackendType::NCNN, "NCNN_CPU",         "", true},  CreateNcnnBackend);

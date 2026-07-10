@@ -248,6 +248,195 @@ def verify_ncnn(onnx_path: str, ncnn_param: str, ncnn_bin: str) -> int:
     return 0 if (ok1 and ok2) else 2
 
 
+def preprocess_onnx_for_ncnn(onnx_path: Path) -> Path | None:
+    """Replace ONNX Tile ops with equivalent Concat ops.
+
+    PNNX converts ONNX Tile to custom 'torch.tile' layers not available in
+    standard ncnn. Replacing Tile with Concat before conversion avoids this.
+
+    Returns path to preprocessed model (a temp file), or None if no changes.
+    """
+    try:
+        import onnx as onnx_mod
+        from onnx import helper as onnx_helper
+        import onnx.numpy_helper as onnx_np
+        import numpy as np
+    except ImportError:
+        return None
+
+    model = onnx_mod.load(str(onnx_path))
+    graph = model.graph
+
+    # Collect initializers
+    inits = {}
+    for init in graph.initializer:
+        try:
+            inits[init.name] = onnx_np.to_array(init)
+        except Exception:
+            pass
+
+    changes = 0
+    tile_replacements = []
+    erf_replacements = []
+
+    for node in graph.node:
+        # ── Tile -> Concat ──
+        if node.op_type == "Tile":
+            repeats = inits.get(node.input[1], None)
+            if repeats is None:
+                print(f"  WARNING: Tile '{node.name}' has dynamic repeats, skipping")
+                continue
+            rlist = list(repeats)
+            non_one = [(a, r) for a, r in enumerate(rlist) if r > 1]
+            if not non_one:
+                tile_replacements.append((node, "identity", None, None))
+                changes += 1
+            elif len(non_one) == 1:
+                axis, rep = non_one[0]
+                tile_replacements.append((node, "concat", int(axis), int(rep)))
+                changes += 1
+            else:
+                tile_replacements.append((node, "multi_concat", rlist, None))
+                changes += 1
+
+        # ── Erf -> Tanh approximation ──
+        # erf(x) ≈ tanh(sqrt(2/π) * (x + 0.044715 * x³))
+        # sqrt(2/π) ≈ 0.7978845608028654
+        if node.op_type == "Erf":
+            erf_replacements.append(node)
+            changes += 1
+
+    if changes == 0:
+        return None
+
+    # Save preprocessed model alongside original for pnnx to find outputs
+    tmp_path = onnx_path.with_suffix(".prep.onnx")
+
+    parts = []
+    if tile_replacements:
+        parts.append(f"{len(tile_replacements)} Tile->Concat")
+    if erf_replacements:
+        parts.append(f"{len(erf_replacements)} Erf->Tanh")
+    print(f"  Preprocessing ONNX: {', '.join(parts)}...")
+
+    # Erf approximation constants as ONNX initializers
+    # erf(x) ≈ tanh(sqrt(2/π) * (x + 0.044715 * x³))
+    # sqrt(2/π) ≈ 0.7978845608028654
+    SCALE = 0.7978845608028654   # sqrt(2/pi)
+    ALPHA = 0.044715
+
+    # Create constant initializers (float32 scalars)
+    const_scale = onnx_np.from_array(
+        np.array([SCALE], dtype=np.float32), name="_erf_scale")
+    const_alpha = onnx_np.from_array(
+        np.array([ALPHA], dtype=np.float32), name="_erf_alpha")
+    # Add to graph if needed
+    existing_init_names = set(i.name for i in graph.initializer)
+    for c in (const_scale, const_alpha):
+        if c.name not in existing_init_names:
+            graph.initializer.append(c)
+            existing_init_names.add(c.name)
+
+    # Build new node list
+    new_nodes = []
+
+    for node in graph.node:
+        # ── Handle Tile replacement ──
+        tile_repl = [r for r in tile_replacements if r[0] == node]
+        if tile_repl:
+            r = tile_repl[0]
+            op_type = r[1]
+            tile_input = node.input[0]
+            tile_output = node.output[0]
+
+            if op_type == "identity":
+                identity = onnx_helper.make_node(
+                    "Identity", [tile_input], [tile_output],
+                    name=f"{node.name}_replace")
+                new_nodes.append(identity)
+                print(f"    {node.name}: Tile(rep=all_1) -> Identity")
+
+            elif op_type == "concat":
+                axis, rep = r[2], r[3]
+                concat_inputs = [tile_input] * rep
+                concat = onnx_helper.make_node(
+                    "Concat", concat_inputs, [tile_output],
+                    name=f"{node.name}_replace", axis=axis)
+                new_nodes.append(concat)
+                print(f"    {node.name}: Tile(rep={list(inits.get(node.input[1], []))}) "
+                      f"-> Concat(x{rep}, axis={axis})")
+
+            elif op_type == "multi_concat":
+                rlist = r[2]
+                current = tile_input
+                for axis, rep in enumerate(rlist):
+                    if rep <= 1:
+                        continue
+                    next_name = f"{node.name}_tile_axis{axis}"
+                    concat_inputs = [current] * rep
+                    concat = onnx_helper.make_node(
+                        "Concat", concat_inputs, [next_name],
+                        name=f"{node.name}_a{axis}", axis=axis)
+                    new_nodes.append(concat)
+                    current = next_name
+                # Last Concat outputs to original tile_output
+                if current != tile_output:
+                    for i, n in enumerate(new_nodes):
+                        if n.output[0] == current and n.name.startswith(f"{node.name}_"):
+                            new_nodes[i] = onnx_helper.make_node(
+                                n.op_type, list(n.input), [tile_output],
+                                name=n.name, **{attr.name: onnx_helper.get_attribute_value(attr)
+                                                for attr in n.attribute})
+                            break
+                print(f"    {node.name}: Tile(rep={rlist}) -> Concat chain")
+            continue
+
+        # ── Handle Erf replacement ──
+        if node in erf_replacements:
+            inp = node.input[0]
+            out = node.output[0]
+
+            # x² = x * x
+            sq_name = f"{node.name}_sq"
+            sq = onnx_helper.make_node("Mul", [inp, inp], [sq_name],
+                                        name=f"{node.name}_sq")
+            # x³ = x² * x
+            cb_name = f"{node.name}_cb"
+            cb = onnx_helper.make_node("Mul", [sq_name, inp], [cb_name],
+                                        name=f"{node.name}_cb")
+            # ax³ = alpha * x³
+            ax3_name = f"{node.name}_ax3"
+            ax3 = onnx_helper.make_node("Mul", [cb_name, const_alpha.name], [ax3_name],
+                                         name=f"{node.name}_ax3")
+            # x + ax³
+            sum_name = f"{node.name}_sum"
+            sm = onnx_helper.make_node("Add", [inp, ax3_name], [sum_name],
+                                        name=f"{node.name}_sum")
+            # scaled = scale * (x + ax³)
+            scaled_name = f"{node.name}_scaled"
+            sc = onnx_helper.make_node("Mul", [sum_name, const_scale.name], [scaled_name],
+                                        name=f"{node.name}_scaled")
+            # tanh(scaled)
+            tn = onnx_helper.make_node("Tanh", [scaled_name], [out],
+                                        name=f"{node.name}_replace")
+
+            new_nodes.extend([sq, cb, ax3, sm, sc, tn])
+            print(f"    {node.name}: Erf -> Tanh approx")
+            continue
+
+        # ── Pass through unchanged ──
+        new_nodes.append(node)
+
+    # Replace graph nodes
+    while len(graph.node) > 0:
+        graph.node.pop()
+    for n in new_nodes:
+        graph.node.append(n)
+
+    onnx_mod.save(model, str(tmp_path))
+    print(f"  Preprocessed model saved to: {tmp_path}")
+    return tmp_path
+
 def convert_ncnn(model_path: Path, args) -> int:
     print("\n" + "=" * 60)
     print(" [1/3] NCNN Conversion")
@@ -256,6 +445,12 @@ def convert_ncnn(model_path: Path, args) -> int:
     if args.gen_cpp:
         gen_ncnn_cpp(str(model_path))
         return (True, None)
+
+    # Preprocess: replace ONNX Tile -> Concat so pnnx doesn't emit torch.tile
+    preprocessed = preprocess_onnx_for_ncnn(model_path)
+    pnnx_input = preprocessed if preprocessed else model_path
+    if preprocessed:
+        print(f"  Using preprocessed model: {pnnx_input}")
 
     inputshape_str = get_inputshape_string(str(model_path))
     print(f"  inputshape: {inputshape_str}")
@@ -266,7 +461,7 @@ def convert_ncnn(model_path: Path, args) -> int:
     def _run_pnnx(fp16_val: str) -> None:
         """Run pnnx with the given fp16 setting, using a .bat file if the
         command line exceeds Windows length limit (~8191 chars)."""
-        cmd = [pnnx, str(model_path), f"inputshape={inputshape_str}", f"fp16={fp16_val}"]
+        cmd = [pnnx, str(pnnx_input), f"inputshape={inputshape_str}", f"fp16={fp16_val}"]
         cl = ' '.join(cmd)
         if len(cl) > 6000:
             bat = model_path.parent / f"_pnnx_fp{fp16_val}.bat"
@@ -282,23 +477,29 @@ def convert_ncnn(model_path: Path, args) -> int:
     # FP32
     _run_pnnx("0")
 
-    def _find_pnnx_output(model_path: Path, suffix: str) -> Path | None:
-        """Find pnnx output file. pnnx may replace '-' with '_' in filenames."""
-        expected = model_path.with_suffix(suffix)
+    def _find_pnnx_output(lookup_path: Path, suffix: str) -> Path | None:
+        """Find pnnx output file and rename to original model name if needed.
+        pnnx may replace '-' with '_' in filenames."""
+        expected = lookup_path.with_suffix(suffix)
         if expected.exists():
+            if preprocessed and lookup_path != model_path:
+                # Rename from prep name to original model name
+                target = model_path.with_suffix(suffix)
+                os.replace(str(expected), str(target))
+                return target
             return expected
         # pnnx replaces '-' with '_' in the filename stem
-        alt_stem = model_path.stem.replace('-', '_')
-        alt = model_path.parent / f"{alt_stem}{suffix}"
+        alt_stem = lookup_path.stem.replace('-', '_')
+        alt = lookup_path.parent / f"{alt_stem}{suffix}"
         if alt.exists():
             print(f"  Found at alternate name: {alt}")
-            # Rename to expected name for consistency
-            os.replace(str(alt), str(expected))
-            return expected
+            target = model_path.with_suffix(suffix)
+            os.replace(str(alt), str(target))
+            return target
         return None
 
-    param = _find_pnnx_output(model_path, ".ncnn.param")
-    bin_  = _find_pnnx_output(model_path, ".ncnn.bin")
+    param = _find_pnnx_output(pnnx_input, ".ncnn.param")
+    bin_  = _find_pnnx_output(pnnx_input, ".ncnn.bin")
 
     # Dual FP16 (default: generate both FP32 and FP16)
     if not getattr(args, 'no_dual', False) and not getattr(args, 'fp16', False):
@@ -320,8 +521,8 @@ def convert_ncnn(model_path: Path, args) -> int:
             # Re-run FP32 to restore FP32 weights
             print("  Re-running FP32...")
             _run_pnnx("0")
-            param = _find_pnnx_output(model_path, ".ncnn.param")
-            bin_  = _find_pnnx_output(model_path, ".ncnn.bin")
+            param = _find_pnnx_output(pnnx_input, ".ncnn.param")
+            bin_  = _find_pnnx_output(pnnx_input, ".ncnn.bin")
 
     if param is None or bin_ is None:
         print("  NCNN conversion FAILED - no NCNN output files found")
@@ -330,6 +531,24 @@ def convert_ncnn(model_path: Path, args) -> int:
     # Shapes file
     info = get_io_info_ort(str(model_path))
     write_ncnn_shapes(str(model_path.with_suffix(".shapes")), info)
+
+    # Cleanup preprocessed model and its pnnx intermediates
+    if preprocessed and preprocessed.exists():
+        try:
+            preprocessed.unlink()
+            print(f"  Cleaned preprocessed: {preprocessed.name}")
+        except OSError:
+            pass
+        # Remove any pnnx/temp files created from the preprocessed name
+        prep_stem = preprocessed.stem
+        for f in os.listdir(model_dir):
+            if f.startswith(prep_stem):
+                fp = os.path.join(model_dir, f)
+                try:
+                    os.remove(fp)
+                    print(f"  Cleaned: {f}")
+                except OSError:
+                    pass
 
     # Cleanup
     if not getattr(args, 'no_cleanup', False):
@@ -618,7 +837,8 @@ def convert_tflite_inner(input_onnx: Path, output_tflite: Path, keep_temp: bool)
         onnx_model = onnx_mod.load(str(input_onnx), load_external_data=False)
         prf_path = generate_nchw_to_nhwc_prf(onnx_model, Path(tmp) / "prf.json")
 
-        cmd = [sys.executable, "-m", "onnx2tf",
+        wrapper = Path(__file__).resolve().parent / "_onnx2tf_wrapper.py"
+        cmd = [sys.executable, str(wrapper),
                "-i", str(input_onnx), "-o", str(tmp_dir),
                "-coion", "-nuo", "-n"]
         if prf_path:
@@ -629,15 +849,22 @@ def convert_tflite_inner(input_onnx: Path, output_tflite: Path, keep_temp: bool)
 
         def safe_print(prefix: str, text: str):
             try:
-                print(f"{prefix} {text}")
+                # Replace Unicode chars that can't be encoded in GBK
+                safe_text = text.encode("utf-8", errors="replace").decode("utf-8")
+                safe_text = safe_text.replace('\u26a0', '!')  # ⚠ -> !
+                safe_text = safe_text.replace('\U0001f4e6', '[P]')  # 📦 -> [P]
+                safe_text = safe_text.replace('\U0001f4d0', '[D]')  # 📐 -> [D]
+                safe_text = safe_text.replace('\u2728', '*')  # ✨ -> *
+                safe_text = safe_text.replace('\u2757', '!!')  # ❗ -> !!
+                print(f"{prefix} {safe_text}")
             except UnicodeEncodeError:
-                safe = text.encode("utf-8", errors="replace").decode("utf-8")
+                safe = text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
                 print(f"{prefix} {safe}")
 
         for line in proc.stdout.splitlines():
             lo = line.lower()
             if any(w in lo for w in ("warn", "error", "fail", "traceback")):
-                safe_print(" [onnx2tf] ⚠", line)
+                safe_print(" [onnx2tf] [W]", line)
             else:
                 safe_print(" [onnx2tf]", line)
 
@@ -649,7 +876,7 @@ def convert_tflite_inner(input_onnx: Path, output_tflite: Path, keep_temp: bool)
                 prev = s
                 lo = s.lower()
                 if any(w in lo for w in ("warn", "error", "fail", "traceback")):
-                    safe_print(" [onnx2tf:err] ⚠", s)
+                    safe_print(" [onnx2tf:err] [W]", s)
                 elif re.search(r"100%\|", s):
                     safe_print(" [onnx2tf:err]", s)
                 elif not re.search(r"\d+%\|.*it/s", s):
@@ -852,12 +1079,25 @@ def convert_tflite(model_path: Path, args) -> int:
     else:
         out_path = model_path.with_suffix(".tflite")
 
+    # Preprocess: replace Erf -> Tanh in ONNX so onnx2tf doesn't emit FlexErf
+    preprocessed = preprocess_onnx_for_ncnn(model_path)
+    tflite_input = preprocessed if preprocessed else model_path
+    if preprocessed:
+        print(f"  Using preprocessed model: {tflite_input}")
+
     try:
-        convert_tflite_inner(model_path, out_path,
+        convert_tflite_inner(tflite_input, out_path,
                              keep_temp=getattr(args, 'keep_temp', False))
     except Exception as e:
         print(f"  TFLite conversion failed: {e}")
         return (False, str(e))
+
+    # Cleanup preprocessed model
+    if preprocessed and preprocessed.exists():
+        try:
+            preprocessed.unlink()
+        except OSError:
+            pass
 
     if not args.no_verify:
         ret = verify_tflite(model_path, out_path)
@@ -874,6 +1114,11 @@ def convert_tflite(model_path: Path, args) -> int:
 # ──────────────────────────────────────────────────────────────────────
 
 def main():
+    # Set UTF-8 encoding to avoid GBK issues on Windows
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
     # Ensure core dependencies (onnxruntime, numpy, onnx) before parsing
     ensure_common_deps()
 
@@ -956,17 +1201,17 @@ def main():
     print("=" * 60)
 
     # ── Summary ──
-    print(f"\n📦  Input:  {model_path}  ({model_path.stat().st_size / 1024:.0f} KB)\n")
+    print(f"\n[In]  Input:  {model_path}  ({model_path.stat().st_size / 1024:.0f} KB)\n")
     print(f"{'Format':<8} {'File':<40} {'Size':>8} {'Status':<20}")
     print("-" * 80)
 
     def _fmt_file(fmt: str, path: Path):
         if path.exists():
             sz = f"{path.stat().st_size / 1024:.0f} KB"
-            print(f"{fmt:<8} {str(path):<40} {sz:>8} {'✓ OK':<20}")
+            print(f"{fmt:<8} {str(path):<40} {sz:>8} {'OK':<20}")
         else:
             reason = _reason(fmt)
-            print(f"{fmt:<8} {str(path):<40} {'—':>8} {f'✗ {reason}':<20}")
+            print(f"{fmt:<8} {str(path):<40} {'---':>8} {f'FAIL {reason}':<20}")
 
     def _reason(fmt: str) -> str:
         """Get failure reason for a format."""
@@ -995,13 +1240,13 @@ def main():
 
     shapes_f = model_path.with_suffix(".shapes")
     if shapes_f.exists():
-        print(f"\n📐  Shapes: {shapes_f}")
+        print(f"\n[Shapes]  {shapes_f}")
 
     # Collect tips for missing formats
     missing = [t for t in ("ncnn", "mnn", "tflite")
                if results.get(t) and not results[t][0]]
     if missing:
-        print(f"\n⚠  Tips for failed targets:")
+        print(f"\n[Tips]  Tips for failed targets:")
         if "tflite" in missing:
             print(f"   TFLite: needs onnx2tf → pip install onnx2tf tensorflow tf-keras")
             print(f"           or use --no-verify to skip accuracy check")
@@ -1010,7 +1255,7 @@ def main():
         if "ncnn" in missing:
             print(f"   NCNN:   ensure pnnx.exe is in tools/ or PATH")
 
-    print(f"\n💡  Next: cd unified_bench && tools\\NDK_build_Android_auto.bat\n")
+    print(f"\n[Next]  cd unified_bench && tools\\NDK_build_Android_auto.bat\n")
 
     return 1 if errors else 0
 

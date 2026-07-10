@@ -201,17 +201,27 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult& variant,
 
     /* For non-NCNN: use temp backend to query shapes */
     if (shared.Empty() && fmt != ModelFormat::NCNN) {
-        LOGI("Creating temp CPU backend (id=%d) to query shapes...", bid(cpu_id));
-        fflush(stderr);
-        auto tmp = BackendRegistry::Create(cpu_id);
-        LOGI("Temp backend created: %s", tmp ? "OK" : "FAILED");
-        fflush(stderr);
-        if (tmp && tmp->Initialize(variant.path.c_str(), cfg_.num_threads)) {
-            std::string is, os;
-            size_t ie, oe;
-            tmp->QueryIOInfo(is, ie, os, oe);
-            auto sizes = parse_input_element_counts(is);
-            shared.GenerateFromSizes(sizes);
+        std::vector<BackendId> candidate_ids = {cpu_id};
+        /* TFLite CPU backend may fail for models with Select TF ops (FlexErf).
+         * Fall back to GPU delegate which handles Flex ops via GL shaders. */
+        if (fmt == ModelFormat::TFLITE) {
+            for (auto& bc : backends) {
+                if (bc.id != cpu_id)
+                    candidate_ids.push_back(bc.id);
+            }
+        }
+        for (auto cid : candidate_ids) {
+            LOGI("Creating temp backend (id=%d) to query shapes...", bid(cid));
+            fflush(stderr);
+            auto tmp = BackendRegistry::Create(cid);
+            if (tmp && tmp->Initialize(variant.path.c_str(), cfg_.num_threads)) {
+                std::string is, os;
+                size_t ie, oe;
+                tmp->QueryIOInfo(is, ie, os, oe);
+                auto sizes = parse_input_element_counts(is);
+                shared.GenerateFromSizes(sizes);
+                break;
+            }
         }
     }
 

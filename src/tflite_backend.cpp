@@ -19,6 +19,16 @@
 #include <cstring>
 #include <chrono>
 
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include <dlfcn.h>
+#endif
+
+/* Flex delegate for Select TensorFlow ops (FlexErf, etc.).
+ * Dynamically loaded at runtime so the binary works with or without
+ * tensorflow-lite-select-tf-ops library. */
+
 class TFLiteBackend : public IBackend {
 public:
     explicit TFLiteBackend(BackendId id) { id_ = id; }
@@ -45,6 +55,7 @@ private:
     TfLiteInterpreterOptions* opts_ = nullptr;
     TfLiteInterpreter* interp_ = nullptr;
     TfLiteDelegate* delegate_ = nullptr;
+    TfLiteDelegate* flex_delegate_ = nullptr;
 
     size_t num_inputs_ = 0;
     size_t num_outputs_ = 0;
@@ -88,6 +99,24 @@ static TfLiteDelegate* CreateDelegate(BackendId id) {
 #else
         return nullptr;
 #endif
+    case BackendId::TFLITE_NPU:
+#if defined(__ANDROID__) || defined(__android__)
+        {
+            /* QNN TFLite delegate for NPU acceleration.
+             * Requires Qualcomm QNN SDK and TFLite delegate library.
+             * Include: #include <QnnTFLiteDelegate.h>
+             * Link with qnntflitedelegate or libQnnTFLiteDelegate.so */
+            // TODO: Replace with actual QNN TFLite delegate initialization
+            // Example:
+            //   QnnTFLiteDelegateOptions qo = QnnTFLiteDelegateOptionsDefault();
+            //   qo.backend_type = QNN_BACKEND_HTP;  // or QNN_BACKEND_ADRENO
+            //   return QnnTFLiteDelegateCreate(&qo);
+            LOGW("TFLite: NPU delegate not implemented - provide QNN TFLite delegate header");
+            return nullptr;
+        }
+#else
+        return nullptr;
+#endif
     default:
         return nullptr;
     }
@@ -108,6 +137,11 @@ bool TFLiteBackend::Initialize(const char* model_path, int num_threads) {
         TfLiteInterpreterOptionsAddDelegate(opts_, delegate_);
         LOGI("TFLite: delegate attached for backend %d", bid(id_));
     }
+
+    /* Flex delegate temporarily disabled - library lacks Flex ops support.
+     * Instead, re-generate TFLite model via onnx_convert.py (Erf->Tanh preproc).
+     * See:  python tools\onnx_convert.py model.onnx --to tflite */
+    (void)flex_delegate_;
 
     interp_ = TfLiteInterpreterCreate(model_, opts_);
     if (!interp_) { LOGE("TFLite: interpreter create failed"); return false; }
@@ -330,8 +364,21 @@ void TFLiteBackend::Cleanup() {
             TfLiteGpuDelegateV2Delete(delegate_);
         else if (id_ == BackendId::TFLITE_NNAPI)
             delete static_cast<tflite::StatefulNnApiDelegate*>(delegate_);
+        else if (id_ == BackendId::TFLITE_NPU)
+            TfLiteGpuDelegateV2Delete(delegate_); /* or QnnTFLiteDelegateDelete if available */
 #endif
         delegate_ = nullptr;
+    }
+    if (flex_delegate_) {
+        typedef void (*FlexDeleteFunc)(TfLiteDelegate*);
+#ifdef _WIN32
+        HMODULE tflib = GetModuleHandleA("tensorflowlite_c.dll");
+        auto flex_delete = (FlexDeleteFunc)(tflib ? GetProcAddress(tflib, "TfLiteFlexDelegateDelete") : nullptr);
+#else
+        auto flex_delete = (FlexDeleteFunc)dlsym(RTLD_DEFAULT, "TfLiteFlexDelegateDelete");
+#endif
+        if (flex_delete) flex_delete(flex_delegate_);
+        flex_delegate_ = nullptr;
     }
     if (model_)   { TfLiteModelDelete(model_); model_ = nullptr; }
 

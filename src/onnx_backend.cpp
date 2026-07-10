@@ -184,25 +184,71 @@ bool ONNXBackend::ConfigureEP() {
     case BackendId::ONNX_QNN_GPU:
     case BackendId::ONNX_QNN_HTP: {
 #if defined(__ANDROID__) || defined(__android__)
-        /* QNN uses the generic SessionOptionsAppendExecutionProvider API with
-         * provider name "QNN" and backend_type key. Reference: onnx_test session_manager.c */
+        OrtStatus* st;
         const char* backend_type;
-        if (id_ == BackendId::ONNX_QNN_CPU)      backend_type = "cpu";
-        else if (id_ == BackendId::ONNX_QNN_GPU) backend_type = "gpu";
-        else                                     backend_type = "htp";
 
-        /* Use a simple config matching the original onnx_test C code */
-        const char* keys[]   = {"backend_type", "profiling_level", "profiling_file_path"};
-        const char* v_cpu[]  = {"cpu", "off", "/data/local/tmp/qnn_cpu_profiling.csv"};
-        const char* v_gpu[]  = {"gpu", "off", "/data/local/tmp/qnn_gpu_profiling.csv"};
-        const char* v_htp[]  = {"htp", "off", "/data/local/tmp/qnn_htp_profiling.csv"};
-        const char** values = v_cpu;
-        int num_opts = 3;
-        if (id_ == BackendId::ONNX_QNN_GPU) values = v_gpu;
-        else if (id_ == BackendId::ONNX_QNN_HTP) values = v_htp;
+        if (id_ == BackendId::ONNX_QNN_HTP) {
+            /* QNN EP with HTP backend — full tuning for best NPU acceleration */
+            backend_type = "htp";
+            const char* htp_keys[] = {
+                "backend_type",
+                "soc_model",
+                "htp_arch",
+                "profiling_level",
+                "profiling_file_path",
+                "htp_performance_mode",
+                "htp_graph_finalization_optimization_mode",
+                "enable_htp_fp16_precision",
+                "enable_htp_shared_memory_allocator",
+            };
+            const char* htp_values[] = {
+                "htp",                                   // backend_type: HTP NPU backend
+                "0",                                     // soc_model: 0=auto
+                "0",                                     // htp_arch: 0=auto
+                "off",                                   // profiling_level: off basic detailed
+                "/data/local/tmp/qnn_htp_profiling.csv",
+                "burst",                                 // htp_performance_mode: burst balanced default high_performance ...
+                "3",                                     // htp_graph_finalization_optimization_mode: 0 1 2 3
+                "1",                                     // enable_htp_fp16_precision: 0 1
+                "1",                                     // enable_htp_shared_memory_allocator: 0 1
+            };
+            int num_opts = sizeof(htp_keys) / sizeof(htp_keys[0]);
+            st = ort_->SessionOptionsAppendExecutionProvider(
+                opts_, "QNN", htp_keys, htp_values, num_opts);
+        } else if (id_ == BackendId::ONNX_QNN_GPU) {
+            /* QNN EP with Adreno GPU backend — FP32/FP16, no HTP-specific options */
+            backend_type = "gpu";
+            const char* gpu_keys[] = {
+                "backend_type",
+                "profiling_level",
+                "profiling_file_path",
+            };
+            const char* gpu_values[] = {
+                "gpu",
+                "off",
+                "/data/local/tmp/qnn_gpu_profiling.csv",
+            };
+            int num_opts = sizeof(gpu_keys) / sizeof(gpu_keys[0]);
+            st = ort_->SessionOptionsAppendExecutionProvider(
+                opts_, "QNN", gpu_keys, gpu_values, num_opts);
+        } else {
+            /* QNN EP with CPU backend — reference backend for graph validation */
+            backend_type = "cpu";
+            const char* cpu_keys[] = {
+                "backend_type",
+                "profiling_level",
+                "profiling_file_path",
+            };
+            const char* cpu_values[] = {
+                "cpu",
+                "off",
+                "/data/local/tmp/qnn_cpu_profiling.csv",
+            };
+            int num_opts = sizeof(cpu_keys) / sizeof(cpu_keys[0]);
+            st = ort_->SessionOptionsAppendExecutionProvider(
+                opts_, "QNN", cpu_keys, cpu_values, num_opts);
+        }
 
-        OrtStatus* st = ort_->SessionOptionsAppendExecutionProvider(opts_, "QNN",
-                                    keys, values, num_opts);
         if (st) {
             LOGE("ONNX: QNN(%s) append failed: %s", backend_type, ort_->GetErrorMessage(st));
             ort_->ReleaseStatus(st);
