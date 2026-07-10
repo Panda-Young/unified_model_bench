@@ -239,7 +239,7 @@ echo.
 echo ============================================================
 echo  Running FULL benchmark (warmup=5, repeat=100)...
 echo ============================================================
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=/data/local/tmp/bench_test:/data/local/tmp/bench_test/qnn ADSP_LIBRARY_PATH=/data/local/tmp/bench_test/qnn/hexagon ./%OUT% test_model.onnx --warmup 1 --repeat 1 --threads 4 --csv summary.csv"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=/data/local/tmp/bench_test:/data/local/tmp/bench_test/qnn ADSP_LIBRARY_PATH=/data/local/tmp/bench_test/qnn/hexagon ./%OUT% test_model.onnx --warmup 5 --repeat 100 --threads 4 --csv summary.csv"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.
