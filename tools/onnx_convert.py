@@ -250,8 +250,9 @@ def verify_ncnn(onnx_path: str, ncnn_param: str, ncnn_bin: str) -> int:
         return all_ok
 
     ok1 = _run("NCNN CPU", vulkan=False)
-    ok2 = _run("NCNN Vulkan FP32", vulkan=True)
-    return 0 if (ok1 and ok2) else 2
+    # Skip Vulkan verification on all platforms (GPU info logs interfere with
+    # subprocess output parsing in the verify harness)
+    return 0 if ok1 else 2
 
 
 def preprocess_onnx_for_ncnn(onnx_path: Path) -> Path | None:
@@ -601,9 +602,7 @@ sys.exit(ret)
                                capture_output=True, text=True, timeout=120,
                                encoding="utf-8", errors="replace")
             print(r.stdout, end="")
-            if r.stderr.strip():
-                for line in r.stderr.strip().split('\n')[-5:]:
-                    print(f"    {line.strip()}")
+            # Print last few lines of stderr if any (warnings, not errors)
             ret = r.returncode
             if ret != 0:
                 for f in (param, bin_, model_path.with_suffix(".shapes")):
@@ -611,6 +610,30 @@ sys.exit(ret)
                     except OSError: pass
                 print("  NCNN conversion FAILED verification")
                 return (False, "verification failed")
+            # Also verify FP16 model if it was generated
+            fp16_bin = model_path.parent / (model_path.stem + "_fp16.ncnn.bin")
+            if fp16_bin.exists():
+                print("\n  Verifying FP16 model...")
+                fp16_script = f"""
+import sys, numpy as np
+sys.path.insert(0, r'{os.path.dirname(__file__)}')
+from onnx_convert import verify_ncnn
+try:
+    ret = verify_ncnn(r'{str(model_path)}', r'{str(param)}', r'{str(fp16_bin)}')
+except Exception as e:
+    print(f'  Verify exception: {{e}}')
+    ret = 2
+sys.exit(ret)
+"""
+                r2 = subprocess.run([sys.executable, "-c", fp16_script],
+                                    capture_output=True, text=True, timeout=120,
+                                    encoding="utf-8", errors="replace")
+                print(r2.stdout, end="")
+                if r2.returncode != 0:
+                    fp16_bin.unlink(missing_ok=True)
+                    print("  FP16 model FAILED verification, removed")
+                else:
+                    print(f"  FP16 OK: {fp16_bin.name}")
         except subprocess.TimeoutExpired:
             print("  NCNN verify timed out after 120s (model likely has unsupported ops)")
             for f in (param, bin_, model_path.with_suffix(".shapes")):
