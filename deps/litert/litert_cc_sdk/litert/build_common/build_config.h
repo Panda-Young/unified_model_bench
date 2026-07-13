@@ -1,0 +1,18 @@
+// Generated from build_config.h.in for standalone NDK build
+// GPU and NPU support enabled
+
+#ifndef LITERT_BUILD_COMMON_BUILD_CONFIG_H_
+#define LITERT_BUILD_COMMON_BUILD_CONFIG_H_
+
+#define LITERT_BUILD_CONFIG_DISABLE_GPU 0
+#define LITERT_BUILD_CONFIG_DISABLE_NPU 0
+
+#if LITERT_BUILD_CONFIG_DISABLE_GPU
+#define LITERT_DISABLE_GPU
+#endif
+
+#if LITERT_BUILD_CONFIG_DISABLE_NPU
+#define LITERT_DISABLE_NPU
+#endif
+
+#endif  // LITERT_BUILD_COMMON_BUILD_CONFIG_H_
