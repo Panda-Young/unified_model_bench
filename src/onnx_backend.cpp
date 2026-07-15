@@ -19,6 +19,12 @@
 #include <nnapi_provider_factory.h>
 #endif
 
+#ifdef _WIN32
+/* DML V2 API types (OrtDmlApi, OrtDmlDeviceOptions, etc.) */
+#define ENABLE_NPU_ADAPTER_ENUMERATION /* enable OrtDmlDeviceFilter::Npu */
+#include <dml_provider_factory.h>
+#endif
+
 /* DML / oneDNN / OpenVINO function pointer types (avoid including heavy provider headers) */
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_DML)(OrtSessionOptions *options, int device_id);
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_Dnnl)(OrtSessionOptions *options, int use_arena);
@@ -98,26 +104,67 @@ bool ONNXBackend::ConfigureEP()
         LOGI("ONNX: oneDNN EP configured");
         return true;
     }
-    case BackendId::ONNX_DML: {
-        auto pfnDML = (PFN_OrtSessionOptionsAppendExecutionProvider_DML)
-            load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_DML");
-        if (!pfnDML) {
-            LOGE("ONNX: DML EP function not found in DLL (use DML-specific onnxruntime.dll)");
+    case BackendId::ONNX_DML_GPU: {
+        /* Try V2 API with HighPerformance preference (auto-select best GPU) */
+        const OrtDmlApi *dml_api = nullptr;
+        OrtStatus *st = ort_->GetExecutionProviderApi("DML", ORT_API_VERSION, (const void **)&dml_api);
+        if (!st && dml_api && dml_api->SessionOptionsAppendExecutionProvider_DML2) {
+            /* V2 API available — use HighPerformance + Gpu filter */
+            OrtDmlDeviceOptions device_opts;
+            device_opts.Preference = OrtDmlPerformancePreference::HighPerformance;
+            device_opts.Filter = OrtDmlDeviceFilter::Gpu;
+            st = dml_api->SessionOptionsAppendExecutionProvider_DML2(opts_, &device_opts);
+            if (st) {
+                LOGE("ONNX: DML GPU V2 append failed: %s", ort_->GetErrorMessage(st));
+                ort_->ReleaseStatus(st);
+                return false;
+            }
+            LOGI("ONNX: DML GPU EP configured (V2, HighPerformance)");
+        } else {
+            ort_->ReleaseStatus(st);
+            /* Fallback to V1 API via function pointer */
+            auto pfnDML = (PFN_OrtSessionOptionsAppendExecutionProvider_DML)
+                load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_DML");
+            if (!pfnDML) {
+                LOGE("ONNX: DML EP function not found");
+                return false;
+            }
+            /* First try device_id=1 (dGPU), fallback to device_id=0 (iGPU) */
+            st = pfnDML(opts_, 1);
+            if (st) {
+                ort_->ReleaseStatus(st);
+                st = pfnDML(opts_, 0);
+                if (st) {
+                    LOGE("ONNX: DML V1 device=0 also failed: %s", ort_->GetErrorMessage(st));
+                    ort_->ReleaseStatus(st);
+                    return false;
+                }
+                LOGI("ONNX: DML GPU EP configured (V1, device=0 fallback)");
+            } else {
+                LOGI("ONNX: DML GPU EP configured (V1, device=1)");
+            }
+        }
+        return true;
+    }
+    case BackendId::ONNX_DML_NPU: {
+        /* Must use V2 API with NPU filter (V1 has no NPU support) */
+        const OrtDmlApi *dml_api = nullptr;
+        OrtStatus *st = ort_->GetExecutionProviderApi("DML", ORT_API_VERSION, (const void **)&dml_api);
+        if (st || !dml_api || !dml_api->SessionOptionsAppendExecutionProvider_DML2) {
+            ort_->ReleaseStatus(st);
+            LOGE("ONNX: DML_NPU requires V2 API, not available");
             return false;
         }
-        int dev_id = 1;
-        OrtStatus *st = pfnDML(opts_, dev_id);
+        OrtDmlDeviceOptions device_opts;
+        device_opts.Preference = OrtDmlPerformancePreference::HighPerformance;
+        device_opts.Filter = OrtDmlDeviceFilter::Npu;
+        st = dml_api->SessionOptionsAppendExecutionProvider_DML2(opts_, &device_opts);
         if (st) {
-            ort_->ReleaseStatus(st);
-            dev_id = 0;
-            st = pfnDML(opts_, dev_id);
-        }
-        if (st) {
-            LOGE("ONNX: DML append failed: %s", ort_->GetErrorMessage(st));
+            LOGE("ONNX: DML_NPU append failed: %s", ort_->GetErrorMessage(st));
             ort_->ReleaseStatus(st);
             return false;
         }
-        LOGI("ONNX: DML EP configured (device=%d)", dev_id);
+        LOGI("ONNX: DML_NPU EP configured (V2)");
         return true;
     }
     case BackendId::ONNX_OPENVINO_CPU: {
@@ -348,7 +395,8 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     switch (id_) {
     case BackendId::ONNX_CPU: /* use default CPU DLL path below */
         break;
-    case BackendId::ONNX_DML:
+    case BackendId::ONNX_DML_GPU:
+    case BackendId::ONNX_DML_NPU:
         ep_subdir = "dml";
         break;
     case BackendId::ONNX_ONEDNN:

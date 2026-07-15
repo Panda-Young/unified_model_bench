@@ -29,18 +29,19 @@ enum class BackendId {
     /* ONNX */
     ONNX_CPU = 0,
     ONNX_ONEDNN = 1,
-    ONNX_DML = 2,
-    ONNX_OPENVINO_CPU = 3,
-    ONNX_OPENVINO_GPU = 4,
-    ONNX_OPENVINO_NPU = 5,
-    ONNX_CUDA = 6,
-    ONNX_TENSORRT = 7,
-    ONNX_NNAPI = 8,
-    ONNX_XNNPACK = 9,
-    ONNX_QNN_CPU = 10,
-    ONNX_QNN_GPU = 11,
-    ONNX_QNN_HTP = 12,
-    ONNX_LAST = 13,
+    ONNX_DML_GPU = 2,
+    ONNX_DML_NPU = 3,
+    ONNX_OPENVINO_CPU = 4,
+    ONNX_OPENVINO_GPU = 5,
+    ONNX_OPENVINO_NPU = 6,
+    ONNX_CUDA = 7,
+    ONNX_TENSORRT = 8,
+    ONNX_NNAPI = 9,
+    ONNX_XNNPACK = 10,
+    ONNX_QNN_CPU = 11,
+    ONNX_QNN_GPU = 12,
+    ONNX_QNN_HTP = 13,
+    ONNX_LAST = 14,
 
     /* TFLite */
     TFLITE_CPU = 100,
@@ -48,11 +49,13 @@ enum class BackendId {
     TFLITE_NNAPI = 102,
     TFLITE_GPU = 103,
     TFLITE_NPU = 104,
+    TFLITE_LAST = 105,
 
     /* NCNN */
     NCNN_CPU = 200,
     NCNN_VULKAN = 201,
     NCNN_VULKAN_FP16 = 202,
+    NCNN_LAST = 203,
 
     /* MNN */
     MNN_CPU = 300,
@@ -63,11 +66,13 @@ enum class BackendId {
     MNN_VULKAN_FP16 = 305,
     MNN_VULKAN_BF16 = 306,
     MNN_OPENGL = 307,
+    MNN_LAST = 308,
 
     /* LiteRT */
     LITERT_CPU = 400,
     LITERT_GPU = 401,
     LITERT_NPU = 402,
+    LITERT_LAST = 403,
 };
 
 inline int bid(BackendId id) { return static_cast<int>(id); }
@@ -132,27 +137,27 @@ using BackendFactory = std::function<BackendPtr(BackendId)>;
 inline bool is_onnx_backend(BackendId id)
 {
     int v = bid(id);
-    return v >= 0 && v <= 15;
+    return v >= bid(BackendId::ONNX_CPU) && v <= bid(BackendId::ONNX_LAST);
 }
 inline bool is_tflite_backend(BackendId id)
 {
     int v = bid(id);
-    return v >= 100 && v <= 104;
+    return v >= bid(BackendId::TFLITE_CPU) && v <= bid(BackendId::TFLITE_LAST);
 }
 inline bool is_ncnn_backend(BackendId id)
 {
     int v = bid(id);
-    return v >= 200 && v <= 202;
+    return v >= bid(BackendId::NCNN_CPU) && v <= bid(BackendId::NCNN_LAST);
 }
 inline bool is_mnn_backend(BackendId id)
 {
     int v = bid(id);
-    return v >= 300 && v <= 307;
+    return v >= bid(BackendId::MNN_CPU) && v <= bid(BackendId::MNN_LAST);
 }
 inline bool is_litert_backend(BackendId id)
 {
     int v = bid(id);
-    return v >= 400 && v <= 402;
+    return v >= bid(BackendId::LITERT_CPU) && v <= bid(BackendId::LITERT_LAST);
 }
 
 /* ---------------------------------------------------------------------------
