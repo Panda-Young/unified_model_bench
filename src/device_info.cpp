@@ -243,7 +243,6 @@ std::string get_device_info_csv()
         std::string raw = run_cmd("wmic path win32_videocontroller get Name,AdapterRAM /format:list 2>nul");
         if (raw.empty()) {
             raw = run_cmd("powershell -NoProfile -Command \"Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM | Format-List\"");
-            LOGI("PowerShell GPU raw output length=%zu, first 300 chars: %.300s", raw.length(), raw.c_str());
         }
         /* Parse into blocks separated by blank lines */
         std::string gpu_list;
@@ -366,8 +365,6 @@ std::string get_device_info_csv()
             gpu_name = gpu_list;
         }
     }
-
-    LOGI("Raw CPU name from registry: '%s'", cpu_name.c_str());
 
     /* Simplify CPU name: extract model token + frequency */
     if (!cpu_name.empty()) {
