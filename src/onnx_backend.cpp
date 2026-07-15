@@ -393,7 +393,10 @@ bool ONNXBackend::Initialize(const char* model_path, int num_threads) {
         std::chrono::high_resolution_clock::now() - t3).count();
 
     auto t4 = std::chrono::high_resolution_clock::now();
-    ConfigureEP();
+    if (!ConfigureEP()) {
+        LOGE("ONNX: ConfigureEP failed for backend id=%d", bid(id_));
+        return false;
+    }
     timing_[5] = std::chrono::duration<double, std::milli>(
         std::chrono::high_resolution_clock::now() - t4).count();
 
