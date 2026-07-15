@@ -134,6 +134,7 @@ void InitDefaults() {
     Register(BackendId::ONNX_DML,           {BackendId::ONNX_DML,           BackendType::ONNX_EP, "DML",           "", false}, CreateOnnxBackend);
     Register(BackendId::ONNX_OPENVINO_CPU,  {BackendId::ONNX_OPENVINO_CPU,  BackendType::ONNX_EP, "OpenVINO_CPU",  "", false}, CreateOnnxBackend);
     Register(BackendId::ONNX_OPENVINO_GPU,  {BackendId::ONNX_OPENVINO_GPU,  BackendType::ONNX_EP, "OpenVINO_GPU",  "", false}, CreateOnnxBackend);
+    Register(BackendId::ONNX_OPENVINO_NPU,  {BackendId::ONNX_OPENVINO_NPU,  BackendType::ONNX_EP, "OpenVINO_NPU",  "", false}, CreateOnnxBackend);
 #    else /* 32-bit Windows */
     Register(BackendId::ONNX_CPU, {BackendId::ONNX_CPU, BackendType::ONNX_EP, "CPU", "", true},  CreateOnnxBackend);
     Register(BackendId::ONNX_DML, {BackendId::ONNX_DML, BackendType::ONNX_EP, "DML", "", false}, CreateOnnxBackend);

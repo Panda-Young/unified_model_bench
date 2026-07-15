@@ -115,36 +115,72 @@ bool ONNXBackend::ConfigureEP() {
         return true;
     }
     case BackendId::ONNX_OPENVINO_CPU: {
-        auto pfn = (PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)
-            load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_OpenVINO");
-        if (!pfn) {
-            LOGE("ONNX: OpenVINO EP function not found in DLL");
-            return false;
+        /* Use V2 API via OrtApi struct with cache_dir to suppress warning and speed up reload */
+        if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
+            const char* keys[]   = {"device_type", "cache_dir"};
+            const char* values[] = {"CPU",         "model_cache"};
+            OrtStatus* st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 2);
+            if (st) {
+                LOGE("ONNX: OpenVINO CPU append failed: %s", ort_->GetErrorMessage(st));
+                ort_->ReleaseStatus(st);
+                return false;
+            }
+            LOGI("ONNX: OpenVINO CPU EP configured (V2, cache)");
+        } else {
+            /* Fallback to V1 API */
+            auto pfn = (PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)
+                load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_OpenVINO");
+            if (!pfn) { LOGE("ONNX: OpenVINO EP function not found in DLL"); return false; }
+            OrtStatus* st = pfn(opts_, "CPU");
+            if (st) { LOGE("ONNX: OpenVINO CPU append failed: %s", ort_->GetErrorMessage(st)); ort_->ReleaseStatus(st); return false; }
+            LOGI("ONNX: OpenVINO CPU EP configured (V1)");
         }
-        OrtStatus* st = pfn(opts_, "CPU");
-        if (st) {
-            LOGE("ONNX: OpenVINO CPU append failed: %s", ort_->GetErrorMessage(st));
-            ort_->ReleaseStatus(st);
-            return false;
-        }
-        LOGI("ONNX: OpenVINO CPU EP configured");
         return true;
     }
     case BackendId::ONNX_OPENVINO_GPU: {
-        auto pfn = (PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)
-            load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_OpenVINO");
-        if (!pfn) {
-            LOGE("ONNX: OpenVINO EP function not found in DLL");
-            return false;
+        /* Use V2 API via OrtApi struct to separate device_type and precision (GPU_FP32 deprecated) */
+        if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
+            const char* keys[]   = {"device_type", "precision",   "cache_dir"};
+            const char* values[] = {"GPU",         "FP32",       "model_cache"};
+            OrtStatus* st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3);
+            if (st) {
+                LOGE("ONNX: OpenVINO GPU append failed: %s", ort_->GetErrorMessage(st));
+                ort_->ReleaseStatus(st);
+                return false;
+            }
+            LOGI("ONNX: OpenVINO GPU EP configured (V2, FP32, cache)");
+        } else {
+            /* Fallback to V1 API (loaded via dlsym for older runtimes without V2 in OrtApi) */
+            auto pfnV1 = (PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)
+                load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_OpenVINO");
+            if (!pfnV1) { LOGE("ONNX: OpenVINO EP function not found in DLL"); return false; }
+            OrtStatus* st = pfnV1(opts_, "GPU_FP32");
+            if (st) { LOGE("ONNX: OpenVINO GPU append failed: %s", ort_->GetErrorMessage(st)); ort_->ReleaseStatus(st); return false; }
+            LOGW("ONNX: OpenVINO GPU EP configured (V1 fallback, GPU_FP32 deprecated)");
         }
-        /* Match legacy device_type string used by baseline */
-        OrtStatus* st = pfn(opts_, "GPU_FP32");
-        if (st) {
-            LOGE("ONNX: OpenVINO GPU append failed: %s", ort_->GetErrorMessage(st));
-            ort_->ReleaseStatus(st);
-            return false;
+        return true;
+    }
+    case BackendId::ONNX_OPENVINO_NPU: {
+        /* Use V2 API via OrtApi struct with FP16 precision (NPU hardware optimized for FP16) */
+        if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
+            const char* keys[]   = {"device_type", "precision",   "cache_dir"};
+            const char* values[] = {"NPU",         "FP16",       "model_cache"};
+            OrtStatus* st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3);
+            if (st) {
+                LOGE("ONNX: OpenVINO NPU append failed: %s", ort_->GetErrorMessage(st));
+                ort_->ReleaseStatus(st);
+                return false;
+            }
+            LOGI("ONNX: OpenVINO NPU EP configured (V2, FP16, cache)");
+        } else {
+            /* Fallback to V1 API with basic NPU device type */
+            auto pfnV1 = (PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)
+                load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_OpenVINO");
+            if (!pfnV1) { LOGE("ONNX: OpenVINO EP function not found in DLL"); return false; }
+            OrtStatus* st = pfnV1(opts_, "NPU");
+            if (st) { LOGE("ONNX: OpenVINO NPU append failed: %s", ort_->GetErrorMessage(st)); ort_->ReleaseStatus(st); return false; }
+            LOGI("ONNX: OpenVINO NPU EP configured (V1 fallback)");
         }
-        LOGI("ONNX: OpenVINO GPU EP configured");
         return true;
     }
     case BackendId::ONNX_NNAPI:
@@ -282,6 +318,7 @@ bool ONNXBackend::Initialize(const char* model_path, int num_threads) {
     case BackendId::ONNX_ONEDNN:        ep_subdir = "onednn";   break;
     case BackendId::ONNX_OPENVINO_CPU:
     case BackendId::ONNX_OPENVINO_GPU:  ep_subdir = "openvino"; break;
+    case BackendId::ONNX_OPENVINO_NPU:  ep_subdir = "openvino"; break;
     default: break;
     }
 

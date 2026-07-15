@@ -17,7 +17,7 @@
 enum class BackendType { ONNX_EP = 0, TFLITE_DEL = 1, NCNN = 2, MNN = 3, LITERT = 4 };   
 
 
-/* ONNX Execution Providers:      0-14
+/* ONNX Execution Providers:      0-15
  * TFLite Delegates:            100-103
  * NCNN backends:               200-202
  * MNN backends:                300-307
@@ -29,14 +29,15 @@ enum class BackendId {
     ONNX_DML          = 2,
     ONNX_OPENVINO_CPU = 3,
     ONNX_OPENVINO_GPU = 4,
-    ONNX_CUDA         = 5,
-    ONNX_TENSORRT     = 6,
-    ONNX_NNAPI        = 7,
-    ONNX_XNNPACK      = 8,
-    ONNX_QNN_CPU      = 9,
-    ONNX_QNN_GPU      = 10,
-    ONNX_QNN_HTP      = 11,
-    ONNX_LAST         = 14,
+    ONNX_OPENVINO_NPU = 5,
+    ONNX_CUDA         = 6,
+    ONNX_TENSORRT     = 7,
+    ONNX_NNAPI        = 8,
+    ONNX_XNNPACK      = 9,
+    ONNX_QNN_CPU      = 10,
+    ONNX_QNN_GPU      = 11,
+    ONNX_QNN_HTP      = 12,
+    ONNX_LAST         = 13,
 
     /* TFLite */
     TFLITE_CPU         = 100,
@@ -124,7 +125,7 @@ using BackendFactory = std::function<BackendPtr(BackendId)>;
 /* ---------------------------------------------------------------------------
  * Backend family checks
  * -------------------------------------------------------------------------*/
-inline bool is_onnx_backend(BackendId id)   { int v=bid(id); return v>=0  && v<=14;  }
+inline bool is_onnx_backend(BackendId id)   { int v=bid(id); return v>=0  && v<=15;  }
 inline bool is_tflite_backend(BackendId id) { int v=bid(id); return v>=100&& v<=104; }
 inline bool is_ncnn_backend(BackendId id)    { int v=bid(id); return v>=200&& v<=202; }
 inline bool is_mnn_backend(BackendId id)     { int v=bid(id); return v>=300&& v<=307; }
