@@ -239,7 +239,8 @@ echo.
 echo ============================================================
 echo  Running FULL benchmark (warmup=5, repeat=100)...
 echo ============================================================
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=/data/local/tmp/bench_test:/data/local/tmp/bench_test/qnn ADSP_LIBRARY_PATH=/data/local/tmp/bench_test/qnn/hexagon ./%OUT% test_model.onnx --warmup 5 --repeat 100 --threads 4 --csv summary.csv"
+adb shell "rm -f /data/local/tmp/bench_test/summary.csv"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn/hexagon ./%OUT% /data/local/tmp/sports_vlog_online_0129.onnx"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.
@@ -247,8 +248,8 @@ echo ============================================================
 echo  Benchmark exit code: %BENCH_EXIT%
 echo ============================================================
 
-echo Pulling results...
-adb shell "cat /data/local/tmp/bench_test/summary.csv" >> "%ROOT%\summary.csv"
+echo Pulling results (appending data rows only)...
+adb shell "tail -n +2 /data/local/tmp/bench_test/summary.csv" >> "%ROOT%\summary.csv"
 
 echo.
 echo ============================================================

@@ -78,8 +78,9 @@ constexpr const char *filename_from_path(const char *path)
 {
     const char *p = path;
     while (*path) {
-        if (*path == '/' || *path == '\\')
+        if (*path == '/' || *path == '\\') {
             p = path + 1;
+        }
         ++path;
     }
     return p;
@@ -100,7 +101,8 @@ inline int stricmp_(const char *a, const char *b)
 inline int numeric_suffix(const std::string &s)
 {
     size_t pos = s.length();
-    while (pos > 0 && isdigit(static_cast<unsigned char>(s[pos - 1])))
+    while (pos > 0 && isdigit(static_cast<unsigned char>(s[pos - 1]))) {
         --pos;
+    }
     return (pos < s.length()) ? std::atoi(s.c_str() + pos) : 0;
 }

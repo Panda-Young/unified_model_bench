@@ -108,8 +108,9 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
         break;
     }
 
-    if (id_ != BackendId::MNN_CPU)
+    if (id_ != BackendId::MNN_CPU) {
         sched_.backendConfig = &bcfg_;
+    }
 
     LOGI("MNN: forward=%d threads=%d precision=%d",
          sched_.type, num_threads, (int)bcfg_.precision);
@@ -139,8 +140,9 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
 
     auto num_suffix = [](const std::string &s) -> int {
         size_t p = s.length();
-        while (p > 0 && isdigit((unsigned char)s[p - 1]))
+        while (p > 0 && isdigit((unsigned char)s[p - 1])) {
             --p;
+        }
         return (p < s.length()) ? atoi(s.c_str() + p) : 0;
     };
     std::sort(sorted_in.begin(), sorted_in.end(),
@@ -194,11 +196,13 @@ bool MNNBackend::QueryIOInfo(std::string &is, size_t &ie,
     for (size_t i = 0; i < num_inputs_; ++i) {
         char buf[128] = {};
         int off = snprintf(buf, sizeof(buf), "[");
-        for (size_t d = 0; d < input_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < input_shapes_[i].size(); ++d) {
             off += snprintf(buf + off, sizeof(buf) - off, "%s%d", d > 0 ? "," : "", input_shapes_[i][d]);
+        }
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0)
+        if (i > 0) {
             is += " ";
+        }
         is += buf;
         ie += input_elems_[i];
     }
@@ -207,11 +211,13 @@ bool MNNBackend::QueryIOInfo(std::string &is, size_t &ie,
     for (size_t i = 0; i < num_outputs_; ++i) {
         char buf[128] = {};
         int off = snprintf(buf, sizeof(buf), "[");
-        for (size_t d = 0; d < output_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < output_shapes_[i].size(); ++d) {
             off += snprintf(buf + off, sizeof(buf) - off, "%s%d", d > 0 ? "," : "", output_shapes_[i][d]);
+        }
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0)
+        if (i > 0) {
             os += " ";
+        }
         os += buf;
         oe += output_elems_[i];
     }
@@ -229,19 +235,22 @@ bool MNNBackend::PrepareInputs(float *&fd, size_t &fe, const char * /*arg*/,
             input_buf_elems_.resize(i + 1, 0);
             input_external_.resize(i + 1, false);
         }
-        if (input_bufs_[i] && !input_external_[i])
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
 
         if (ext && ext[i] && extc && extc[i] == n) {
             input_bufs_[i] = const_cast<float *>(ext[i]);
             input_external_[i] = true;
         } else {
             float *buf = (float *)malloc(n * sizeof(float));
-            if (!buf)
+            if (!buf) {
                 return false;
+            }
             if (random) {
-                for (size_t j = 0; j < n; ++j)
+                for (size_t j = 0; j < n; ++j) {
                     buf[j] = (float)rand() / (float)RAND_MAX;
+                }
             } else {
                 memset(buf, 0, n * sizeof(float));
             }
@@ -280,15 +289,17 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     maxv = 0;
     minv = 1e12;
     maxi = 0;
-    if (num_inputs_ == 0 || num_outputs_ == 0)
+    if (num_inputs_ == 0 || num_outputs_ == 0) {
         return false;
+    }
 
     /* Helper: copy host data to MNN input tensors */
     auto feed_inputs = [&]() {
         for (size_t i = 0; i < num_inputs_; ++i) {
             MNN::Tensor *t = interp_->getSessionInput(session_, input_names_[i].c_str());
-            if (!t || !input_bufs_[i])
+            if (!t || !input_bufs_[i]) {
                 continue;
+            }
             size_t n = input_elems_[i];
             float *host = t->host<float>();
             if (host) {
@@ -313,8 +324,9 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
 
     /* Allocate output snapshots */
     std::vector<std::vector<float>> snaps(num_outputs_);
-    for (size_t i = 0; i < num_outputs_; ++i)
+    for (size_t i = 0; i < num_outputs_; ++i) {
         snaps[i].resize(output_elems_[i] > 0 ? output_elems_[i] : 1);
+    }
 
     interp_->resizeSession(session_);
     feed_inputs();
@@ -345,8 +357,9 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         /* Snapshot outputs */
         for (size_t i = 0; i < num_outputs_; ++i) {
             MNN::Tensor *t = output_tensors_[i];
-            if (!t)
+            if (!t) {
                 continue;
+            }
             auto host = t->host<float>();
             if (host) {
                 memcpy(snaps[i].data(), host, output_elems_[i] * sizeof(float));
@@ -354,8 +367,9 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
                 MNN::Tensor *ht = MNN::Tensor::createHostTensorFromDevice(t, true);
                 if (ht) {
                     float *hp = ht->host<float>();
-                    if (hp)
+                    if (hp) {
                         memcpy(snaps[i].data(), hp, output_elems_[i] * sizeof(float));
+                    }
                     MNN::Tensor::destroy(ht);
                 }
             }
@@ -368,8 +382,9 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
             maxv = ms;
             maxi = r;
         }
-        if (ms < minv)
+        if (ms < minv) {
             minv = ms;
+        }
     }
 
     odata.resize(num_outputs_);
@@ -388,8 +403,9 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         oelems[i] = n;
         auto &sh = oshapes[i];
         sh.fill(0);
-        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d)
+        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d) {
             sh[d] = (size_t)output_shapes_[i][d];
+        }
         odims[i] = output_shapes_[i].size();
     }
     return true;
@@ -411,9 +427,11 @@ void MNNBackend::Cleanup()
     }
     interp_ = nullptr;
 
-    for (size_t i = 0; i < input_bufs_.size(); ++i)
-        if (input_bufs_[i] && !input_external_[i])
+    for (size_t i = 0; i < input_bufs_.size(); ++i) {
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
+    }
     input_bufs_.clear();
 }
 

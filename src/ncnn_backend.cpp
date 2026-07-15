@@ -88,8 +88,9 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
 
     while (fgets(line, sizeof(line), f)) {
         size_t len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
             line[--len] = '\0';
+        }
 
         if (strncmp(line, "inputs=", 7) == 0) {
             num_in = atoi(line + 7);
@@ -98,8 +99,9 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
         } else if (strncmp(line, "in", 2) == 0 && strncmp(line, "input", 5) != 0) {
             /* in0=1,4,2048,8 */
             char *eq = strchr(line, '=');
-            if (!eq)
+            if (!eq) {
                 continue;
+            }
             /* Name before = */
             std::string name(line, eq - line);
             input_names_.push_back(name);
@@ -113,16 +115,18 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
                 shape.push_back(d);
                 elems *= (size_t)d;
                 p = strchr(p, ',');
-                if (!p)
+                if (!p) {
                     break;
+                }
                 ++p;
             }
             input_shapes_.push_back(shape);
             input_elems_.push_back(elems);
         } else if (strncmp(line, "out", 3) == 0) {
             char *eq = strchr(line, '=');
-            if (!eq)
+            if (!eq) {
                 continue;
+            }
             std::string name(line, eq - line);
             output_names_.push_back(name);
 
@@ -135,16 +139,18 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
                 shape.push_back(d);
                 elems *= (size_t)d;
                 p = strchr(p, ',');
-                if (!p)
+                if (!p) {
                     break;
+                }
                 ++p;
             }
             output_shapes_.push_back(shape);
             output_elems_.push_back(elems);
         }
     }
-    if (fclose(f) != 0)
+    if (fclose(f) != 0) {
         LOGW("NCNN: fclose(%s) failed: %s, %d", shapes_path, strerror(errno), errno);
+    }
 
     num_inputs_ = input_names_.size();
     num_outputs_ = output_names_.size();
@@ -166,22 +172,25 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
     /* Strip .param */
     if (base.length() > 6) {
         auto tail6 = base.substr(base.length() - 6);
-        if (stricmp_(tail6.c_str(), ".param") == 0)
+        if (stricmp_(tail6.c_str(), ".param") == 0) {
             base = base.substr(0, base.length() - 6);
+        }
     }
     /* Strip .ncnn if present (the file is model.ncnn.param, we want model) */
     if (base.length() > 5) {
         auto tail5 = base.substr(base.length() - 5);
-        if (stricmp_(tail5.c_str(), ".ncnn") == 0)
+        if (stricmp_(tail5.c_str(), ".ncnn") == 0) {
             base = base.substr(0, base.length() - 5);
+        }
     }
 
     std::string bin_path = base + ".ncnn.bin";
     std::string shapes_path = base + ".shapes";
 
     /* Read shapes first */
-    if (!ReadShapesFile(shapes_path.c_str()))
+    if (!ReadShapesFile(shapes_path.c_str())) {
         return false;
+    }
 
     net_ = new ncnn::Net();
     net_->opt.num_threads = num_threads;
@@ -196,8 +205,9 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
         std::string fp16_bin = base + "_fp16.ncnn.bin";
         FILE *test_fp16 = fopen(fp16_bin.c_str(), "r");
         if (test_fp16) {
-            if (fclose(test_fp16) != 0)
+            if (fclose(test_fp16) != 0) {
                 LOGW("NCNN: fclose(%s) failed: %s, %d", fp16_bin.c_str(), strerror(errno), errno);
+            }
             bin_path = fp16_bin;
             LOGI("NCNN: using FP16 weights: %s", fp16_bin.c_str());
         } else {
@@ -260,11 +270,13 @@ bool NCNNBackend::QueryIOInfo(std::string &is, size_t &ie,
     for (size_t i = 0; i < num_inputs_; ++i) {
         char buf[128] = {};
         int off = snprintf(buf, sizeof(buf), "[");
-        for (size_t d = 0; d < input_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < input_shapes_[i].size(); ++d) {
             off += snprintf(buf + off, sizeof(buf) - off, "%s%d", d > 0 ? "," : "", input_shapes_[i][d]);
+        }
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0)
+        if (i > 0) {
             is += " ";
+        }
         is += buf;
         ie += input_elems_[i];
     }
@@ -273,11 +285,13 @@ bool NCNNBackend::QueryIOInfo(std::string &is, size_t &ie,
     for (size_t i = 0; i < num_outputs_; ++i) {
         char buf[128] = {};
         int off = snprintf(buf, sizeof(buf), "[");
-        for (size_t d = 0; d < output_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < output_shapes_[i].size(); ++d) {
             off += snprintf(buf + off, sizeof(buf) - off, "%s%d", d > 0 ? "," : "", output_shapes_[i][d]);
+        }
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0)
+        if (i > 0) {
             os += " ";
+        }
         os += buf;
         oe += output_elems_[i];
     }
@@ -295,19 +309,22 @@ bool NCNNBackend::PrepareInputs(float *&fd, size_t &fe, const char * /*arg*/,
             input_buf_elems_.resize(i + 1, 0);
             input_external_.resize(i + 1, false);
         }
-        if (input_bufs_[i] && !input_external_[i])
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
 
         if (ext && ext[i] && extc && extc[i] == n) {
             input_bufs_[i] = const_cast<float *>(ext[i]);
             input_external_[i] = true;
         } else {
             float *buf = (float *)malloc(n * sizeof(float));
-            if (!buf)
+            if (!buf) {
                 return false;
+            }
             if (random) {
-                for (size_t j = 0; j < n; ++j)
+                for (size_t j = 0; j < n; ++j) {
                     buf[j] = (float)rand() / (float)RAND_MAX;
+                }
             } else {
                 memset(buf, 0, n * sizeof(float));
             }
@@ -346,12 +363,14 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     maxv = 0;
     minv = 1e12;
     maxi = 0;
-    if (num_inputs_ == 0 || num_outputs_ == 0)
+    if (num_inputs_ == 0 || num_outputs_ == 0) {
         return false;
+    }
 
     std::vector<std::vector<float>> snaps(num_outputs_);
-    for (size_t i = 0; i < num_outputs_; ++i)
+    for (size_t i = 0; i < num_outputs_; ++i) {
         snaps[i].resize(output_elems_[i] > 0 ? output_elems_[i] : 1);
+    }
 
     /* Build ncnn::Mat inputs (NCNN uses [w,h,c] order internally) */
     auto build_inputs = [&]() -> std::vector<ncnn::Mat> {
@@ -370,8 +389,9 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     for (int w = 0; w < warmup; ++w) {
         ncnn::Extractor ex = net_->create_extractor();
         auto mats = build_inputs();
-        for (size_t i = 0; i < num_inputs_; ++i)
+        for (size_t i = 0; i < num_inputs_; ++i) {
             ex.input(input_names_[i].c_str(), mats[i]);
+        }
         for (size_t i = 0; i < num_outputs_; ++i) {
             ncnn::Mat out;
             ex.extract(output_names_[i].c_str(), out);
@@ -381,8 +401,9 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     for (int r = 0; r < repeat; ++r) {
         ncnn::Extractor ex = net_->create_extractor();
         auto mats = build_inputs();
-        for (size_t i = 0; i < num_inputs_; ++i)
+        for (size_t i = 0; i < num_inputs_; ++i) {
             ex.input(input_names_[i].c_str(), mats[i]);
+        }
 
         auto t0 = std::chrono::high_resolution_clock::now();
         for (size_t i = 0; i < num_outputs_; ++i) {
@@ -404,8 +425,9 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
             maxv = ms;
             maxi = r;
         }
-        if (ms < minv)
+        if (ms < minv) {
             minv = ms;
+        }
     }
 
     odata.resize(num_outputs_);
@@ -424,8 +446,9 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         oelems[i] = n;
         auto &sh = oshapes[i];
         sh.fill(0);
-        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d)
+        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d) {
             sh[d] = (size_t)output_shapes_[i][d];
+        }
         odims[i] = output_shapes_[i].size();
     }
     return true;
@@ -449,9 +472,11 @@ void NCNNBackend::Cleanup()
         delete net_;
         net_ = nullptr;
     }
-    for (size_t i = 0; i < input_bufs_.size(); ++i)
-        if (input_bufs_[i] && !input_external_[i])
+    for (size_t i = 0; i < input_bufs_.size(); ++i) {
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
+    }
     input_bufs_.clear();
 }
 

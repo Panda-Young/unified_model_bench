@@ -56,18 +56,21 @@ static std::vector<size_t> parse_input_element_counts(const std::string &shape_s
     size_t pos = 0;
     while ((pos = s.find('[')) != std::string::npos) {
         auto end = s.find(']', pos);
-        if (end == std::string::npos)
+        if (end == std::string::npos) {
             break;
+        }
         std::string dims = s.substr(pos + 1, end - pos - 1);
         size_t elems = 1;
         size_t cp = 0;
         while (cp < dims.length()) {
             auto nc = dims.find(',', cp);
-            if (nc == std::string::npos)
+            if (nc == std::string::npos) {
                 nc = dims.length();
+            }
             int d = atoi(dims.substr(cp, nc - cp).c_str());
-            if (d > 0)
+            if (d > 0) {
                 elems *= (size_t)d;
+            }
             cp = nc + 1;
         }
         counts.push_back(elems);
@@ -123,8 +126,9 @@ bool BenchmarkRunner::Run()
     LOGI("Reference: %s (%s)", model_format_name(ref_var->format),
          ref_var->path.c_str());
 
-    for (const auto *var : variants)
+    for (const auto *var : variants) {
         TestVariant(*var, *ref_var);
+    }
 
     /* Records are already written incrementally via AppendCsv.
      * No final ExportCsv needed (it would truncate previous runs). */
@@ -180,13 +184,15 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
         /* Strip trailing .param or .ncnn.param to get base name */
         if (base.length() > 6) {
             auto tail6 = base.substr(base.length() - 6);
-            if (stricmp_(tail6.c_str(), ".param") == 0)
+            if (stricmp_(tail6.c_str(), ".param") == 0) {
                 base = base.substr(0, base.length() - 6);
+            }
         }
         if (base.length() > 5) {
             auto tail5 = base.substr(base.length() - 5);
-            if (stricmp_(tail5.c_str(), ".ncnn") == 0)
+            if (stricmp_(tail5.c_str(), ".ncnn") == 0) {
                 base = base.substr(0, base.length() - 5);
+            }
         }
         ncnn_shapes = base + ".shapes";
 
@@ -199,8 +205,9 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
             std::vector<size_t> sizes;
             while (fgets(line, sizeof(line), f)) {
                 /* Skip the "inputs=N" / "outputs=N" header lines */
-                if (strncmp(line, "inputs=", 7) == 0 || strncmp(line, "outputs=", 8) == 0)
+                if (strncmp(line, "inputs=", 7) == 0 || strncmp(line, "outputs=", 8) == 0) {
                     continue;
+                }
                 if (strncmp(line, "in", 2) == 0 && strchr(line, '=')) {
                     const char *dims = strchr(line, '=') + 1;
                     size_t elems = 1;
@@ -208,8 +215,9 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
                     while (*p) {
                         elems *= (size_t)atoi(p);
                         p = strchr(p, ',');
-                        if (!p)
+                        if (!p) {
                             break;
+                        }
                         ++p;
                     }
                     sizes.push_back(elems);
@@ -227,8 +235,9 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
          * Fall back to GPU delegate which handles Flex ops via GL shaders. */
         if (fmt == ModelFormat::TFLITE) {
             for (auto &bc : backends) {
-                if (bc.id != cpu_id)
+                if (bc.id != cpu_id) {
                     candidate_ids.push_back(bc.id);
+                }
             }
         }
         for (auto cid : candidate_ids) {
@@ -328,8 +337,9 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
             collector_.CompareWithBaseline(ref_fmt, cmp_data, cmp_elems,
                                            max_diff, avg_diff, elem_count);
             double cpu_ms = collector_.GetCpuBaselineMs(ref_fmt);
-            if (cpu_ms > 0)
+            if (cpu_ms > 0) {
                 accel = cpu_ms / avg_ms;
+            }
         }
     }
 
@@ -351,15 +361,20 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
 
     /* Record */
     BenchmarkRecord rec;
-    rec.model_name = model_path;
+    /* Strip directory path, keep only the filename */
+    {
+        auto last_slash = model_path.find_last_of("/\\");
+        rec.model_name = (last_slash != std::string::npos) ? model_path.substr(last_slash + 1) : model_path;
+    }
     /* For NCNN: use .bin instead of .param (weights file varies, param is same) */
     if (fmt == ModelFormat::NCNN) {
         auto pos = rec.model_name.rfind(".ncnn.param");
         if (pos != std::string::npos) {
-            if (bcfg.id == BackendId::NCNN_VULKAN_FP16)
+            if (bcfg.id == BackendId::NCNN_VULKAN_FP16) {
                 rec.model_name.replace(pos, 12, "_fp16.ncnn.bin");
-            else
+            } else {
                 rec.model_name.replace(pos, 12, ".ncnn.bin");
+            }
         }
     }
     rec.input_shape_str = is;
@@ -386,14 +401,16 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     collector_.Add(rec);
 
     /* Append CSV (crash-safe), using frozen batch timestamp */
-    if (cfg_.enable_csv)
+    if (cfg_.enable_csv) {
         collector_.AppendCsv(rec, cfg_.csv_path.c_str(),
                              batch_date_.c_str(), batch_time_.c_str(),
                              app_name_str());
+    }
 
     /* Free output buffers */
-    for (auto *p : odata)
+    for (auto *p : odata) {
         free(p);
+    }
 
     return true;
 }

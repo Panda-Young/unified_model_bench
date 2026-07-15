@@ -19,8 +19,9 @@ int main(int argc, char *argv[])
         LOGI("Unified Benchmark Tool v2.0 (C++)  Arch: %s", ARCH_STR);
 
         BenchConfig cfg;
-        if (!parse_cmd_args(argc, argv, cfg))
+        if (!parse_cmd_args(argc, argv, cfg)) {
             return 1;
+        }
 
         LOGI("Model: %s  Repeat: %d  Warmup: %d  Threads: %d",
              cfg.model_path.c_str(), cfg.repeat, cfg.warmup_runs, cfg.num_threads);
@@ -29,8 +30,9 @@ int main(int argc, char *argv[])
         ResultCollector collector;
         BenchmarkRunner runner(cfg, collector);
         bool ok = runner.Run();
-        if (!ok)
+        if (!ok) {
             LOGW("Completed with warnings");
+        }
         return ok ? 0 : 1;
 
     } catch (const std::exception &e) {

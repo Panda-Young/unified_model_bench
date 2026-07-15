@@ -44,19 +44,24 @@ inline ModelFormat detect_model_format(const std::string &path)
 {
     /* Extension check */
     auto ends_with = [](const std::string &s, const std::string &suffix) -> bool {
-        if (s.length() < suffix.length())
+        if (s.length() < suffix.length()) {
             return false;
+        }
         return stricmp_(s.c_str() + s.length() - suffix.length(), suffix.c_str()) == 0;
     };
 
-    if (ends_with(path, ".onnx"))
+    if (ends_with(path, ".onnx")) {
         return ModelFormat::ONNX;
-    if (ends_with(path, ".tflite"))
+    }
+    if (ends_with(path, ".tflite")) {
         return ModelFormat::TFLITE;
-    if (ends_with(path, ".param"))
+    }
+    if (ends_with(path, ".param")) {
         return ModelFormat::NCNN;
-    if (ends_with(path, ".mnn"))
+    }
+    if (ends_with(path, ".mnn")) {
         return ModelFormat::MNN;
+    }
 
     /* Magic-number fallback for ONNX */
     FILE *f = fopen(path.c_str(), "rb");
@@ -64,8 +69,9 @@ inline ModelFormat detect_model_format(const std::string &path)
         char buf[12] = {};
         size_t n = fread(buf, 1, 12, f);
         fclose(f);
-        if (n >= 12 && memcmp(buf + 8, "ONNX", 4) == 0)
+        if (n >= 12 && memcmp(buf + 8, "ONNX", 4) == 0) {
             return ModelFormat::ONNX;
+        }
     }
     return ModelFormat::UNKNOWN;
 }

@@ -85,8 +85,9 @@ namespace BackendRegistry
             default:
                 break;
             }
-            if (match)
+            if (match) {
                 result.push_back(entry.config);
+            }
         }
         /* Sort by ID */
         std::sort(result.begin(), result.end(),
@@ -100,8 +101,9 @@ namespace BackendRegistry
     {
         std::lock_guard<std::mutex> lock(g_registry_mutex);
         auto it = g_registry.find(bid(id));
-        if (it == g_registry.end())
+        if (it == g_registry.end()) {
             return nullptr;
+        }
         return &it->second.config;
     }
 

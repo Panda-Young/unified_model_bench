@@ -15,16 +15,18 @@
 FormatBaseline *ResultCollector::get_baseline(ModelFormat fmt)
 {
     int idx = static_cast<int>(fmt);
-    if (idx < 0 || idx >= (int)baselines_.size())
+    if (idx < 0 || idx >= (int)baselines_.size()) {
         return nullptr;
+    }
     return &baselines_[idx];
 }
 
 const FormatBaseline *ResultCollector::get_baseline(ModelFormat fmt) const
 {
     int idx = static_cast<int>(fmt);
-    if (idx < 0 || idx >= (int)baselines_.size())
+    if (idx < 0 || idx >= (int)baselines_.size()) {
         return nullptr;
+    }
     return &baselines_[idx];
 }
 
@@ -97,8 +99,9 @@ bool ResultCollector::CompareWithBaseline(ModelFormat fmt, const float *data,
         return false;
     }
 
-    if (n == 0)
+    if (n == 0) {
         return false;
+    }
 
     double sum_abs = 0.0;
     double max_abs = 0.0;
@@ -118,8 +121,9 @@ bool ResultCollector::CompareWithBaseline(ModelFormat fmt, const float *data,
         }
         double diff = fabs(da - db);
         sum_abs += diff;
-        if (diff > max_abs)
+        if (diff > max_abs) {
             max_abs = diff;
+        }
     }
 
     if (nan_count > 0) {
@@ -182,15 +186,19 @@ bool ResultCollector::AppendCsv(const BenchmarkRecord &rec, const char *path,
     bool need_header = true;
     FILE *check = fopen(path, "r");
     if (check) {
-        if (fseek(check, 0, SEEK_END) != 0)
+        if (fseek(check, 0, SEEK_END) != 0) {
             LOGW("fseek(%s) failed: %s, %d", path, strerror(errno), errno);
+        }
         long sz = ftell(check);
-        if (sz < 0)
+        if (sz < 0) {
             LOGW("ftell(%s) failed: %s, %d", path, strerror(errno), errno);
-        if (fclose(check) != 0)
+        }
+        if (fclose(check) != 0) {
             LOGW("fclose(%s) failed: %s, %d", path, strerror(errno), errno);
-        if (sz > 0)
+        }
+        if (sz > 0) {
             need_header = false;
+        }
     }
 
     FILE *f = fopen(path, "a");

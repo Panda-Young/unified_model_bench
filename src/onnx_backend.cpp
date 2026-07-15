@@ -388,8 +388,9 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
         snprintf(ep_path, sizeof(ep_path), "deps/onnxruntime/lib/%s/%s/onnxruntime.dll",
                  arch_dir, ep_subdir);
         lib_handle_ = load_library(ep_path);
-        if (!lib_handle_)
+        if (!lib_handle_) {
             LOGW("ONNX: %s not found, trying default CPU DLL", ep_path);
+        }
     }
     if (!lib_handle_) {
         /* Default CPU DLL */
@@ -483,8 +484,9 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     (void)ort_->GetAllocatorWithDefaultOptions(&alloc_);
 
     auto t6 = std::chrono::high_resolution_clock::now();
-    if (!QueryIOMetadata())
+    if (!QueryIOMetadata()) {
         return false;
+    }
     timing_[7] = std::chrono::duration<double, std::milli>(
                      std::chrono::high_resolution_clock::now() - t6)
                      .count();
@@ -529,9 +531,11 @@ bool ONNXBackend::QueryIOMetadata()
         std::vector<int64_t> dims(nd);
         (void)ort_->GetDimensions(si, dims.data(), nd);
         size_t elems = 1;
-        for (auto d : dims)
-            if (d > 0)
+        for (auto d : dims) {
+            if (d > 0) {
                 elems *= (size_t)d;
+            }
+        }
         input_elems_.push_back(elems);
         input_shapes_.push_back(std::move(dims));
         ort_->ReleaseTypeInfo(ti);
@@ -549,9 +553,11 @@ bool ONNXBackend::QueryIOMetadata()
         std::vector<int64_t> dims(nd);
         (void)ort_->GetDimensions(si, dims.data(), nd);
         size_t elems = 1;
-        for (auto d : dims)
-            if (d > 0)
+        for (auto d : dims) {
+            if (d > 0) {
                 elems *= (size_t)d;
+            }
+        }
         output_elems_.push_back(elems);
         output_shapes_.push_back(std::move(dims));
         ort_->ReleaseTypeInfo(ti);
@@ -569,11 +575,13 @@ bool ONNXBackend::QueryIOInfo(std::string &is, size_t &ie, std::string &os, size
     for (size_t i = 0; i < num_inputs_; ++i) {
         char b[128] = {};
         int o = snprintf(b, sizeof(b), "[");
-        for (size_t d = 0; d < input_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < input_shapes_[i].size(); ++d) {
             o += snprintf(b + o, sizeof(b) - o, "%s%lld", d > 0 ? "," : "", (long long)input_shapes_[i][d]);
+        }
         snprintf(b + o, sizeof(b) - o, "]");
-        if (i > 0)
+        if (i > 0) {
             is += ";";
+        }
         is += b;
         ie += input_elems_[i];
     }
@@ -582,11 +590,13 @@ bool ONNXBackend::QueryIOInfo(std::string &is, size_t &ie, std::string &os, size
     for (size_t i = 0; i < num_outputs_; ++i) {
         char b[128] = {};
         int o = snprintf(b, sizeof(b), "[");
-        for (size_t d = 0; d < output_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < output_shapes_[i].size(); ++d) {
             o += snprintf(b + o, sizeof(b) - o, "%s%lld", d > 0 ? "," : "", (long long)output_shapes_[i][d]);
+        }
         snprintf(b + o, sizeof(b) - o, "]");
-        if (i > 0)
+        if (i > 0) {
             os += ";";
+        }
         os += b;
         oe += output_elems_[i];
     }
@@ -605,8 +615,9 @@ bool ONNXBackend::PrepareInputs(float *&fd, size_t &fe, const char *, bool rando
             input_buf_elems_.resize(i + 1, 0);
             input_external_.resize(i + 1, false);
         }
-        if (input_bufs_[i] && !input_external_[i])
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
         if (ext && ext[i] && extc && extc[i] == n) {
             input_bufs_[i] = (float *)ext[i];
             input_external_[i] = true;
@@ -617,10 +628,12 @@ bool ONNXBackend::PrepareInputs(float *&fd, size_t &fe, const char *, bool rando
                 return false;
             }
             if (random) {
-                for (size_t j = 0; j < n; ++j)
+                for (size_t j = 0; j < n; ++j) {
                     b[j] = (float)rand() / (float)RAND_MAX;
-            } else
+                }
+            } else {
                 memset(b, 0, n * sizeof(float));
+            }
             input_bufs_[i] = b;
             input_external_[i] = false;
         }
@@ -655,8 +668,9 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
     maxv = 0;
     minv = 1e12;
     maxi = 0;
-    if (num_inputs_ == 0 || num_outputs_ == 0)
+    if (num_inputs_ == 0 || num_outputs_ == 0) {
         return false;
+    }
 
     OrtStatus *st = ort_->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &mem_info_);
     if (st) {
@@ -665,8 +679,9 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
     }
 
     std::vector<std::vector<float>> snaps(num_outputs_);
-    for (size_t i = 0; i < num_outputs_; ++i)
+    for (size_t i = 0; i < num_outputs_; ++i) {
         snaps[i].resize(output_elems_[i] ? output_elems_[i] : 1);
+    }
 
     auto create_inputs = [&]() -> std::vector<OrtValue *> {
         std::vector<OrtValue *> vals(num_inputs_, nullptr);
@@ -675,8 +690,9 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
             st = ort_->CreateTensorWithDataAsOrtValue(mem_info_, input_bufs_[i], n * sizeof(float), input_shapes_[i].data(), input_shapes_[i].size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &vals[i]);
             if (st) {
                 ort_->ReleaseStatus(st);
-                for (size_t j = 0; j < i; ++j)
+                for (size_t j = 0; j < i; ++j) {
                     ort_->ReleaseValue(vals[j]);
+                }
                 return {};
             }
         }
@@ -686,21 +702,26 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
     (void)warmup; /* total_runs not logged at INFO level */
     for (int w = 0; w < warmup; ++w) {
         auto in = create_inputs();
-        if (in.empty())
+        if (in.empty()) {
             return false;
+        }
         std::vector<OrtValue *> out(num_outputs_, nullptr);
         (void)ort_->Run(session_, nullptr, (const char *const *)input_names_.data(), in.data(), num_inputs_, (const char *const *)output_names_.data(), num_outputs_, out.data());
-        for (auto &v : in)
+        for (auto &v : in) {
             ort_->ReleaseValue(v);
-        for (auto &v : out)
-            if (v)
+        }
+        for (auto &v : out) {
+            if (v) {
                 ort_->ReleaseValue(v);
+            }
+        }
     }
 
     for (int r = 0; r < repeat; ++r) {
         auto in = create_inputs();
-        if (in.empty())
+        if (in.empty()) {
             return false;
+        }
         auto t0 = std::chrono::high_resolution_clock::now();
         std::vector<OrtValue *> out(num_outputs_, nullptr);
         st = ort_->Run(session_, nullptr, (const char *const *)input_names_.data(), in.data(), num_inputs_, (const char *const *)output_names_.data(), num_outputs_, out.data());
@@ -709,33 +730,41 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
         if (st) {
             LOGE("ONNX:Run failed at %d", r);
             ort_->ReleaseStatus(st);
-            for (auto &v : in)
+            for (auto &v : in) {
                 ort_->ReleaseValue(v);
-            for (auto &v : out)
-                if (v)
+            }
+            for (auto &v : out) {
+                if (v) {
                     ort_->ReleaseValue(v);
+                }
+            }
             return false;
         }
         for (size_t i = 0; i < num_outputs_; ++i) {
             if (out[i]) {
                 float *fp = nullptr;
                 (void)ort_->GetTensorMutableData(out[i], (void **)&fp);
-                if (fp)
+                if (fp) {
                     memcpy(snaps[i].data(), fp, output_elems_[i] * sizeof(float));
+                }
             }
         }
-        for (auto &v : in)
+        for (auto &v : in) {
             ort_->ReleaseValue(v);
-        for (auto &v : out)
-            if (v)
+        }
+        for (auto &v : out) {
+            if (v) {
                 ort_->ReleaseValue(v);
+            }
+        }
         total += ms;
         if (ms > maxv) {
             maxv = ms;
             maxi = r;
         }
-        if (ms < minv)
+        if (ms < minv) {
             minv = ms;
+        }
     }
 
     odata.resize(num_outputs_);
@@ -754,8 +783,9 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
         oelems[i] = n;
         auto &sh = oshapes[i];
         sh.fill(0);
-        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d)
+        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d) {
             sh[d] = (size_t)output_shapes_[i][d];
+        }
         odims[i] = output_shapes_[i].size();
     }
 
@@ -766,8 +796,9 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
 
 void ONNXBackend::GetTiming(std::array<double, 10> &t)
 {
-    for (int i = 0; i < 10; ++i)
+    for (int i = 0; i < 10; ++i) {
         t[i] = timing_[i];
+    }
     t[0] = init_ms_;
 }
 bool ONNXBackend::SaveOutputs(const char *) { return true; }
@@ -790,17 +821,23 @@ void ONNXBackend::Cleanup()
         ort_->ReleaseEnv(env_);
         env_ = nullptr;
     }
-    for (auto *n : input_names_)
-        if (alloc_)
+    for (auto *n : input_names_) {
+        if (alloc_) {
             alloc_->Free(alloc_, n);
-    for (auto *n : output_names_)
-        if (alloc_)
+        }
+    }
+    for (auto *n : output_names_) {
+        if (alloc_) {
             alloc_->Free(alloc_, n);
+        }
+    }
     input_names_.clear();
     output_names_.clear();
-    for (size_t i = 0; i < input_bufs_.size(); ++i)
-        if (input_bufs_[i] && !input_external_[i])
+    for (size_t i = 0; i < input_bufs_.size(); ++i) {
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
+    }
     input_bufs_.clear();
 }
 

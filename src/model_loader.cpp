@@ -32,8 +32,9 @@ static std::string get_directory(const std::string &path)
 
 static bool ends_with_icase(const std::string &s, const std::string &suffix)
 {
-    if (s.length() < suffix.length())
+    if (s.length() < suffix.length()) {
         return false;
+    }
 #ifdef _WIN32
     return stricmp_(s.c_str() + s.length() - suffix.length(), suffix.c_str()) == 0;
 #else
@@ -51,15 +52,16 @@ std::string extract_base_name(const std::string &path)
     std::string fname = (pos != std::string::npos) ? path.substr(pos + 1) : path;
 
     /* Handle compound extensions like .ncnn.param */
-    if (ends_with_icase(fname, ".ncnn.param"))
+    if (ends_with_icase(fname, ".ncnn.param")) {
         fname = fname.substr(0, fname.length() - 12);
-    else if (ends_with_icase(fname, ".ncnn.bin"))
+    } else if (ends_with_icase(fname, ".ncnn.bin"))
         fname = fname.substr(0, fname.length() - 9);
 
     /* Strip last extension */
     auto dot = fname.find_last_of('.');
-    if (dot != std::string::npos)
+    if (dot != std::string::npos) {
         fname = fname.substr(0, dot);
+    }
 
     return fname;
 }
@@ -71,11 +73,13 @@ std::string build_model_path(const std::string &dir, const std::string &base,
                              const std::string &ext)
 {
     std::string p = dir;
-    if (!p.empty() && p.back() != '/' && p.back() != '\\')
+    if (!p.empty() && p.back() != '/' && p.back() != '\\') {
         p += PATH_SEP;
+    }
     p += base;
-    if (!ext.empty() && ext[0] != '.')
+    if (!ext.empty() && ext[0] != '.') {
         p += '.';
+    }
     p += ext;
     return p;
 }
@@ -94,14 +98,16 @@ static ModelSearchResult search_variant(const std::string &dir,
     r.variant_name = variant_name;
 
     std::string primary = build_model_path(dir, base, ext);
-    if (!file_exists(primary.c_str()))
+    if (!file_exists(primary.c_str())) {
         return r;
+    }
 
     /* For NCNN: need both .param and .bin */
     if (fmt == ModelFormat::NCNN) {
         std::string bin = build_model_path(dir, base, bin_ext);
-        if (!file_exists(bin.c_str()))
+        if (!file_exists(bin.c_str())) {
             return r;
+        }
     }
 
     r.found = true;
@@ -129,24 +135,32 @@ ModelBundle search_model_variants(const std::string &ref_path)
     bundle.mnn_model = search_variant(dir, base, "mnn", "", "MNN converted", ModelFormat::MNN);
 
     bundle.total_variants = 0;
-    if (bundle.onnx_model.found)
+    if (bundle.onnx_model.found) {
         ++bundle.total_variants;
-    if (bundle.tflite_model.found)
+    }
+    if (bundle.tflite_model.found) {
         ++bundle.total_variants;
-    if (bundle.ncnn_model.found)
+    }
+    if (bundle.ncnn_model.found) {
         ++bundle.total_variants;
-    if (bundle.mnn_model.found)
+    }
+    if (bundle.mnn_model.found) {
         ++bundle.total_variants;
+    }
 
     LOGI("Model discovery: base='%s', found %d variant(s)", base.c_str(), bundle.total_variants);
-    if (bundle.onnx_model.found)
+    if (bundle.onnx_model.found) {
         LOGI("  ONNX:   %s", bundle.onnx_model.path.c_str());
-    if (bundle.tflite_model.found)
+    }
+    if (bundle.tflite_model.found) {
         LOGI("  TFLite: %s", bundle.tflite_model.path.c_str());
-    if (bundle.ncnn_model.found)
+    }
+    if (bundle.ncnn_model.found) {
         LOGI("  NCNN:   %s", bundle.ncnn_model.path.c_str());
-    if (bundle.mnn_model.found)
+    }
+    if (bundle.mnn_model.found) {
         LOGI("  MNN:    %s", bundle.mnn_model.path.c_str());
+    }
 
     return bundle;
 }
@@ -154,13 +168,17 @@ ModelBundle search_model_variants(const std::string &ref_path)
 std::vector<const ModelSearchResult *> ModelBundle::all_found() const
 {
     std::vector<const ModelSearchResult *> v;
-    if (onnx_model.found)
+    if (onnx_model.found) {
         v.push_back(&onnx_model);
-    if (tflite_model.found)
+    }
+    if (tflite_model.found) {
         v.push_back(&tflite_model);
-    if (ncnn_model.found)
+    }
+    if (ncnn_model.found) {
         v.push_back(&ncnn_model);
-    if (mnn_model.found)
+    }
+    if (mnn_model.found) {
         v.push_back(&mnn_model);
+    }
     return v;
 }

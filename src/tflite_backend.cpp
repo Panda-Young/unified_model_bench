@@ -165,10 +165,12 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
 
     num_inputs_ = TfLiteInterpreterGetInputTensorCount(interp_);
     num_outputs_ = TfLiteInterpreterGetOutputTensorCount(interp_);
-    if (num_inputs_ > MAX_IO)
+    if (num_inputs_ > MAX_IO) {
         num_inputs_ = MAX_IO;
-    if (num_outputs_ > MAX_IO)
+    }
+    if (num_outputs_ > MAX_IO) {
         num_outputs_ = MAX_IO;
+    }
 
     for (size_t i = 0; i < num_inputs_; ++i) {
         const TfLiteTensor *t = TfLiteInterpreterGetInputTensor(interp_, (int32_t)i);
@@ -180,8 +182,9 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
         input_elems_.push_back(elems);
         std::vector<int> dims;
         int32_t nd = TfLiteTensorNumDims(t);
-        for (int32_t d = 0; d < nd; ++d)
+        for (int32_t d = 0; d < nd; ++d) {
             dims.push_back(TfLiteTensorDim(t, d));
+        }
         input_shapes_.push_back(std::move(dims));
     }
 
@@ -195,8 +198,9 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
         output_elems_.push_back(elems);
         std::vector<int> dims;
         int32_t nd = TfLiteTensorNumDims(t);
-        for (int32_t d = 0; d < nd; ++d)
+        for (int32_t d = 0; d < nd; ++d) {
             dims.push_back(TfLiteTensorDim(t, d));
+        }
         output_shapes_.push_back(std::move(dims));
     }
 
@@ -217,11 +221,13 @@ bool TFLiteBackend::QueryIOInfo(std::string &is, size_t &ie,
     for (size_t i = 0; i < num_inputs_; ++i) {
         char buf[128] = {};
         int off = snprintf(buf, sizeof(buf), "[");
-        for (size_t d = 0; d < input_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < input_shapes_[i].size(); ++d) {
             off += snprintf(buf + off, sizeof(buf) - off, "%s%d", d > 0 ? "," : "", input_shapes_[i][d]);
+        }
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0)
+        if (i > 0) {
             is += ";";
+        }
         is += buf;
         ie += input_elems_[i];
     }
@@ -230,11 +236,13 @@ bool TFLiteBackend::QueryIOInfo(std::string &is, size_t &ie,
     for (size_t i = 0; i < num_outputs_; ++i) {
         char buf[128] = {};
         int off = snprintf(buf, sizeof(buf), "[");
-        for (size_t d = 0; d < output_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < output_shapes_[i].size(); ++d) {
             off += snprintf(buf + off, sizeof(buf) - off, "%s%d", d > 0 ? "," : "", output_shapes_[i][d]);
+        }
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0)
+        if (i > 0) {
             os += ";";
+        }
         os += buf;
         oe += output_elems_[i];
     }
@@ -252,19 +260,22 @@ bool TFLiteBackend::PrepareInputs(float *&fd, size_t &fe, const char * /*arg*/,
             input_buf_elems_.resize(i + 1, 0);
             input_external_.resize(i + 1, false);
         }
-        if (input_bufs_[i] && !input_external_[i])
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
 
         if (ext && ext[i] && extc && extc[i] == n) {
             input_bufs_[i] = const_cast<float *>(ext[i]);
             input_external_[i] = true;
         } else {
             float *buf = (float *)malloc(n * sizeof(float));
-            if (!buf)
+            if (!buf) {
                 return false;
+            }
             if (random) {
-                for (size_t j = 0; j < n; ++j)
+                for (size_t j = 0; j < n; ++j) {
                     buf[j] = (float)rand() / (float)RAND_MAX;
+                }
             } else {
                 memset(buf, 0, n * sizeof(float));
             }
@@ -295,8 +306,9 @@ void TFLiteBackend::SetSharedInput(const float *const *data, const size_t *count
 bool TFLiteBackend::CopyOutputToFloat(size_t idx, float *dst, size_t n)
 {
     const TfLiteTensor *t = TfLiteInterpreterGetOutputTensor(interp_, (int32_t)idx);
-    if (!t)
+    if (!t) {
         return false;
+    }
     switch (TfLiteTensorType(t)) {
     case kTfLiteFloat32:
         memcpy(dst, TfLiteTensorData(t), n * sizeof(float));
@@ -304,9 +316,10 @@ bool TFLiteBackend::CopyOutputToFloat(size_t idx, float *dst, size_t n)
     case kTfLiteFloat16: {
         const uint16_t *src = (const uint16_t *)TfLiteTensorData(t);
         /* Simple half-to-float: not fully IEEE, but OK for benchmarking */
-        for (size_t j = 0; j < n; ++j)
+        for (size_t j = 0; j < n; ++j) {
             dst[j] = (float)src[j]; /* placeholder */
-        break;
+            break;
+        }
     }
     default:
         memset(dst, 0, n * sizeof(float));
@@ -326,19 +339,22 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
     maxv = 0;
     minv = 1e12;
     maxi = 0;
-    if (num_inputs_ == 0 || num_outputs_ == 0)
+    if (num_inputs_ == 0 || num_outputs_ == 0) {
         return false;
+    }
 
     /* Allocate snapshots */
     std::vector<std::vector<float>> snaps(num_outputs_);
-    for (size_t i = 0; i < num_outputs_; ++i)
+    for (size_t i = 0; i < num_outputs_; ++i) {
         snaps[i].resize(output_elems_[i] > 0 ? output_elems_[i] : 1);
+    }
 
     auto feed = [&]() {
         for (size_t i = 0; i < num_inputs_; ++i) {
             TfLiteTensor *t = TfLiteInterpreterGetInputTensor(interp_, (int32_t)i);
-            if (!t || !input_bufs_[i])
+            if (!t || !input_bufs_[i]) {
                 continue;
+            }
             float *dst = (float *)TfLiteTensorData(t);
             /* Shared inputs are in NCHW; TFLite expects NHWC.
              * Transpose 4D tensors from NCHW to NHWC. */
@@ -346,12 +362,14 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
                 int N = input_shapes_[i][0], H = input_shapes_[i][1];
                 int W = input_shapes_[i][2], C = input_shapes_[i][3];
                 const float *src = input_bufs_[i];
-                for (int n = 0; n < N; n++)
-                    for (int h = 0; h < H; h++)
+                for (int n = 0; n < N; n++) {
+                    for (int h = 0; h < H; h++) {
                         for (int w = 0; w < W; w++)
                             for (int c = 0; c < C; c++)
                                 dst[n * H * W * C + h * W * C + w * C + c] =
                                     src[n * C * H * W + c * H * W + h * W + w];
+                    }
+                }
             } else {
                 memcpy(dst, input_bufs_[i], input_elems_[i] * sizeof(float));
             }
@@ -377,16 +395,18 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
-        for (size_t i = 0; i < num_outputs_; ++i)
+        for (size_t i = 0; i < num_outputs_; ++i) {
             CopyOutputToFloat(i, snaps[i].data(), output_elems_[i]);
+        }
 
         total += ms;
         if (ms > maxv) {
             maxv = ms;
             maxi = r;
         }
-        if (ms < minv)
+        if (ms < minv) {
             minv = ms;
+        }
     }
 
     odata.resize(num_outputs_);
@@ -405,8 +425,9 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
         oelems[i] = n;
         auto &sh = oshapes[i];
         sh.fill(0);
-        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d)
+        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d) {
             sh[d] = (size_t)output_shapes_[i][d];
+        }
         odims[i] = output_shapes_[i].size();
     }
     return true;
@@ -432,9 +453,9 @@ void TFLiteBackend::Cleanup()
     }
     if (delegate_) {
 #if defined(__ANDROID__) || defined(__android__)
-        if (id_ == BackendId::TFLITE_GPU)
+        if (id_ == BackendId::TFLITE_GPU) {
             TfLiteGpuDelegateV2Delete(delegate_);
-        else if (id_ == BackendId::TFLITE_NNAPI)
+        } else if (id_ == BackendId::TFLITE_NNAPI)
             delete static_cast<tflite::StatefulNnApiDelegate *>(delegate_);
         else if (id_ == BackendId::TFLITE_NPU)
             TfLiteGpuDelegateV2Delete(delegate_); /* or QnnTFLiteDelegateDelete if available */
@@ -449,8 +470,9 @@ void TFLiteBackend::Cleanup()
 #else
         auto flex_delete = (FlexDeleteFunc)dlsym(RTLD_DEFAULT, "TfLiteFlexDelegateDelete");
 #endif
-        if (flex_delete)
+        if (flex_delete) {
             flex_delete(flex_delegate_);
+        }
         flex_delegate_ = nullptr;
     }
     if (model_) {
@@ -458,9 +480,11 @@ void TFLiteBackend::Cleanup()
         model_ = nullptr;
     }
 
-    for (size_t i = 0; i < input_bufs_.size(); ++i)
-        if (input_bufs_[i] && !input_external_[i])
+    for (size_t i = 0; i < input_bufs_.size(); ++i) {
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
+    }
     input_bufs_.clear();
 }
 

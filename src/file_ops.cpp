@@ -39,16 +39,18 @@ void *load_library(const char *path)
     return (void *)h;
 #else
     void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (!h)
+    if (!h) {
         LOGE("dlopen(%s) failed: %s", path, dlerror());
+    }
     return h;
 #endif
 }
 
 void *load_function(void *lib, const char *name)
 {
-    if (!lib)
+    if (!lib) {
         return nullptr;
+    }
 #ifdef _WIN32
     return (void *)GetProcAddress((HMODULE)lib, name);
 #else
@@ -58,8 +60,9 @@ void *load_function(void *lib, const char *name)
 
 void release_library(void *lib)
 {
-    if (!lib)
+    if (!lib) {
         return;
+    }
 #ifdef _WIN32
     FreeLibrary((HMODULE)lib);
 #else
@@ -72,12 +75,14 @@ void release_library(void *lib)
  * -------------------------------------------------------------------------*/
 std::string wide_to_utf8(const wchar_t *wstr)
 {
-    if (!wstr || !*wstr)
+    if (!wstr || !*wstr) {
         return {};
+    }
 #ifdef _WIN32
     int len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 0)
+    if (len <= 0) {
         return {};
+    }
     std::string result(len - 1, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &result[0], len, nullptr, nullptr);
     return result;
@@ -89,12 +94,14 @@ std::string wide_to_utf8(const wchar_t *wstr)
 
 std::wstring utf8_to_wide(const char *str)
 {
-    if (!str || !*str)
+    if (!str || !*str) {
         return {};
+    }
 #ifdef _WIN32
     int len = MultiByteToWideChar(CP_UTF8, 0, str, -1, nullptr, 0);
-    if (len <= 0)
+    if (len <= 0) {
         return {};
+    }
     std::wstring result(len - 1, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, str, -1, &result[0], len);
     return result;
@@ -115,10 +122,12 @@ bool file_exists(const char *path)
 bool file_readable_nonzero(const char *path)
 {
     struct stat st;
-    if (stat(path, &st) != 0)
+    if (stat(path, &st) != 0) {
         return false;
-    if (st.st_size <= 0)
+    }
+    if (st.st_size <= 0) {
         return false;
+    }
     return access(path, /*R_OK*/ 4) == 0;
 }
 
@@ -134,26 +143,31 @@ std::string build_model_cache_dir()
     }
     std::string exe_dir = wide_to_utf8(exe_path);
     auto pos = exe_dir.find_last_of("/\\");
-    if (pos != std::string::npos)
+    if (pos != std::string::npos) {
         exe_dir = exe_dir.substr(0, pos);
+    }
     std::string dir = exe_dir + "\\model_cache\\";
-    if (!CreateDirectoryW(utf8_to_wide(dir.c_str()).c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS)
+    if (!CreateDirectoryW(utf8_to_wide(dir.c_str()).c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
         LOGW("CreateDirectoryW(%s) failed: %lu", dir.c_str(), (unsigned long)GetLastError());
+    }
     return dir;
 #else
     char exe_path[1024];
     ssize_t n = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    if (n > 0)
+    if (n > 0) {
         exe_path[n] = '\0';
-    else
+    } else {
         strncpy(exe_path, "./bench", sizeof(exe_path));
+    }
     std::string exe_dir = exe_path;
     auto pos = exe_dir.find_last_of('/');
-    if (pos != std::string::npos)
+    if (pos != std::string::npos) {
         exe_dir = exe_dir.substr(0, pos);
+    }
     std::string dir = exe_dir + "/model_cache/";
-    if (mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST)
+    if (mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
         LOGW("mkdir(%s) failed: %s, %d", dir.c_str(), strerror(errno), errno);
+    }
     return dir;
 #endif
 }

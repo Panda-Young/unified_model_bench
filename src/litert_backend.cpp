@@ -107,44 +107,52 @@ bool LiteRTBackend::QueryIOMetadata()
 
     /* Input count & info */
     LiteRtParamIndex num_in, num_out;
-    if (LiteRtGetNumSignatureInputs(sig, &num_in) != kLiteRtStatusOk)
+    if (LiteRtGetNumSignatureInputs(sig, &num_in) != kLiteRtStatusOk) {
         return false;
-    if (LiteRtGetNumSignatureOutputs(sig, &num_out) != kLiteRtStatusOk)
+    }
+    if (LiteRtGetNumSignatureOutputs(sig, &num_out) != kLiteRtStatusOk) {
         return false;
+    }
     num_inputs_ = (size_t)num_in;
     num_outputs_ = (size_t)num_out;
 
     for (LiteRtParamIndex i = 0; i < num_in; ++i) {
         LiteRtTensor tensor;
-        if (LiteRtGetSignatureInputTensorByIndex(sig, i, &tensor) != kLiteRtStatusOk)
+        if (LiteRtGetSignatureInputTensorByIndex(sig, i, &tensor) != kLiteRtStatusOk) {
             return false;
+        }
         LiteRtRankedTensorType rtype;
-        if (LiteRtGetRankedTensorType(tensor, &rtype) != kLiteRtStatusOk)
+        if (LiteRtGetRankedTensorType(tensor, &rtype) != kLiteRtStatusOk) {
             return false;
+        }
         int32_t rank = (int32_t)rtype.layout.rank;
         const int32_t *dims = rtype.layout.dimensions;
         std::vector<int32_t> shape(dims, dims + rank);
         input_shapes_.push_back(std::move(shape));
         size_t elems = 1;
-        for (int d = 0; d < rank; ++d)
+        for (int d = 0; d < rank; ++d) {
             elems *= (size_t)dims[d];
+        }
         input_elems_.push_back(elems);
     }
 
     for (LiteRtParamIndex i = 0; i < num_out; ++i) {
         LiteRtTensor tensor;
-        if (LiteRtGetSignatureOutputTensorByIndex(sig, i, &tensor) != kLiteRtStatusOk)
+        if (LiteRtGetSignatureOutputTensorByIndex(sig, i, &tensor) != kLiteRtStatusOk) {
             return false;
+        }
         LiteRtRankedTensorType rtype;
-        if (LiteRtGetRankedTensorType(tensor, &rtype) != kLiteRtStatusOk)
+        if (LiteRtGetRankedTensorType(tensor, &rtype) != kLiteRtStatusOk) {
             return false;
+        }
         int32_t rank = (int32_t)rtype.layout.rank;
         const int32_t *dims = rtype.layout.dimensions;
         std::vector<int32_t> shape(dims, dims + rank);
         output_shapes_.push_back(std::move(shape));
         size_t elems = 1;
-        for (int d = 0; d < rank; ++d)
+        for (int d = 0; d < rank; ++d) {
             elems *= (size_t)dims[d];
+        }
         output_elems_.push_back(elems);
     }
 
@@ -191,8 +199,9 @@ bool LiteRTBackend::Initialize(const char *model_path, int num_threads)
     }
 
     /* 4. Query IO metadata */
-    if (!QueryIOMetadata())
+    if (!QueryIOMetadata()) {
         return false;
+    }
 
     /* 5. Create compilation options with accelerator selection */
     if (LiteRtCreateOptions(&comp_opts_) != kLiteRtStatusOk) {
@@ -240,11 +249,13 @@ bool LiteRTBackend::QueryIOInfo(std::string &is, size_t &ie,
     for (size_t i = 0; i < num_inputs_; ++i) {
         char buf[128] = {};
         int off = snprintf(buf, sizeof(buf), "[");
-        for (size_t d = 0; d < input_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < input_shapes_[i].size(); ++d) {
             off += snprintf(buf + off, sizeof(buf) - off, "%s%ld", d > 0 ? "," : "", (long)input_shapes_[i][d]);
+        }
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0)
+        if (i > 0) {
             is += ";";
+        }
         is += buf;
         ie += input_elems_[i];
     }
@@ -253,11 +264,13 @@ bool LiteRTBackend::QueryIOInfo(std::string &is, size_t &ie,
     for (size_t i = 0; i < num_outputs_; ++i) {
         char buf[128] = {};
         int off = snprintf(buf, sizeof(buf), "[");
-        for (size_t d = 0; d < output_shapes_[i].size(); ++d)
+        for (size_t d = 0; d < output_shapes_[i].size(); ++d) {
             off += snprintf(buf + off, sizeof(buf) - off, "%s%ld", d > 0 ? "," : "", (long)output_shapes_[i][d]);
+        }
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0)
+        if (i > 0) {
             os += ";";
+        }
         os += buf;
         oe += output_elems_[i];
     }
@@ -278,19 +291,22 @@ bool LiteRTBackend::PrepareInputs(float *&fd, size_t &fe, const char *,
             input_buf_elems_.resize(i + 1, 0);
             input_external_.resize(i + 1, false);
         }
-        if (input_bufs_[i] && !input_external_[i])
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
 
         if (ext && ext[i] && extc && extc[i] == n) {
             input_bufs_[i] = const_cast<float *>(ext[i]);
             input_external_[i] = true;
         } else {
             float *buf = (float *)malloc(n * sizeof(float));
-            if (!buf)
+            if (!buf) {
                 return false;
+            }
             if (random) {
-                for (size_t j = 0; j < n; ++j)
+                for (size_t j = 0; j < n; ++j) {
                     buf[j] = (float)rand() / (float)RAND_MAX;
+                }
             } else {
                 memset(buf, 0, n * sizeof(float));
             }
@@ -332,12 +348,14 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
     maxv = 0;
     minv = 1e12;
     maxi = 0;
-    if (num_inputs_ == 0 || num_outputs_ == 0)
+    if (num_inputs_ == 0 || num_outputs_ == 0) {
         return false;
+    }
 
     std::vector<std::vector<float>> snaps(num_outputs_);
-    for (size_t i = 0; i < num_outputs_; ++i)
+    for (size_t i = 0; i < num_outputs_; ++i) {
         snaps[i].resize(output_elems_[i] > 0 ? output_elems_[i] : 1);
+    }
 
     /* Helper: create input tensor buffers from host memory with proper alignment */
     auto create_input_buffers = [&](std::vector<LiteRtTensorBuffer> &bufs) -> bool {
@@ -371,8 +389,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             }
             /* Copy input data into the aligned buffer */
             size_t copy_bytes = input_elems_[i] * sizeof(float);
-            if (copy_bytes > buffer_size)
+            if (copy_bytes > buffer_size) {
                 copy_bytes = buffer_size;
+            }
             memcpy(host_mem, input_bufs_[i], copy_bytes);
 
             /* Create ranked tensor type from cached shape info */
@@ -381,8 +400,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             ttype.layout.rank = (unsigned)input_shapes_[i].size();
             ttype.layout.has_strides = false;
             memset(ttype.layout.dimensions, 0, sizeof(ttype.layout.dimensions));
-            for (size_t d = 0; d < input_shapes_[i].size(); ++d)
+            for (size_t d = 0; d < input_shapes_[i].size(); ++d) {
                 ttype.layout.dimensions[d] = input_shapes_[i][d];
+            }
 
             if (LiteRtCreateTensorBufferFromHostMemory(
                     &ttype, host_mem, buffer_size,
@@ -442,8 +462,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             ttype.layout.rank = (unsigned)output_shapes_[i].size();
             ttype.layout.has_strides = false;
             memset(ttype.layout.dimensions, 0, sizeof(ttype.layout.dimensions));
-            for (size_t d = 0; d < output_shapes_[i].size(); ++d)
+            for (size_t d = 0; d < output_shapes_[i].size(); ++d) {
                 ttype.layout.dimensions[d] = output_shapes_[i][d];
+            }
 
             /* Create tensor buffer from host memory */
             if (LiteRtCreateTensorBufferFromHostMemory(
@@ -468,8 +489,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
 
     auto destroy_buffers = [](std::vector<LiteRtTensorBuffer> &bufs) {
         for (auto &b : bufs) {
-            if (b)
+            if (b) {
                 LiteRtDestroyTensorBuffer(b);
+            }
         }
         bufs.clear();
     };
@@ -477,8 +499,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
     /* Warmup */
     for (int w = 0; w < warmup; ++w) {
         std::vector<LiteRtTensorBuffer> in_bufs, out_bufs;
-        if (!create_input_buffers(in_bufs))
+        if (!create_input_buffers(in_bufs)) {
             return false;
+        }
         if (!create_output_buffers(out_bufs)) {
             destroy_buffers(in_bufs);
             return false;
@@ -492,8 +515,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
     /* Benchmark repeats */
     for (int r = 0; r < repeat; ++r) {
         std::vector<LiteRtTensorBuffer> in_bufs, out_bufs;
-        if (!create_input_buffers(in_bufs))
+        if (!create_input_buffers(in_bufs)) {
             return false;
+        }
         if (!create_output_buffers(out_bufs)) {
             destroy_buffers(in_bufs);
             return false;
@@ -534,8 +558,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             maxv = ms;
             maxi = r;
         }
-        if (ms < minv)
+        if (ms < minv) {
             minv = ms;
+        }
     }
 
     /* Allocate output data */
@@ -555,8 +580,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
         oelems[i] = n;
         auto &sh = oshapes[i];
         sh.fill(0);
-        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d)
+        for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d) {
             sh[d] = (size_t)output_shapes_[i][d];
+        }
         odims[i] = output_shapes_[i].size();
     }
     return true;
@@ -595,9 +621,11 @@ void LiteRTBackend::Cleanup()
         env_ = nullptr;
     }
 
-    for (size_t i = 0; i < input_bufs_.size(); ++i)
-        if (input_bufs_[i] && !input_external_[i])
+    for (size_t i = 0; i < input_bufs_.size(); ++i) {
+        if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);
+        }
+    }
     input_bufs_.clear();
 }
 
