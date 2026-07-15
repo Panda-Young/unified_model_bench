@@ -99,21 +99,25 @@ bool ONNXBackend::ConfigureEP()
         return true;
     }
     case BackendId::ONNX_DML: {
-        /* Load DML EP function dynamically from the loaded onnxruntime.dll.
-         * The DML EP is only available in DML-specific builds of onnxruntime. */
         auto pfnDML = (PFN_OrtSessionOptionsAppendExecutionProvider_DML)
             load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_DML");
         if (!pfnDML) {
             LOGE("ONNX: DML EP function not found in DLL (use DML-specific onnxruntime.dll)");
             return false;
         }
-        OrtStatus *st = pfnDML(opts_, 0);
+        int dev_id = 1;
+        OrtStatus *st = pfnDML(opts_, dev_id);
+        if (st) {
+            ort_->ReleaseStatus(st);
+            dev_id = 0;
+            st = pfnDML(opts_, dev_id);
+        }
         if (st) {
             LOGE("ONNX: DML append failed: %s", ort_->GetErrorMessage(st));
             ort_->ReleaseStatus(st);
             return false;
         }
-        LOGI("ONNX: DML EP configured");
+        LOGI("ONNX: DML EP configured (device=%d)", dev_id);
         return true;
     }
     case BackendId::ONNX_OPENVINO_CPU: {
