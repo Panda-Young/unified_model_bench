@@ -5,4 +5,4 @@
 #include "log.hpp"
 
 LogLevel Logger::level = LogLevel::DBG;
-const char* Logger::prog_name = "unified_bench";
+const char *Logger::prog_name = "unified_bench";

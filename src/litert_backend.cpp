@@ -15,11 +15,11 @@
 
 #ifdef HAVE_LITERT_BACKEND
 
-#include <vector>
-#include <string>
-#include <cstring>
-#include <cstdio>
 #include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
 
 #if defined(_WIN32)
 #include <malloc.h>
@@ -27,57 +27,58 @@
 
 /* LiteRT C API headers (from litert_cc_sdk) */
 #include "litert/c/litert_common.h"
-#include "litert/c/litert_model.h"
-#include "litert/c/litert_model_types.h"
 #include "litert/c/litert_compiled_model.h"
 #include "litert/c/litert_environment.h"
 #include "litert/c/litert_environment_options.h"
+#include "litert/c/litert_layout.h"
+#include "litert/c/litert_model.h"
+#include "litert/c/litert_model_types.h"
 #include "litert/c/litert_options.h"
 #include "litert/c/litert_tensor_buffer.h"
-#include "litert/c/litert_tensor_buffer_types.h"
 #include "litert/c/litert_tensor_buffer_requirements.h"
-#include "litert/c/litert_layout.h"
+#include "litert/c/litert_tensor_buffer_types.h"
 #include "litert/c/options/litert_qualcomm_options.h"
 
 /* ---------------------------------------------------------------------------
  * LiteRTBackend
  * -------------------------------------------------------------------------*/
-class LiteRTBackend : public IBackend {
+class LiteRTBackend : public IBackend
+{
 public:
     explicit LiteRTBackend(BackendId id) { id_ = id; }
     ~LiteRTBackend() override { Cleanup(); }
 
-    bool Initialize(const char* model_path, int num_threads) override;
-    bool QueryIOInfo(std::string& is, size_t& ie, std::string& os, size_t& oe) override;
-    bool PrepareInputs(float*& fd, size_t& fe, const char* arg,
-                       bool random, const float* const* ext, const size_t* extc) override;
-    void SetSharedInput(const float* const* data, const size_t* counts) override;
-    bool RunBenchmark(int warmup, int repeat, double& total, double& maxv,
-                      double& minv, int& maxi, std::vector<float*>& odata,
-                      std::vector<size_t>& oelems,
-                      std::vector<std::array<size_t, MAX_DIMENSIONS>>& oshapes,
-                      std::vector<size_t>& odims) override;
-    void GetTiming(std::array<double, 10>& timing) override;
-    bool SaveOutputs(const char* suffix) override;
+    bool Initialize(const char *model_path, int num_threads) override;
+    bool QueryIOInfo(std::string &is, size_t &ie, std::string &os, size_t &oe) override;
+    bool PrepareInputs(float *&fd, size_t &fe, const char *arg,
+                       bool random, const float *const *ext, const size_t *extc) override;
+    void SetSharedInput(const float *const *data, const size_t *counts) override;
+    bool RunBenchmark(int warmup, int repeat, double &total, double &maxv,
+                      double &minv, int &maxi, std::vector<float *> &odata,
+                      std::vector<size_t> &oelems,
+                      std::vector<std::array<size_t, MAX_DIMENSIONS>> &oshapes,
+                      std::vector<size_t> &odims) override;
+    void GetTiming(std::array<double, 10> &timing) override;
+    bool SaveOutputs(const char *suffix) override;
 
 private:
     void Cleanup();
 
     bool QueryIOMetadata();
 
-    LiteRtEnvironment env_     = nullptr;
-    LiteRtModel model_         = nullptr;
-    LiteRtOptions comp_opts_   = nullptr;
+    LiteRtEnvironment env_ = nullptr;
+    LiteRtModel model_ = nullptr;
+    LiteRtOptions comp_opts_ = nullptr;
     LiteRtCompiledModel compiled_ = nullptr;
 
-    size_t num_inputs_  = 0;
+    size_t num_inputs_ = 0;
     size_t num_outputs_ = 0;
     std::vector<size_t> input_elems_;
     std::vector<size_t> output_elems_;
     std::vector<std::vector<int32_t>> input_shapes_;
     std::vector<std::vector<int32_t>> output_shapes_;
 
-    std::vector<float*> input_bufs_;
+    std::vector<float *> input_bufs_;
     std::vector<size_t> input_buf_elems_;
     std::vector<bool> input_external_;
 
@@ -90,7 +91,8 @@ private:
 /* ---------------------------------------------------------------------------
  * Query IO metadata from model signatures
  * -------------------------------------------------------------------------*/
-bool LiteRTBackend::QueryIOMetadata() {
+bool LiteRTBackend::QueryIOMetadata()
+{
     LiteRtParamIndex num_sigs;
     if (LiteRtGetNumModelSignatures(model_, &num_sigs) != kLiteRtStatusOk || num_sigs == 0) {
         LOGE("LiteRT: no signatures in model");
@@ -105,8 +107,10 @@ bool LiteRTBackend::QueryIOMetadata() {
 
     /* Input count & info */
     LiteRtParamIndex num_in, num_out;
-    if (LiteRtGetNumSignatureInputs(sig, &num_in) != kLiteRtStatusOk) return false;
-    if (LiteRtGetNumSignatureOutputs(sig, &num_out) != kLiteRtStatusOk) return false;
+    if (LiteRtGetNumSignatureInputs(sig, &num_in) != kLiteRtStatusOk)
+        return false;
+    if (LiteRtGetNumSignatureOutputs(sig, &num_out) != kLiteRtStatusOk)
+        return false;
     num_inputs_ = (size_t)num_in;
     num_outputs_ = (size_t)num_out;
 
@@ -118,11 +122,12 @@ bool LiteRTBackend::QueryIOMetadata() {
         if (LiteRtGetRankedTensorType(tensor, &rtype) != kLiteRtStatusOk)
             return false;
         int32_t rank = (int32_t)rtype.layout.rank;
-        const int32_t* dims = rtype.layout.dimensions;
+        const int32_t *dims = rtype.layout.dimensions;
         std::vector<int32_t> shape(dims, dims + rank);
         input_shapes_.push_back(std::move(shape));
         size_t elems = 1;
-        for (int d = 0; d < rank; ++d) elems *= (size_t)dims[d];
+        for (int d = 0; d < rank; ++d)
+            elems *= (size_t)dims[d];
         input_elems_.push_back(elems);
     }
 
@@ -134,11 +139,12 @@ bool LiteRTBackend::QueryIOMetadata() {
         if (LiteRtGetRankedTensorType(tensor, &rtype) != kLiteRtStatusOk)
             return false;
         int32_t rank = (int32_t)rtype.layout.rank;
-        const int32_t* dims = rtype.layout.dimensions;
+        const int32_t *dims = rtype.layout.dimensions;
         std::vector<int32_t> shape(dims, dims + rank);
         output_shapes_.push_back(std::move(shape));
         size_t elems = 1;
-        for (int d = 0; d < rank; ++d) elems *= (size_t)dims[d];
+        for (int d = 0; d < rank; ++d)
+            elems *= (size_t)dims[d];
         output_elems_.push_back(elems);
     }
 
@@ -149,7 +155,8 @@ bool LiteRTBackend::QueryIOMetadata() {
 /* ---------------------------------------------------------------------------
  * Initialize
  * -------------------------------------------------------------------------*/
-bool LiteRTBackend::Initialize(const char* model_path, int num_threads) {
+bool LiteRTBackend::Initialize(const char *model_path, int num_threads)
+{
     auto t0 = std::chrono::high_resolution_clock::now();
     (void)num_threads;
 
@@ -184,7 +191,8 @@ bool LiteRTBackend::Initialize(const char* model_path, int num_threads) {
     }
 
     /* 4. Query IO metadata */
-    if (!QueryIOMetadata()) return false;
+    if (!QueryIOMetadata())
+        return false;
 
     /* 5. Create compilation options with accelerator selection */
     if (LiteRtCreateOptions(&comp_opts_) != kLiteRtStatusOk) {
@@ -214,7 +222,8 @@ bool LiteRTBackend::Initialize(const char* model_path, int num_threads) {
     }
 
     init_ms_ = std::chrono::duration<double, std::milli>(
-        std::chrono::high_resolution_clock::now() - t0).count();
+                   std::chrono::high_resolution_clock::now() - t0)
+                   .count();
     LOGI("LiteRT: init complete (%.1f ms), %zu in, %zu out",
          init_ms_, num_inputs_, num_outputs_);
     return true;
@@ -223,23 +232,34 @@ bool LiteRTBackend::Initialize(const char* model_path, int num_threads) {
 /* ---------------------------------------------------------------------------
  * QueryIOInfo
  * -------------------------------------------------------------------------*/
-bool LiteRTBackend::QueryIOInfo(std::string& is, size_t& ie,
-                                 std::string& os, size_t& oe) {
-    is.clear(); ie = 0;
+bool LiteRTBackend::QueryIOInfo(std::string &is, size_t &ie,
+                                std::string &os, size_t &oe)
+{
+    is.clear();
+    ie = 0;
     for (size_t i = 0; i < num_inputs_; ++i) {
-        char buf[128] = {}; int off = snprintf(buf, sizeof(buf), "[");
+        char buf[128] = {};
+        int off = snprintf(buf, sizeof(buf), "[");
         for (size_t d = 0; d < input_shapes_[i].size(); ++d)
             off += snprintf(buf + off, sizeof(buf) - off, "%s%ld", d > 0 ? "," : "", (long)input_shapes_[i][d]);
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0) is += ";"; is += buf; ie += input_elems_[i];
+        if (i > 0)
+            is += ";";
+        is += buf;
+        ie += input_elems_[i];
     }
-    os.clear(); oe = 0;
+    os.clear();
+    oe = 0;
     for (size_t i = 0; i < num_outputs_; ++i) {
-        char buf[128] = {}; int off = snprintf(buf, sizeof(buf), "[");
+        char buf[128] = {};
+        int off = snprintf(buf, sizeof(buf), "[");
         for (size_t d = 0; d < output_shapes_[i].size(); ++d)
             off += snprintf(buf + off, sizeof(buf) - off, "%s%ld", d > 0 ? "," : "", (long)output_shapes_[i][d]);
         snprintf(buf + off, sizeof(buf) - off, "]");
-        if (i > 0) os += ";"; os += buf; oe += output_elems_[i];
+        if (i > 0)
+            os += ";";
+        os += buf;
+        oe += output_elems_[i];
     }
     return true;
 }
@@ -247,9 +267,10 @@ bool LiteRTBackend::QueryIOInfo(std::string& is, size_t& ie,
 /* ---------------------------------------------------------------------------
  * PrepareInputs / SetSharedInput
  * -------------------------------------------------------------------------*/
-bool LiteRTBackend::PrepareInputs(float*& fd, size_t& fe, const char*,
-                                   bool random, const float* const* ext,
-                                   const size_t* extc) {
+bool LiteRTBackend::PrepareInputs(float *&fd, size_t &fe, const char *,
+                                  bool random, const float *const *ext,
+                                  const size_t *extc)
+{
     for (size_t i = 0; i < num_inputs_; ++i) {
         size_t n = input_elems_[i] > 0 ? input_elems_[i] : 1;
         if (i >= input_bufs_.size()) {
@@ -257,16 +278,22 @@ bool LiteRTBackend::PrepareInputs(float*& fd, size_t& fe, const char*,
             input_buf_elems_.resize(i + 1, 0);
             input_external_.resize(i + 1, false);
         }
-        if (input_bufs_[i] && !input_external_[i]) free(input_bufs_[i]);
+        if (input_bufs_[i] && !input_external_[i])
+            free(input_bufs_[i]);
 
         if (ext && ext[i] && extc && extc[i] == n) {
-            input_bufs_[i] = const_cast<float*>(ext[i]);
+            input_bufs_[i] = const_cast<float *>(ext[i]);
             input_external_[i] = true;
         } else {
-            float* buf = (float*)malloc(n * sizeof(float));
-            if (!buf) return false;
-            if (random) { for (size_t j = 0; j < n; ++j) buf[j] = (float)rand() / (float)RAND_MAX; }
-            else { memset(buf, 0, n * sizeof(float)); }
+            float *buf = (float *)malloc(n * sizeof(float));
+            if (!buf)
+                return false;
+            if (random) {
+                for (size_t j = 0; j < n; ++j)
+                    buf[j] = (float)rand() / (float)RAND_MAX;
+            } else {
+                memset(buf, 0, n * sizeof(float));
+            }
             input_bufs_[i] = buf;
             input_external_[i] = false;
         }
@@ -277,14 +304,15 @@ bool LiteRTBackend::PrepareInputs(float*& fd, size_t& fe, const char*,
     return true;
 }
 
-void LiteRTBackend::SetSharedInput(const float* const* data, const size_t* counts) {
+void LiteRTBackend::SetSharedInput(const float *const *data, const size_t *counts)
+{
     for (size_t i = 0; i < num_inputs_; ++i) {
         if (i >= input_bufs_.size()) {
             input_bufs_.resize(i + 1, nullptr);
             input_buf_elems_.resize(i + 1, 0);
             input_external_.resize(i + 1, false);
         }
-        input_bufs_[i] = const_cast<float*>(data[i]);
+        input_bufs_[i] = const_cast<float *>(data[i]);
         input_buf_elems_[i] = counts[i];
         input_external_[i] = true;
     }
@@ -293,21 +321,26 @@ void LiteRTBackend::SetSharedInput(const float* const* data, const size_t* count
 /* ---------------------------------------------------------------------------
  * RunBenchmark
  * -------------------------------------------------------------------------*/
-bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
-                                  double& maxv, double& minv, int& maxi,
-                                  std::vector<float*>& odata,
-                                  std::vector<size_t>& oelems,
-                                  std::vector<std::array<size_t, MAX_DIMENSIONS>>& oshapes,
-                                  std::vector<size_t>& odims) {
-    total = 0; maxv = 0; minv = 1e12; maxi = 0;
-    if (num_inputs_ == 0 || num_outputs_ == 0) return false;
+bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
+                                 double &maxv, double &minv, int &maxi,
+                                 std::vector<float *> &odata,
+                                 std::vector<size_t> &oelems,
+                                 std::vector<std::array<size_t, MAX_DIMENSIONS>> &oshapes,
+                                 std::vector<size_t> &odims)
+{
+    total = 0;
+    maxv = 0;
+    minv = 1e12;
+    maxi = 0;
+    if (num_inputs_ == 0 || num_outputs_ == 0)
+        return false;
 
     std::vector<std::vector<float>> snaps(num_outputs_);
     for (size_t i = 0; i < num_outputs_; ++i)
         snaps[i].resize(output_elems_[i] > 0 ? output_elems_[i] : 1);
 
     /* Helper: create input tensor buffers from host memory with proper alignment */
-    auto create_input_buffers = [&](std::vector<LiteRtTensorBuffer>& bufs) -> bool {
+    auto create_input_buffers = [&](std::vector<LiteRtTensorBuffer> &bufs) -> bool {
         bufs.resize(num_inputs_, nullptr);
         for (size_t i = 0; i < num_inputs_; ++i) {
             /* Query buffer requirements */
@@ -322,7 +355,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
             LiteRtGetTensorBufferRequirementsBufferSize(reqs, &buffer_size);
 
             /* Allocate aligned host memory and copy input data */
-            void* host_mem = nullptr;
+            void *host_mem = nullptr;
 #if defined(_WIN32)
             host_mem = _aligned_malloc(buffer_size > 0 ? buffer_size : 1,
                                        LITERT_HOST_MEMORY_BUFFER_ALIGNMENT);
@@ -338,7 +371,8 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
             }
             /* Copy input data into the aligned buffer */
             size_t copy_bytes = input_elems_[i] * sizeof(float);
-            if (copy_bytes > buffer_size) copy_bytes = buffer_size;
+            if (copy_bytes > buffer_size)
+                copy_bytes = buffer_size;
             memcpy(host_mem, input_bufs_[i], copy_bytes);
 
             /* Create ranked tensor type from cached shape info */
@@ -353,9 +387,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
             if (LiteRtCreateTensorBufferFromHostMemory(
                     &ttype, host_mem, buffer_size,
 #if defined(_WIN32)
-                    [](void* p) { _aligned_free(p); },
+                    [](void *p) { _aligned_free(p); },
 #else
-                    [](void* p) { free(p); },
+                    [](void *p) { free(p); },
 #endif
                     &bufs[i]) != kLiteRtStatusOk) {
                 LOGE("LiteRT: failed to create input buffer %zu", i);
@@ -371,7 +405,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
     };
 
     /* Helper: create output tensor buffers using buffer requirements */
-    auto create_output_buffers = [&](std::vector<LiteRtTensorBuffer>& bufs) -> bool {
+    auto create_output_buffers = [&](std::vector<LiteRtTensorBuffer> &bufs) -> bool {
         bufs.resize(num_outputs_, nullptr);
         for (size_t i = 0; i < num_outputs_; ++i) {
             /* Query buffer requirements from compiled model */
@@ -386,7 +420,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
             LiteRtGetTensorBufferRequirementsBufferSize(reqs, &buffer_size);
 
             /* Allocate host memory with required alignment */
-            void* host_mem = nullptr;
+            void *host_mem = nullptr;
 #if defined(_WIN32)
             host_mem = _aligned_malloc(buffer_size > 0 ? buffer_size : 1,
                                        LITERT_HOST_MEMORY_BUFFER_ALIGNMENT);
@@ -415,9 +449,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
             if (LiteRtCreateTensorBufferFromHostMemory(
                     &ttype, host_mem, buffer_size,
 #if defined(_WIN32)
-                    [](void* p) { _aligned_free(p); },
+                    [](void *p) { _aligned_free(p); },
 #else
-                    [](void* p) { free(p); },
+                    [](void *p) { free(p); },
 #endif
                     &bufs[i]) != kLiteRtStatusOk) {
                 LOGE("LiteRT: failed to create output buffer %zu", i);
@@ -432,18 +466,25 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
         return true;
     };
 
-    auto destroy_buffers = [](std::vector<LiteRtTensorBuffer>& bufs) {
-        for (auto& b : bufs) { if (b) LiteRtDestroyTensorBuffer(b); }
+    auto destroy_buffers = [](std::vector<LiteRtTensorBuffer> &bufs) {
+        for (auto &b : bufs) {
+            if (b)
+                LiteRtDestroyTensorBuffer(b);
+        }
         bufs.clear();
     };
 
     /* Warmup */
     for (int w = 0; w < warmup; ++w) {
         std::vector<LiteRtTensorBuffer> in_bufs, out_bufs;
-        if (!create_input_buffers(in_bufs)) return false;
-        if (!create_output_buffers(out_bufs)) { destroy_buffers(in_bufs); return false; }
+        if (!create_input_buffers(in_bufs))
+            return false;
+        if (!create_output_buffers(out_bufs)) {
+            destroy_buffers(in_bufs);
+            return false;
+        }
         LiteRtRunCompiledModel(compiled_, 0, num_inputs_, in_bufs.data(),
-                                num_outputs_, out_bufs.data());
+                               num_outputs_, out_bufs.data());
         destroy_buffers(in_bufs);
         destroy_buffers(out_bufs);
     }
@@ -451,27 +492,32 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
     /* Benchmark repeats */
     for (int r = 0; r < repeat; ++r) {
         std::vector<LiteRtTensorBuffer> in_bufs, out_bufs;
-        if (!create_input_buffers(in_bufs)) return false;
-        if (!create_output_buffers(out_bufs)) { destroy_buffers(in_bufs); return false; }
+        if (!create_input_buffers(in_bufs))
+            return false;
+        if (!create_output_buffers(out_bufs)) {
+            destroy_buffers(in_bufs);
+            return false;
+        }
 
         auto t0 = std::chrono::high_resolution_clock::now();
         LiteRtStatus st = LiteRtRunCompiledModel(compiled_, 0, num_inputs_, in_bufs.data(),
-                                                   num_outputs_, out_bufs.data());
+                                                 num_outputs_, out_bufs.data());
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
         if (st != kLiteRtStatusOk) {
             LOGE("LiteRT: run failed at repeat %d", r);
-            destroy_buffers(in_bufs); destroy_buffers(out_bufs);
+            destroy_buffers(in_bufs);
+            destroy_buffers(out_bufs);
             return false;
         }
 
         /* Copy outputs to snapshots */
         for (size_t i = 0; i < num_outputs_; ++i) {
             if (out_bufs[i]) {
-                void* host_ptr = nullptr;
+                void *host_ptr = nullptr;
                 LiteRtLockTensorBuffer(out_bufs[i], &host_ptr,
-                                        kLiteRtTensorBufferLockModeReadWrite);
+                                       kLiteRtTensorBufferLockModeReadWrite);
                 if (host_ptr) {
                     memcpy(snaps[i].data(), host_ptr,
                            std::min(snaps[i].size() * sizeof(float),
@@ -484,20 +530,31 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
         destroy_buffers(in_bufs);
         destroy_buffers(out_bufs);
         total += ms;
-        if (ms > maxv) { maxv = ms; maxi = r; }
-        if (ms < minv) minv = ms;
+        if (ms > maxv) {
+            maxv = ms;
+            maxi = r;
+        }
+        if (ms < minv)
+            minv = ms;
     }
 
     /* Allocate output data */
-    odata.resize(num_outputs_); oelems.resize(num_outputs_);
-    oshapes.resize(num_outputs_); odims.resize(num_outputs_);
+    odata.resize(num_outputs_);
+    oelems.resize(num_outputs_);
+    oshapes.resize(num_outputs_);
+    odims.resize(num_outputs_);
     for (size_t i = 0; i < num_outputs_; ++i) {
         size_t n = output_elems_[i];
-        float* buf = (float*)malloc(n * sizeof(float));
-        if (!buf) { LOGE("LiteRT: malloc(%zu) failed at output %zu", n * sizeof(float), i); return false; }
+        float *buf = (float *)malloc(n * sizeof(float));
+        if (!buf) {
+            LOGE("LiteRT: malloc(%zu) failed at output %zu", n * sizeof(float), i);
+            return false;
+        }
         memcpy(buf, snaps[i].data(), n * sizeof(float));
-        odata[i] = buf; oelems[i] = n;
-        auto& sh = oshapes[i]; sh.fill(0);
+        odata[i] = buf;
+        oelems[i] = n;
+        auto &sh = oshapes[i];
+        sh.fill(0);
         for (size_t d = 0; d < output_shapes_[i].size() && d < MAX_DIMENSIONS; ++d)
             sh[d] = (size_t)output_shapes_[i][d];
         odims[i] = output_shapes_[i].size();
@@ -508,33 +565,48 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double& total,
 /* ---------------------------------------------------------------------------
  * GetTiming / SaveOutputs
  * -------------------------------------------------------------------------*/
-void LiteRTBackend::GetTiming(std::array<double, 10>& timing) {
+void LiteRTBackend::GetTiming(std::array<double, 10> &timing)
+{
     timing.fill(0);
     timing[0] = init_ms_;
 }
 
-bool LiteRTBackend::SaveOutputs(const char* /*suffix*/) { return true; }
+bool LiteRTBackend::SaveOutputs(const char * /*suffix*/) { return true; }
 
 /* ---------------------------------------------------------------------------
  * Cleanup
  * -------------------------------------------------------------------------*/
-void LiteRTBackend::Cleanup() {
-    if (compiled_)   { LiteRtDestroyCompiledModel(compiled_); compiled_ = nullptr; }
-    if (comp_opts_)  { LiteRtDestroyOptions(comp_opts_); comp_opts_ = nullptr; }
-    if (model_)      { LiteRtDestroyModel(model_); model_ = nullptr; }
-    if (env_)        { LiteRtDestroyEnvironment(env_); env_ = nullptr; }
+void LiteRTBackend::Cleanup()
+{
+    if (compiled_) {
+        LiteRtDestroyCompiledModel(compiled_);
+        compiled_ = nullptr;
+    }
+    if (comp_opts_) {
+        LiteRtDestroyOptions(comp_opts_);
+        comp_opts_ = nullptr;
+    }
+    if (model_) {
+        LiteRtDestroyModel(model_);
+        model_ = nullptr;
+    }
+    if (env_) {
+        LiteRtDestroyEnvironment(env_);
+        env_ = nullptr;
+    }
 
     for (size_t i = 0; i < input_bufs_.size(); ++i)
-        if (input_bufs_[i] && !input_external_[i]) free(input_bufs_[i]);
+        if (input_bufs_[i] && !input_external_[i])
+            free(input_bufs_[i]);
     input_bufs_.clear();
 }
 
 /* ---------------------------------------------------------------------------
  * Factory
  * -------------------------------------------------------------------------*/
-BackendPtr CreateLitertBackend(BackendId id) {
+BackendPtr CreateLitertBackend(BackendId id)
+{
     return std::make_unique<LiteRTBackend>(id);
 }
 
 #endif /* HAVE_LITERT_BACKEND */
-

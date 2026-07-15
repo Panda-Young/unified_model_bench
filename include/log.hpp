@@ -4,57 +4,64 @@
  *============================================================================*/
 
 #include "platform.hpp"
-#include <cstdio>
 #include <cstdarg>
+#include <cstdio>
 #include <ctime>
 
 #ifdef _WIN32
-#  ifndef WIN32_LEAN_AND_MEAN
-#    define WIN32_LEAN_AND_MEAN
-#  endif
-#  include <windows.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 /* Windows SDK pollutes global namespace with macros that conflict with our enum */
-#  ifdef ERROR
-#    undef ERROR
-#  endif
-#  ifdef WARN
-#    undef WARN
-#  endif
-#  ifdef INFO
-#    undef INFO
-#  endif
-#  ifdef DEBUG
-#    undef DEBUG
-#  endif
+#ifdef ERROR
+#undef ERROR
+#endif
+#ifdef WARN
+#undef WARN
+#endif
+#ifdef INFO
+#undef INFO
+#endif
+#ifdef DEBUG
+#undef DEBUG
+#endif
 #else
-#  include <unistd.h>
-#  include <sys/syscall.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 /* ---------------------------------------------------------------------------
  * Log levels
  * -------------------------------------------------------------------------*/
-enum class LogLevel { OFF = 0, ERR = 1, WARN = 2, INFO = 3, DBG = 4 };
+enum class LogLevel { OFF = 0,
+                      ERR = 1,
+                      WARN = 2,
+                      INFO = 3,
+                      DBG = 4 };
 
 /* Re-export as convenience macros using the clean names */
-constexpr LogLevel LOG_ERR  = LogLevel::ERR;
+constexpr LogLevel LOG_ERR = LogLevel::ERR;
 constexpr LogLevel LOG_WARN = LogLevel::WARN;
 constexpr LogLevel LOG_INFO = LogLevel::INFO;
-constexpr LogLevel LOG_DBG  = LogLevel::DBG;
+constexpr LogLevel LOG_DBG = LogLevel::DBG;
 
 /* ---------------------------------------------------------------------------
  * Logger class - all static, minimal overhead
  * -------------------------------------------------------------------------*/
-class Logger {
+class Logger
+{
 public:
     static LogLevel level;
-    static const char* prog_name;
+    static const char *prog_name;
 
-    static void init(const char* name) { prog_name = name; }
+    static void init(const char *name) { prog_name = name; }
 
-    static void log(LogLevel lv, const char* file, int line,
-                    const char* func, const char* fmt, ...) {
-        if (lv > level) return;
+    static void log(LogLevel lv, const char *file, int line,
+                    const char *func, const char *fmt, ...)
+    {
+        if (lv > level)
+            return;
 
         /* Timestamp */
         time_t now = time(nullptr);
@@ -73,21 +80,34 @@ public:
         DWORD tid = GetCurrentThreadId();
 #else
         pid_t pid = getpid();
-#  ifdef SYS_gettid
+#ifdef SYS_gettid
         pid_t tid = syscall(SYS_gettid);
-#  else
+#else
         pid_t tid = pid;
-#  endif
+#endif
 #endif
 
-        const char* lv_str = "?";
-        const char* color = "";
+        const char *lv_str = "?";
+        const char *color = "";
         switch (lv) {
-        case LogLevel::ERR:  lv_str = "ERROR"; color = "\033[1;31m"; break;
-        case LogLevel::WARN: lv_str = "WARN";  color = "\033[1;33m"; break;
-        case LogLevel::INFO: lv_str = "INFO";  color = "\033[1;32m"; break;
-        case LogLevel::DBG:  lv_str = "DEBUG"; color = "\033[1;36m"; break;
-        default: break;
+        case LogLevel::ERR:
+            lv_str = "ERROR";
+            color = "\033[1;31m";
+            break;
+        case LogLevel::WARN:
+            lv_str = "WARN";
+            color = "\033[1;33m";
+            break;
+        case LogLevel::INFO:
+            lv_str = "INFO";
+            color = "\033[1;32m";
+            break;
+        case LogLevel::DBG:
+            lv_str = "DEBUG";
+            color = "\033[1;36m";
+            break;
+        default:
+            break;
         }
         (void)lv_str; /* suppress unused warning on non-color terminals */
 
@@ -105,7 +125,7 @@ public:
 };
 
 /* Convenience macros */
-#define LOGE(fmt, ...) Logger::log(LogLevel::ERR,  FILENAME__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) Logger::log(LogLevel::ERR, FILENAME__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__)
 #define LOGW(fmt, ...) Logger::log(LogLevel::WARN, FILENAME__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__)
 #define LOGI(fmt, ...) Logger::log(LogLevel::INFO, FILENAME__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__)
-#define LOGD(fmt, ...) Logger::log(LogLevel::DBG,  FILENAME__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__)
+#define LOGD(fmt, ...) Logger::log(LogLevel::DBG, FILENAME__, __LINE__, __FUNCTION__, fmt, ##__VA_ARGS__)

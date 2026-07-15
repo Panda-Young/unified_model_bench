@@ -4,24 +4,30 @@
  *============================================================================*/
 
 #include "platform.hpp"
-#include <string>
 #include <cstring>
+#include <string>
 
 enum class ModelFormat {
     UNKNOWN = 0,
-    ONNX    = 1,
-    TFLITE  = 2,
-    NCNN    = 3,
-    MNN     = 4
+    ONNX = 1,
+    TFLITE = 2,
+    NCNN = 3,
+    MNN = 4
 };
 
-inline const char* model_format_name(ModelFormat fmt) {
+inline const char *model_format_name(ModelFormat fmt)
+{
     switch (fmt) {
-    case ModelFormat::ONNX:   return "ONNX";
-    case ModelFormat::TFLITE: return "TFLite";
-    case ModelFormat::NCNN:   return "NCNN";
-    case ModelFormat::MNN:    return "MNN";
-    default:                  return "UNKNOWN";
+    case ModelFormat::ONNX:
+        return "ONNX";
+    case ModelFormat::TFLITE:
+        return "TFLite";
+    case ModelFormat::NCNN:
+        return "NCNN";
+    case ModelFormat::MNN:
+        return "MNN";
+    default:
+        return "UNKNOWN";
     }
 }
 
@@ -34,20 +40,26 @@ struct ModelInfo {
 };
 
 /* Detect format by extension, then magic number */
-inline ModelFormat detect_model_format(const std::string& path) {
+inline ModelFormat detect_model_format(const std::string &path)
+{
     /* Extension check */
-    auto ends_with = [](const std::string& s, const std::string& suffix) -> bool {
-        if (s.length() < suffix.length()) return false;
+    auto ends_with = [](const std::string &s, const std::string &suffix) -> bool {
+        if (s.length() < suffix.length())
+            return false;
         return stricmp_(s.c_str() + s.length() - suffix.length(), suffix.c_str()) == 0;
     };
 
-    if (ends_with(path, ".onnx")) return ModelFormat::ONNX;
-    if (ends_with(path, ".tflite")) return ModelFormat::TFLITE;
-    if (ends_with(path, ".param")) return ModelFormat::NCNN;
-    if (ends_with(path, ".mnn"))   return ModelFormat::MNN;
+    if (ends_with(path, ".onnx"))
+        return ModelFormat::ONNX;
+    if (ends_with(path, ".tflite"))
+        return ModelFormat::TFLITE;
+    if (ends_with(path, ".param"))
+        return ModelFormat::NCNN;
+    if (ends_with(path, ".mnn"))
+        return ModelFormat::MNN;
 
     /* Magic-number fallback for ONNX */
-    FILE* f = fopen(path.c_str(), "rb");
+    FILE *f = fopen(path.c_str(), "rb");
     if (f) {
         char buf[12] = {};
         size_t n = fread(buf, 1, 12, f);
@@ -58,7 +70,8 @@ inline ModelFormat detect_model_format(const std::string& path) {
     return ModelFormat::UNKNOWN;
 }
 
-inline ModelInfo extract_model_info(const std::string& path) {
+inline ModelInfo extract_model_info(const std::string &path)
+{
     ModelInfo info;
     info.format = detect_model_format(path);
     info.path = path;

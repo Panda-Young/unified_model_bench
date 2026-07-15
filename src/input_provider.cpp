@@ -6,7 +6,8 @@
 #include "log.hpp"
 #include <cstdlib>
 
-void InputProvider::GenerateFromSizes(const std::vector<size_t>& element_counts) {
+void InputProvider::GenerateFromSizes(const std::vector<size_t> &element_counts)
+{
     Clear();
     srand(42); /* deterministic seed */
     for (size_t n : element_counts) {
@@ -22,16 +23,20 @@ void InputProvider::GenerateFromSizes(const std::vector<size_t>& element_counts)
          [this]() { size_t t = 0; for (auto& s : slots_) t += s.element_count; return t; }());
 }
 
-std::vector<const float*> InputProvider::DataPtrs() const {
-    std::vector<const float*> v;
+std::vector<const float *> InputProvider::DataPtrs() const
+{
+    std::vector<const float *> v;
     v.reserve(slots_.size());
-    for (auto& s : slots_) v.push_back(s.data.data());
+    for (auto &s : slots_)
+        v.push_back(s.data.data());
     return v;
 }
 
-std::vector<size_t> InputProvider::ElementCounts() const {
+std::vector<size_t> InputProvider::ElementCounts() const
+{
     std::vector<size_t> v;
     v.reserve(slots_.size());
-    for (auto& s : slots_) v.push_back(s.element_count);
+    for (auto &s : slots_)
+        v.push_back(s.element_count);
     return v;
 }

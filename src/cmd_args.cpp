@@ -5,10 +5,11 @@
 #include "cmd_args.hpp"
 #include "log.hpp"
 #include <cstdio>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 
-void print_usage(const char* prog) {
+void print_usage(const char *prog)
+{
     printf("Unified Benchmark Tool - Multi-framework inference benchmark\n\n");
     printf("Usage: %s <model_path> [options]\n\n", prog);
     printf("Options:\n");
@@ -27,7 +28,8 @@ void print_usage(const char* prog) {
     printf("  --version           Show version\n");
 }
 
-bool parse_cmd_args(int argc, char* argv[], BenchConfig& cfg) {
+bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
+{
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
@@ -43,13 +45,16 @@ bool parse_cmd_args(int argc, char* argv[], BenchConfig& cfg) {
             cfg.input_path = argv[++i];
         } else if (strcmp(argv[i], "--repeat") == 0 && i + 1 < argc) {
             cfg.repeat = atoi(argv[++i]);
-            if (cfg.repeat < 1) cfg.repeat = 1;
+            if (cfg.repeat < 1)
+                cfg.repeat = 1;
         } else if (strcmp(argv[i], "--warmup") == 0 && i + 1 < argc) {
             cfg.warmup_runs = atoi(argv[++i]);
-            if (cfg.warmup_runs < 0) cfg.warmup_runs = 0;
+            if (cfg.warmup_runs < 0)
+                cfg.warmup_runs = 0;
         } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
             cfg.num_threads = atoi(argv[++i]);
-            if (cfg.num_threads < 1) cfg.num_threads = 1;
+            if (cfg.num_threads < 1)
+                cfg.num_threads = 1;
         } else if (strcmp(argv[i], "--output-dir") == 0 && i + 1 < argc) {
             cfg.output_dir = argv[++i];
         } else if (strcmp(argv[i], "--csv") == 0 && i + 1 < argc) {
