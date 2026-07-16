@@ -409,12 +409,16 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         for (size_t i = 0; i < num_outputs_; ++i) {
             ncnn::Mat out;
             ex.extract(output_names_[i].c_str(), out);
-            /* Convert NCNN [w,h,c] back to flat float */
+            /* Convert NCNN [w,h,c] back to flat float.
+             * Use out.data (raw pointer to entire blob) instead of
+             * out.channel(0) which only points to the first channel.
+             * For multi-channel outputs like [1,10] (c=10),
+             * channel(0) gives only 1 float, reading beyond is UB. */
             if (!out.empty()) {
-                /* NCNN Mat is channels-first for continuous memory */
-                memcpy(snaps[i].data(), out.channel(0),
-                       std::min(snaps[i].size() * sizeof(float),
-                                out.total() * sizeof(float)));
+                size_t copy_bytes = std::min(
+                    snaps[i].size() * sizeof(float),
+                    out.total() * sizeof(float));
+                memcpy(snaps[i].data(), (float *)out.data, copy_bytes);
             }
         }
         auto t1 = std::chrono::high_resolution_clock::now();

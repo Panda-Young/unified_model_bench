@@ -26,6 +26,9 @@ unified_bench_arm64-v8a
 *.mnn
 model_cache/
 
+# CMake build directory
+build/
+
 # Python
 __pycache__/
 

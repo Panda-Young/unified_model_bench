@@ -27,10 +27,20 @@ void *load_library(const char *path)
 {
 #ifdef _WIN32
     std::wstring wpath = utf8_to_wide(path);
+
+    /* Resolve to absolute path first — LOAD_WITH_ALTERED_SEARCH_PATH has
+     * undefined behavior with relative paths (MSDN). */
+    wchar_t abs_path[MAX_PATH];
+    DWORD len = GetFullPathNameW(wpath.c_str(), MAX_PATH, abs_path, nullptr);
+    if (len == 0 || len >= MAX_PATH) {
+        LOGE("GetFullPathNameW(%s) failed: %lu", path, (unsigned long)GetLastError());
+        return nullptr;
+    }
+
     /* LOAD_WITH_ALTERED_SEARCH_PATH (0x8): search dependencies in the DLL's
      * own directory first. Critical for EP-specific DLLs like dml\onnxruntime.dll
      * which depend on DirectML.dll in the same subdirectory. */
-    HMODULE h = LoadLibraryExW(wpath.c_str(), nullptr,
+    HMODULE h = LoadLibraryExW(abs_path, nullptr,
                                LOAD_WITH_ALTERED_SEARCH_PATH);
     if (!h) {
         DWORD err = GetLastError();

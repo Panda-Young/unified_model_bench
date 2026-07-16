@@ -770,12 +770,34 @@ TFLITE_DEPS = {
     "onnx_graphsurgeon": "onnx-graphsurgeon",
 }
 
+# TensorFlow often requires a newer protobuf than what's currently installed.
+# Pin to a version compatible with TF's compiled protobuf gencode.
+PROTOBUF_PIN = "protobuf>=6.31.1"
+
 
 def ensure_tflite_deps():
     missing = [m for m in TFLITE_DEPS if importlib.util.find_spec(m) is None]
     if missing:
         pkgs = [TFLITE_DEPS[m] for m in missing]
         pip_install_with_fallback(pkgs, "tflite")
+    # After installing, ensure protobuf is recent enough for the installed TF
+    try:
+        import google.protobuf
+    except Exception:
+        pass
+    else:
+        import subprocess as _sp
+        r = _sp.run(
+            [sys.executable, "-m", "pip", "install", PROTOBUF_PIN],
+            capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            msg = r.stderr.strip() or r.stdout.strip() or "unknown"
+            print(f"  [tflite] protobuf upgrade warning: {msg[:120]}")
+        else:
+            importlib.invalidate_caches()
+            if "google.protobuf" in sys.modules:
+                del sys.modules["google.protobuf"]
+            print("  [tflite] protobuf upgraded for tensorflow compatibility")
 
 
 def find_latest_tflite(root: Path) -> Path:
@@ -1385,8 +1407,6 @@ def main():
             print(f"   MNN:    ensure MNNConvert is in tools/mnn_convert/ or PATH")
         if "ncnn" in missing:
             print(f"   NCNN:   ensure pnnx.exe is in tools/ or PATH")
-
-    print(f"\n[Next]  cd unified_bench && tools\\NDK_build_Android_auto.bat\n")
 
     return 1 if errors else 0
 

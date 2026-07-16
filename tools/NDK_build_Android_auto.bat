@@ -48,41 +48,66 @@ set LITERT_INC=%ROOT%\deps\litert\litert_cc_sdk
 set LITERT_LIB_DIR=%ROOT%\deps\litert\liteRT_runtime\android_arm64
 set LITERT_LIB_PATH=%LITERT_LIB_DIR%\libLiteRt.so
 
-REM === Full build: ALL backends ===
-set CXXFLAGS=-std=c++17 -O2 -DNDEBUG -Wall -Wno-unknown-pragmas -DHAVE_ONNX_BACKEND -DHAVE_TFLITE_BACKEND -DHAVE_NCNN_BACKEND -DHAVE_MNN_BACKEND -DHAVE_LITERT_BACKEND -I"%INC%" -I"%ONNX_INC%" -I"%TFLITE_INC%" -I"%NCNN_INC%" -I"%MNN_INC%" -I"%LITERT_INC%"
+set "BUILD_DIR=%ROOT%\build\android-arm64"
+
+REM ---- Clear stale CMake cache (generator mismatch) ----
+if exist "%BUILD_DIR%\CMakeCache.txt" (
+    echo Removing stale CMake cache from previous generator...
+    del /Q "%BUILD_DIR%\CMakeCache.txt" 2>nul
+    rmdir /S /Q "%BUILD_DIR%\CMakeFiles" 2>nul
+)
+
+REM ---- Add NDK prebuilt + VS bundled CMake/Ninja to PATH ----
+set "PATH=%ANDROID_NDK_ROOT%\prebuilt\windows-x86_64\bin;%PATH%"
+for /f "usebackq tokens=*" %%i in (
+    `"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -prerelease -property installationPath`
+) do set "PATH=%%i\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
+set "PATH=%LOCALAPPDATA%\Android\Sdk\cmake\3.22.1\bin;%PATH%"
+
+REM ---- Detect build tool (prefer Ninja for speed) ----
+where ninja >nul 2>nul
+if errorlevel 1 (
+    set "CMAKE_GEN=Unix Makefiles"
+    echo Generator: Unix Makefiles
+) else (
+    set "CMAKE_GEN=Ninja"
+    echo Generator: Ninja
+)
 
 echo ============================================================
-echo  Building %OUT%
+echo  Configuring (CMake + NDK)...
 echo ============================================================
+cmake -S "%ROOT%" -B "%BUILD_DIR%" -G "%CMAKE_GEN%" ^
+    -DCMAKE_BUILD_TYPE=Release ^
+    -DCMAKE_TOOLCHAIN_FILE="%ANDROID_NDK_ROOT%\build\cmake\android.toolchain.cmake" ^
+    -DANDROID_ABI=arm64-v8a ^
+    -DANDROID_PLATFORM=21 ^
+    -DANDROID_STL=c++_static ^
+    -DHAVE_ONNX_BACKEND=ON ^
+    -DHAVE_TFLITE_BACKEND=ON ^
+    -DHAVE_NCNN_BACKEND=ON ^
+    -DHAVE_MNN_BACKEND=ON ^
+    -DHAVE_LITERT_BACKEND=ON
+if errorlevel 1 (
+    echo CMake configuration failed.
+    exit /b 1
+)
 
-del "%ROOT%\%OUT%" 2>nul
-del "%ROOT%\*.o" 2>nul
+echo.
+echo ============================================================
+echo  Building %OUT% (CMake + Ninja, incremental build)...
+echo ============================================================
+cmake --build "%BUILD_DIR%" --verbose
+if errorlevel 1 (
+    echo.
+    echo ============================================================
+    echo  BUILD FAILED
+    echo ============================================================
+    exit /b 1
+)
 
-REM Use 'call' because NDK compilers are .cmd wrapper scripts
-REM --- Core (C++) ---
-call "%CXX%" %CXXFLAGS% -c "%SRC%\log.cpp"                  -o "%ROOT%\log.o"                || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\cmd_args.cpp"             -o "%ROOT%\cmd_args.o"           || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\device_info.cpp"          -o "%ROOT%\device_info.o"        || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\file_ops.cpp"             -o "%ROOT%\file_ops.o"           || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\model_loader.cpp"         -o "%ROOT%\model_loader.o"       || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\backend_registry.cpp"     -o "%ROOT%\backend_registry.o"   || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\result_collector.cpp"     -o "%ROOT%\result_collector.o"   || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\input_provider.cpp"       -o "%ROOT%\input_provider.o"     || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\benchmark_runner.cpp"     -o "%ROOT%\benchmark_runner.o"   || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\main.cpp"                 -o "%ROOT%\main.o"               || exit /b 1
-REM --- Backends (C++) ---
-call "%CXX%" %CXXFLAGS% -c "%SRC%\onnx_backend.cpp"         -o "%ROOT%\onnx_backend.o"       || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\tflite_backend.cpp"       -o "%ROOT%\tflite_backend.o"     || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\ncnn_backend.cpp"         -o "%ROOT%\ncnn_backend.o"       || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\mnn_backend.cpp"          -o "%ROOT%\mnn_backend.o"        || exit /b 1
-call "%CXX%" %CXXFLAGS% -c "%SRC%\litert_backend.cpp"       -o "%ROOT%\litert_backend.o"     || exit /b 1
-
-echo Linking...
-set "TFLITE_FLEX="
-if exist "%TFLITE_LIB%\libtensorflowlite_flex.so" set "TFLITE_FLEX=-ltensorflowlite_flex"
-call "%CXX%" -o "%ROOT%\%OUT%" "%ROOT%\*.o" -L"%TFLITE_LIB%" -ltensorflowlite_c -ltensorflowlite_gpu_delegate %TFLITE_FLEX% -L"%ONNX_LIB%" -lonnxruntime -L"%NCNN_LIB%" -lncnn -L"%MNN_LIB%" -lMNN "%LITERT_LIB_PATH%" -static-libstdc++ -landroid -llog -lm -ldl -Wl,--allow-shlib-undefined || exit /b 1
-
-del "%ROOT%\*.o" 2>nul
+REM CMake outputs to BUILD_DIR, copy to ROOT for adb push
+copy /Y "%BUILD_DIR%\unified_bench_arm64-v8a" "%ROOT%\%OUT%" >nul
 
 echo.
 echo ============================================================
@@ -240,7 +265,7 @@ echo ============================================================
 echo  Running FULL benchmark (warmup=5, repeat=100)...
 echo ============================================================
 adb shell "rm -f /data/local/tmp/bench_test/summary.csv"
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn/hexagon ./%OUT% path_to_model.onnx"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn/hexagon ./%OUT% test_model.onnx"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.

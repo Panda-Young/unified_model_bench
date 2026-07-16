@@ -1,8 +1,9 @@
 @echo off
 setlocal enabledelayedexpansion
 REM ============================================================
-REM  Unified Benchmark - Visual Studio x86 build
-REM  Supported: ONNX, NCNN  (TFLite/MNN not available on x86)
+REM  Unified Benchmark - Windows x86 build (CMake + MSVC)
+REM  Supported: ONNX, NCNN  (TFLite/MNN/LiteRT not available on x86)
+REM  Requires: Visual Studio 2019+, CMake >= 3.16
 REM ============================================================
 
 REM ---- Locate Visual Studio ----
@@ -12,64 +13,49 @@ for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -products * -prerelease 
 if not defined VSROOT (echo ERROR: VS not found & exit /b 1)
 call "%VSROOT%\VC\Auxiliary\Build\vcvars32.bat"
 
-REM ---- Paths ----
+REM ---- Project root ----
 set "PROJ_ROOT=%~dp0.."
-set "INC=%PROJ_ROOT%\include"
-set "SRC=%PROJ_ROOT%\src"
+set "BUILD_DIR=%PROJ_ROOT%\build\win-x86"
 
-REM ONNX Runtime
-set "ONNX_INC=%~dp0..\deps\onnxruntime\include"
-set "ONNX_ROOT=%~dp0..\deps\onnxruntime"
+REM ---- Detect Visual Studio version for CMake generator ----
+for /f "usebackq tokens=*" %%v in (
+    `"%VSWHERE%" -latest -products * -prerelease -property catalog_productLineVersion`
+) do set "VS_VER=%%v"
+if not defined VS_VER (
+    echo ERROR: Could not detect VS version.
+    exit /b 1
+)
+echo Detected Visual Studio %VS_VER%
 
-REM TensorFlow Lite (x86 .lib not available - TFLite skipped)
-set "TFLITE_ROOT=%~dp0..\deps\tflite"
-set "TFLITE_INC=%TFLITE_ROOT%\include"
-
-REM ncnn
-set "NCNN_ROOT=%~dp0..\deps\ncnn"
-set "NCNN_INC=%NCNN_ROOT%\include"
-set "NCNN_LIB=%NCNN_ROOT%\lib\win-x86\ncnn.lib"
-
-set "OUT_NAME=unified_bench_win_x86.exe"
-set "OUT_PATH=%PROJ_ROOT%\%OUT_NAME%"
-
-del "%OUT_PATH%" 2>nul
+REM ---- Clear stale CMake cache (generator mismatch on version change) ----
+if exist "%BUILD_DIR%\CMakeCache.txt" (
+    echo Removing stale CMake cache from previous generator...
+    del /Q "%BUILD_DIR%\CMakeCache.txt" 2>nul
+    rmdir /S /Q "%BUILD_DIR%\CMakeFiles" 2>nul
+)
 
 echo ============================================================
-echo  Building %OUT_NAME% (x86 - ONNX + NCNN, no TFLite)
+echo  Configuring (CMake) - x86 with ONNX + NCNN backends
 echo ============================================================
+cmake -S "%PROJ_ROOT%" -B "%BUILD_DIR%" ^
+    -G "Visual Studio %VS_VER%" -A Win32 ^
+    -DCMAKE_BUILD_TYPE=Release ^
+    -DHAVE_ONNX_BACKEND=ON ^
+    -DHAVE_TFLITE_BACKEND=OFF ^
+    -DHAVE_NCNN_BACKEND=ON ^
+    -DHAVE_MNN_BACKEND=OFF ^
+    -DHAVE_LITERT_BACKEND=OFF
+if errorlevel 1 (
+    echo CMake configuration failed.
+    exit /b 1
+)
 
-REM ---- Compile (via response file to avoid command-line length limit) ----
-set "RSP=%PROJ_ROOT%\build_x86.rsp"
-(
-echo /EHa /std:c++17 /utf-8 /O2 /DNDEBUG /W3 /wd4251 /wd4273 /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX
-echo /DHAVE_ONNX_BACKEND
-echo /DHAVE_NCNN_BACKEND
-echo /I"%INC%"
-echo /I"%ONNX_INC%"
-echo /I"%TFLITE_INC%"
-echo /I"%NCNN_INC%"
-echo "%SRC%\log.cpp"
-echo "%SRC%\cmd_args.cpp"
-echo "%SRC%\device_info.cpp"
-echo "%SRC%\file_ops.cpp"
-echo "%SRC%\model_loader.cpp"
-echo "%SRC%\backend_registry.cpp"
-echo "%SRC%\onnx_backend.cpp"
-echo "%SRC%\ncnn_backend.cpp"
-echo "%SRC%\input_provider.cpp"
-echo "%SRC%\result_collector.cpp"
-echo "%SRC%\benchmark_runner.cpp"
-echo "%SRC%\main.cpp"
-echo /link "%NCNN_LIB%" Advapi32.lib /OUT:"%OUT_PATH%"
-) > "%RSP%"
-
-cl @"%RSP%"
-set BUILD_ERR=%ERRORLEVEL%
-del "%RSP%" 2>nul
-del *.obj 2>nul
-
-if %BUILD_ERR% neq 0 (
+echo.
+echo ============================================================
+echo  Building (CMake)...
+echo ============================================================
+cmake --build "%BUILD_DIR%" --config Release --verbose
+if errorlevel 1 (
     echo.
     echo ============================================================
     echo  BUILD FAILED
@@ -77,17 +63,22 @@ if %BUILD_ERR% neq 0 (
     exit /b 1
 )
 
+set "OUT_PATH=%BUILD_DIR%\Release\unified_bench_win_x86.exe"
+
 echo.
 echo ============================================================
 echo  BUILD SUCCESS: %OUT_PATH%
 echo ============================================================
 
-REM ---- Copy runtime DLLs to exe directory (non-ORT backends only) ----
-echo Copying dependency DLLs...
-copy /Y "%NCNN_ROOT%\lib\win-x86\ncnn.dll" "%PROJ_ROOT%\" 2>nul
-echo Done.
-REM Note: ONNX Runtime DLLs are loaded directly from deps/onnxruntime/lib/win-x86/<ep>/
+REM Note: ONNX Runtime DLLs are loaded dynamically from deps/onnxruntime/lib/win-x86/<ep>/
+REM Dependency DLLs (ncnn) are copied by CMake post-build.
 
 "%OUT_PATH%" --help
+
+echo.
+echo ============================================================
+echo  Quick rebuild (only changed files):
+echo    cmake --build "%BUILD_DIR%" --config Release
+echo ============================================================
 
 endlocal
