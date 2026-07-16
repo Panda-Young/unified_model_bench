@@ -105,6 +105,7 @@ bool ONNXBackend::ConfigureEP()
         return true;
     }
     case BackendId::ONNX_DML_GPU: {
+#if defined(_WIN32)
         /* Try V2 API with HighPerformance preference (auto-select best GPU) */
         const OrtDmlApi *dml_api = nullptr;
         OrtStatus *st = ort_->GetExecutionProviderApi("DML", ORT_API_VERSION, (const void **)&dml_api);
@@ -145,8 +146,13 @@ bool ONNXBackend::ConfigureEP()
             }
         }
         return true;
+#else
+        LOGE("ONNX: DML GPU EP only available on Windows");
+        return false;
+#endif
     }
     case BackendId::ONNX_DML_NPU: {
+#if defined(_WIN32)
         /* Must use V2 API with NPU filter (V1 has no NPU support) */
         const OrtDmlApi *dml_api = nullptr;
         OrtStatus *st = ort_->GetExecutionProviderApi("DML", ORT_API_VERSION, (const void **)&dml_api);
@@ -166,6 +172,10 @@ bool ONNXBackend::ConfigureEP()
         }
         LOGI("ONNX: DML_NPU EP configured (V2)");
         return true;
+#else
+        LOGE("ONNX: DML NPU EP only available on Windows");
+        return false;
+#endif
     }
     case BackendId::ONNX_OPENVINO_CPU: {
         /* Use V2 API via OrtApi struct with cache_dir to suppress warning and speed up reload */

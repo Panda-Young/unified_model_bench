@@ -240,7 +240,7 @@ echo ============================================================
 echo  Running FULL benchmark (warmup=5, repeat=100)...
 echo ============================================================
 adb shell "rm -f /data/local/tmp/bench_test/summary.csv"
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn/hexagon ./%OUT% /data/local/tmp/sports_vlog_online_0129.onnx"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn/hexagon ./%OUT% path_to_model.onnx"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.
@@ -255,6 +255,5 @@ echo.
 echo ============================================================
 echo  DONE.
 echo ============================================================
-pause
 
 endlocal
