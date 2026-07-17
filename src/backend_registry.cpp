@@ -115,68 +115,96 @@ namespace BackendRegistry
 #if defined(__ANDROID__) || defined(__android__)
         /* --- Android --- */
 #ifdef HAVE_ONNX_BACKEND
-        Register(BackendId::ONNX_CPU, {BackendId::ONNX_CPU, BackendType::ONNX_EP, "CPU", "", true}, CreateOnnxBackend);
-        Register(BackendId::ONNX_NNAPI, {BackendId::ONNX_NNAPI, BackendType::ONNX_EP, "NNAPI", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_XNNPACK, {BackendId::ONNX_XNNPACK, BackendType::ONNX_EP, "XNNPACK", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_QNN_CPU, {BackendId::ONNX_QNN_CPU, BackendType::ONNX_EP, "QNN_CPU", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_QNN_GPU, {BackendId::ONNX_QNN_GPU, BackendType::ONNX_EP, "QNN_GPU", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_QNN_HTP, {BackendId::ONNX_QNN_HTP, BackendType::ONNX_EP, "QNN_HTP", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_CPU, {BackendId::ONNX_CPU, BackendType::ONNX_EP, "ONNX_CPU", "", true}, CreateOnnxBackend);
+        Register(BackendId::ONNX_NNAPI, {BackendId::ONNX_NNAPI, BackendType::ONNX_EP, "ONNX_NNAPI", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_XNNPACK, {BackendId::ONNX_XNNPACK, BackendType::ONNX_EP, "ONNX_XNNPACK", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_QNN_CPU, {BackendId::ONNX_QNN_CPU, BackendType::ONNX_EP, "ONNX_QNN_CPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_QNN_GPU, {BackendId::ONNX_QNN_GPU, BackendType::ONNX_EP, "ONNX_QNN_GPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_QNN_HTP, {BackendId::ONNX_QNN_HTP, BackendType::ONNX_EP, "ONNX_QNN_HTP", "", false}, CreateOnnxBackend);
 #endif
 #ifdef HAVE_TFLITE_BACKEND
-        Register(BackendId::TFLITE_CPU, {BackendId::TFLITE_CPU, BackendType::TFLITE_DEL, "CPU", "", true}, CreateTfliteBackend);
-        Register(BackendId::TFLITE_XNNPACK, {BackendId::TFLITE_XNNPACK, BackendType::TFLITE_DEL, "XNNPACK", "", false}, CreateTfliteBackend);
-        Register(BackendId::TFLITE_NNAPI, {BackendId::TFLITE_NNAPI, BackendType::TFLITE_DEL, "NNAPI", "", false}, CreateTfliteBackend);
-        Register(BackendId::TFLITE_GPU, {BackendId::TFLITE_GPU, BackendType::TFLITE_DEL, "GPU", "", false}, CreateTfliteBackend);
-        Register(BackendId::TFLITE_NPU, {BackendId::TFLITE_NPU, BackendType::TFLITE_DEL, "NPU", "", false}, CreateTfliteBackend);
+        Register(BackendId::TFLITE_CPU, {BackendId::TFLITE_CPU, BackendType::TFLITE_DEL, "TFLITE_CPU", "", true}, CreateTfliteBackend);
+        Register(BackendId::TFLITE_XNNPACK, {BackendId::TFLITE_XNNPACK, BackendType::TFLITE_DEL, "TFLITE_XNNPACK", "", false}, CreateTfliteBackend);
+        Register(BackendId::TFLITE_XNNPACK_FP16, {BackendId::TFLITE_XNNPACK_FP16, BackendType::TFLITE_DEL, "TFLITE_XNNPACK_FP16", "", false}, CreateTfliteBackend);
+        Register(BackendId::TFLITE_NNAPI, {BackendId::TFLITE_NNAPI, BackendType::TFLITE_DEL, "TFLITE_NNAPI", "", false}, CreateTfliteBackend);
+        Register(BackendId::TFLITE_GPU, {BackendId::TFLITE_GPU, BackendType::TFLITE_DEL, "TFLITE_GPU", "", false}, CreateTfliteBackend);
+        Register(BackendId::TFLITE_GPU_FP16, {BackendId::TFLITE_GPU_FP16, BackendType::TFLITE_DEL, "TFLITE_GPU_FP16", "", false}, CreateTfliteBackend);
+        Register(BackendId::TFLITE_NPU, {BackendId::TFLITE_NPU, BackendType::TFLITE_DEL, "TFLITE_NPU", "", false}, CreateTfliteBackend);
 #endif
 #ifdef HAVE_LITERT_BACKEND
         Register(BackendId::LITERT_CPU, {BackendId::LITERT_CPU, BackendType::LITERT, "LiteRT_CPU", "", true}, CreateLitertBackend);
         Register(BackendId::LITERT_GPU, {BackendId::LITERT_GPU, BackendType::LITERT, "LiteRT_GPU", "", false}, CreateLitertBackend);
+        Register(BackendId::LITERT_GPU_FP16, {BackendId::LITERT_GPU_FP16, BackendType::LITERT, "LiteRT_GPU_FP16", "", false}, CreateLitertBackend);
         Register(BackendId::LITERT_NPU, {BackendId::LITERT_NPU, BackendType::LITERT, "LiteRT_NPU", "", false}, CreateLitertBackend);
+        Register(BackendId::LITERT_NPU_FP16, {BackendId::LITERT_NPU_FP16, BackendType::LITERT, "LiteRT_NPU_FP16", "", false}, CreateLitertBackend);
 #endif
 #ifdef HAVE_NCNN_BACKEND
         Register(BackendId::NCNN_CPU, {BackendId::NCNN_CPU, BackendType::NCNN, "NCNN_CPU", "", true}, CreateNcnnBackend);
+        Register(BackendId::NCNN_CPU_FP16, {BackendId::NCNN_CPU_FP16, BackendType::NCNN, "NCNN_CPU_FP16", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_CPU_BF16, {BackendId::NCNN_CPU_BF16, BackendType::NCNN, "NCNN_CPU_BF16", "", false}, CreateNcnnBackend);
         Register(BackendId::NCNN_VULKAN, {BackendId::NCNN_VULKAN, BackendType::NCNN, "NCNN_Vulkan", "", false}, CreateNcnnBackend);
         Register(BackendId::NCNN_VULKAN_FP16, {BackendId::NCNN_VULKAN_FP16, BackendType::NCNN, "NCNN_Vulkan_FP16", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_VULKAN_BF16, {BackendId::NCNN_VULKAN_BF16, BackendType::NCNN, "NCNN_Vulkan_BF16", "", false}, CreateNcnnBackend);
 #endif
 #ifdef HAVE_MNN_BACKEND
         Register(BackendId::MNN_CPU, {BackendId::MNN_CPU, BackendType::MNN, "MNN_CPU", "", true}, CreateMnnBackend);
-        /* Android: only CPU is stable */
+        Register(BackendId::MNN_OPENCL, {BackendId::MNN_OPENCL, BackendType::MNN, "MNN_OpenCL", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_OPENCL_FP16, {BackendId::MNN_OPENCL_FP16, BackendType::MNN, "MNN_OpenCL_FP16", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_OPENCL_BF16, {BackendId::MNN_OPENCL_BF16, BackendType::MNN, "MNN_OpenCL_BF16", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_VULKAN, {BackendId::MNN_VULKAN, BackendType::MNN, "MNN_VULKAN", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_VULKAN_FP16, {BackendId::MNN_VULKAN_FP16, BackendType::MNN, "MNN_VULKAN_FP16", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_VULKAN_BF16, {BackendId::MNN_VULKAN_BF16, BackendType::MNN, "MNN_VULKAN_BF16", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_OPENGL, {BackendId::MNN_OPENGL, BackendType::MNN, "MNN_OPENGL", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_NN, {BackendId::MNN_NN, BackendType::MNN, "MNN_NN", "", false}, CreateMnnBackend);
 #endif
 
 #else
         /* --- Desktop --- */
 #ifdef HAVE_ONNX_BACKEND
 #if defined(_WIN64) || defined(__linux__)
-        Register(BackendId::ONNX_CPU, {BackendId::ONNX_CPU, BackendType::ONNX_EP, "CPU", "", true}, CreateOnnxBackend);
-        Register(BackendId::ONNX_ONEDNN, {BackendId::ONNX_ONEDNN, BackendType::ONNX_EP, "oneDNN", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_DML_GPU, {BackendId::ONNX_DML_GPU, BackendType::ONNX_EP, "DML_GPU", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_DML_NPU, {BackendId::ONNX_DML_NPU, BackendType::ONNX_EP, "DML_NPU", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_OPENVINO_CPU, {BackendId::ONNX_OPENVINO_CPU, BackendType::ONNX_EP, "OpenVINO_CPU", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_OPENVINO_GPU, {BackendId::ONNX_OPENVINO_GPU, BackendType::ONNX_EP, "OpenVINO_GPU", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_OPENVINO_NPU, {BackendId::ONNX_OPENVINO_NPU, BackendType::ONNX_EP, "OpenVINO_NPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_CPU, {BackendId::ONNX_CPU, BackendType::ONNX_EP, "ONNX_CPU", "", true}, CreateOnnxBackend);
+        Register(BackendId::ONNX_ONEDNN, {BackendId::ONNX_ONEDNN, BackendType::ONNX_EP, "ONNX_oneDNN", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_DML_GPU, {BackendId::ONNX_DML_GPU, BackendType::ONNX_EP, "ONNX_DML_GPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_DML_NPU, {BackendId::ONNX_DML_NPU, BackendType::ONNX_EP, "ONNX_DML_NPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_OPENVINO_CPU, {BackendId::ONNX_OPENVINO_CPU, BackendType::ONNX_EP, "ONNX_OpenVINO_CPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_OPENVINO_GPU, {BackendId::ONNX_OPENVINO_GPU, BackendType::ONNX_EP, "ONNX_OpenVINO_GPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_OPENVINO_NPU, {BackendId::ONNX_OPENVINO_NPU, BackendType::ONNX_EP, "ONNX_OpenVINO_NPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_DML_GPU_FP16, {BackendId::ONNX_DML_GPU_FP16, BackendType::ONNX_EP, "ONNX_DML_GPU_FP16", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_OPENVINO_GPU_FP16, {BackendId::ONNX_OPENVINO_GPU_FP16, BackendType::ONNX_EP, "ONNX_OpenVINO_GPU_FP16", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_OPENVINO_GPU_BF16, {BackendId::ONNX_OPENVINO_GPU_BF16, BackendType::ONNX_EP, "ONNX_OpenVINO_GPU_BF16", "", false}, CreateOnnxBackend);
 #else /* 32-bit Windows */
-        Register(BackendId::ONNX_CPU, {BackendId::ONNX_CPU, BackendType::ONNX_EP, "CPU", "", true}, CreateOnnxBackend);
-        Register(BackendId::ONNX_DML_GPU, {BackendId::ONNX_DML_GPU, BackendType::ONNX_EP, "DML_GPU", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_DML_NPU, {BackendId::ONNX_DML_NPU, BackendType::ONNX_EP, "DML_NPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_CPU, {BackendId::ONNX_CPU, BackendType::ONNX_EP, "ONNX_CPU", "", true}, CreateOnnxBackend);
+        Register(BackendId::ONNX_DML_GPU, {BackendId::ONNX_DML_GPU, BackendType::ONNX_EP, "ONNX_DML_GPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_DML_NPU, {BackendId::ONNX_DML_NPU, BackendType::ONNX_EP, "ONNX_DML_NPU", "", false}, CreateOnnxBackend);
+        Register(BackendId::ONNX_DML_GPU_FP16, {BackendId::ONNX_DML_GPU_FP16, BackendType::ONNX_EP, "ONNX_DML_GPU_FP16", "", false}, CreateOnnxBackend);
 #endif
 #endif
 #ifdef HAVE_TFLITE_BACKEND
-        Register(BackendId::TFLITE_CPU, {BackendId::TFLITE_CPU, BackendType::TFLITE_DEL, "CPU", "", true}, CreateTfliteBackend);
+        Register(BackendId::TFLITE_CPU, {BackendId::TFLITE_CPU, BackendType::TFLITE_DEL, "TFLITE_CPU", "", true}, CreateTfliteBackend);
+        Register(BackendId::TFLITE_XNNPACK_FP16, {BackendId::TFLITE_XNNPACK_FP16, BackendType::TFLITE_DEL, "TFLITE_XNNPACK_FP16", "", false}, CreateTfliteBackend);
 #endif
 #ifdef HAVE_LITERT_BACKEND
         Register(BackendId::LITERT_CPU, {BackendId::LITERT_CPU, BackendType::LITERT, "LiteRT_CPU", "", true}, CreateLitertBackend);
         Register(BackendId::LITERT_GPU, {BackendId::LITERT_GPU, BackendType::LITERT, "LiteRT_GPU", "", false}, CreateLitertBackend);
+        Register(BackendId::LITERT_GPU_FP16, {BackendId::LITERT_GPU_FP16, BackendType::LITERT, "LiteRT_GPU_FP16", "", false}, CreateLitertBackend);
 #endif
 #ifdef HAVE_NCNN_BACKEND
         Register(BackendId::NCNN_CPU, {BackendId::NCNN_CPU, BackendType::NCNN, "NCNN_CPU", "", true}, CreateNcnnBackend);
+        Register(BackendId::NCNN_CPU_FP16, {BackendId::NCNN_CPU_FP16, BackendType::NCNN, "NCNN_CPU_FP16", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_CPU_BF16, {BackendId::NCNN_CPU_BF16, BackendType::NCNN, "NCNN_CPU_BF16", "", false}, CreateNcnnBackend);
         Register(BackendId::NCNN_VULKAN, {BackendId::NCNN_VULKAN, BackendType::NCNN, "NCNN_Vulkan", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_VULKAN_BF16, {BackendId::NCNN_VULKAN_BF16, BackendType::NCNN, "NCNN_Vulkan_BF16", "", false}, CreateNcnnBackend);
         Register(BackendId::NCNN_VULKAN_FP16, {BackendId::NCNN_VULKAN_FP16, BackendType::NCNN, "NCNN_Vulkan_FP16", "", false}, CreateNcnnBackend);
 #endif
 #ifdef HAVE_MNN_BACKEND
         Register(BackendId::MNN_CPU, {BackendId::MNN_CPU, BackendType::MNN, "MNN_CPU", "", true}, CreateMnnBackend);
         Register(BackendId::MNN_OPENCL, {BackendId::MNN_OPENCL, BackendType::MNN, "MNN_OpenCL", "", false}, CreateMnnBackend);
         Register(BackendId::MNN_OPENCL_FP16, {BackendId::MNN_OPENCL_FP16, BackendType::MNN, "MNN_OpenCL_FP16", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_OPENCL_BF16, {BackendId::MNN_OPENCL_BF16, BackendType::MNN, "MNN_OpenCL_BF16", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_VULKAN, {BackendId::MNN_VULKAN, BackendType::MNN, "MNN_VULKAN", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_VULKAN_FP16, {BackendId::MNN_VULKAN_FP16, BackendType::MNN, "MNN_VULKAN_FP16", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_VULKAN_BF16, {BackendId::MNN_VULKAN_BF16, BackendType::MNN, "MNN_VULKAN_BF16", "", false}, CreateMnnBackend);
+        Register(BackendId::MNN_OPENGL, {BackendId::MNN_OPENGL, BackendType::MNN, "MNN_OPENGL", "", false}, CreateMnnBackend);        
 #endif
 #endif
 

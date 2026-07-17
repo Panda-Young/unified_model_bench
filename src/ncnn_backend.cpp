@@ -196,6 +196,9 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
     net_->opt.num_threads = num_threads;
     net_->opt.lightmode = true;
     net_->opt.use_packing_layout = true;
+    /* Max speed: enable Winograd convolution (biggest single perf gain for CNNs) */
+    net_->opt.use_winograd_convolution = true;
+    net_->opt.use_sgemm_convolution = true;
 
     /* For Vulkan_FP16: prefer FP16-converted model.
      * The FP16 model has weights already quantized, giving smaller and
@@ -216,26 +219,55 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
                  fp16_bin.c_str());
         }
     }
-    if (id_ == BackendId::NCNN_VULKAN || id_ == BackendId::NCNN_VULKAN_FP16) {
+    if (id_ == BackendId::NCNN_VULKAN || id_ == BackendId::NCNN_VULKAN_FP16 || id_ == BackendId::NCNN_VULKAN_BF16) {
         gpu_device_ = ncnn::get_default_gpu_index();
         if (gpu_device_ < 0) {
             LOGW("NCNN: no Vulkan device found, falling back to CPU");
         } else {
             net_->opt.use_vulkan_compute = true;
             if (id_ == BackendId::NCNN_VULKAN) {
-                /* Force FP32 path: disable all FP16 optimizations */
+                /* Force FP32 path: disable all FP16/ BF16 optimizations */
                 net_->opt.use_fp16_packed = false;
                 net_->opt.use_fp16_storage = false;
                 net_->opt.use_fp16_arithmetic = false;
+                net_->opt.use_bf16_packed = false;
+                net_->opt.use_bf16_storage = false;
+            } else if (id_ == BackendId::NCNN_VULKAN_BF16) {
+                /* BF16 path - only enable features the GPU actually supports */
+                net_->opt.use_fp16_packed = false;
+                net_->opt.use_fp16_storage = false;
+                net_->opt.use_fp16_arithmetic = false;
+                const auto &gpu = ncnn::get_gpu_info(gpu_device_);
+                net_->opt.use_bf16_packed = gpu.support_bf16_packed() ? true : false;
+                net_->opt.use_bf16_storage = gpu.support_bf16_storage() ? true : false;
+                if (!net_->opt.use_bf16_packed && !net_->opt.use_bf16_storage) {
+                    LOGW("NCNN: GPU does not support BF16, falling back to FP32");
+                } else {
+                    LOGI("NCNN: GPU BF16: packed=%d storage=%d",
+                         (int)net_->opt.use_bf16_packed, (int)net_->opt.use_bf16_storage);
+                }
             } else {
                 /* FP16 path */
                 net_->opt.use_fp16_packed = true;
                 net_->opt.use_fp16_storage = true;
                 net_->opt.use_fp16_arithmetic = true;
             }
-            LOGI("NCNN: Vulkan enabled (gpu=%d, fp16=%d)", gpu_device_,
-                 net_->opt.use_fp16_packed);
+            LOGI("NCNN: Vulkan enabled (gpu=%d, precision=%s)", gpu_device_,
+                 (id_ == BackendId::NCNN_VULKAN_BF16) ? "BF16" :
+                 (id_ == BackendId::NCNN_VULKAN_FP16) ? "FP16" : "FP32");
         }
+    }
+    if (id_ == BackendId::NCNN_CPU_FP16) {
+        /* CPU FP16: enable packed FP16 storage/arithmetic (ARM NEON FP16) */
+        net_->opt.use_fp16_packed = true;
+        net_->opt.use_fp16_storage = true;
+        net_->opt.use_fp16_arithmetic = true;
+        LOGI("NCNN: CPU FP16 mode enabled");
+    }
+    if (id_ == BackendId::NCNN_CPU_BF16) {
+        /* CPU BF16: enable BF16 storage (ARM BF16, Intel AMX BF16) */
+        net_->opt.use_bf16_storage = true;
+        LOGI("NCNN: CPU BF16 mode enabled");
     }
 
     /* Load model */
@@ -247,10 +279,15 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
         return false;
     }
     LOGI("NCNN: param loaded, loading bin: %s", bin_path.c_str());
-    if (net_->load_model(bin_path.c_str()) != 0) {
-        LOGE("NCNN: failed to load bin: %s, due to %s, %d",
-             bin_path.c_str(), strerror(errno), errno);
-        return false;
+    {
+        LOGI("NCNN: load_model() starting...");
+        int mret = net_->load_model(bin_path.c_str());
+        LOGI("NCNN: load_model() returned %d", mret);
+        if (mret != 0) {
+            LOGE("NCNN: failed to load bin: %s, due to %s, %d",
+                 bin_path.c_str(), strerror(errno), errno);
+            return false;
+        }
     }
     LOGI("NCNN: model loaded successfully");
 

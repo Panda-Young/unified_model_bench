@@ -104,6 +104,10 @@ bool ONNXBackend::ConfigureEP()
         LOGI("ONNX: oneDNN EP configured");
         return true;
     }
+    case BackendId::ONNX_DML_GPU_FP16:
+        /* DML GPU FP16: HighPerformance already prefers FP16 on capable hardware */
+        LOGI("ONNX: DML GPU FP16 via HighPerformance preference");
+        [[fallthrough]];
     case BackendId::ONNX_DML_GPU: {
 #if defined(_WIN32)
         /* Try V2 API with HighPerformance preference (auto-select best GPU) */
@@ -204,6 +208,64 @@ bool ONNXBackend::ConfigureEP()
                 return false;
             }
             LOGI("ONNX: OpenVINO CPU EP configured (V1)");
+        }
+        return true;
+    }
+    case BackendId::ONNX_OPENVINO_GPU_BF16: {
+        /* OpenVINO GPU BF16 explicit precision */
+        if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
+            const char *keys[] = {"device_type", "precision", "cache_dir"};
+            const char *values[] = {"GPU", "BF16", "model_cache"};
+            OrtStatus *st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3);
+            if (st) {
+                LOGE("ONNX: OpenVINO GPU_BF16 append failed: %s", ort_->GetErrorMessage(st));
+                ort_->ReleaseStatus(st);
+                return false;
+            }
+            LOGI("ONNX: OpenVINO GPU_BF16 EP configured (V2, BF16, cache)");
+        } else {
+            auto pfnV1 = (PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)
+                load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_OpenVINO");
+            if (!pfnV1) {
+                LOGE("ONNX: OpenVINO EP function not found in DLL");
+                return false;
+            }
+            OrtStatus *st = pfnV1(opts_, "GPU_BF16");
+            if (st) {
+                LOGE("ONNX: OpenVINO GPU_BF16 append failed: %s", ort_->GetErrorMessage(st));
+                ort_->ReleaseStatus(st);
+                return false;
+            }
+            LOGW("ONNX: OpenVINO GPU_BF16 EP configured (V1 fallback)");
+        }
+        return true;
+    }
+    case BackendId::ONNX_OPENVINO_GPU_FP16: {
+        /* OpenVINO GPU FP16 explicit precision */
+        if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
+            const char *keys[] = {"device_type", "precision", "cache_dir"};
+            const char *values[] = {"GPU", "FP16", "model_cache"};
+            OrtStatus *st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3);
+            if (st) {
+                LOGE("ONNX: OpenVINO GPU_FP16 append failed: %s", ort_->GetErrorMessage(st));
+                ort_->ReleaseStatus(st);
+                return false;
+            }
+            LOGI("ONNX: OpenVINO GPU_FP16 EP configured (V2, FP16, cache)");
+        } else {
+            auto pfnV1 = (PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)
+                load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_OpenVINO");
+            if (!pfnV1) {
+                LOGE("ONNX: OpenVINO EP function not found in DLL");
+                return false;
+            }
+            OrtStatus *st = pfnV1(opts_, "GPU_FP16");
+            if (st) {
+                LOGE("ONNX: OpenVINO GPU_FP16 append failed: %s", ort_->GetErrorMessage(st));
+                ort_->ReleaseStatus(st);
+                return false;
+            }
+            LOGW("ONNX: OpenVINO GPU_FP16 EP configured (V1 fallback)");
         }
         return true;
     }
@@ -407,6 +469,7 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
         break;
     case BackendId::ONNX_DML_GPU:
     case BackendId::ONNX_DML_NPU:
+    case BackendId::ONNX_DML_GPU_FP16:
         ep_subdir = "dml";
         break;
     case BackendId::ONNX_ONEDNN:
@@ -414,6 +477,8 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
         break;
     case BackendId::ONNX_OPENVINO_CPU:
     case BackendId::ONNX_OPENVINO_GPU:
+    case BackendId::ONNX_OPENVINO_GPU_FP16:
+    case BackendId::ONNX_OPENVINO_GPU_BF16:
         ep_subdir = "openvino";
         break;
     case BackendId::ONNX_OPENVINO_NPU:
@@ -514,6 +579,8 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     }
     (void)ort_->SetIntraOpNumThreads(opts_, num_threads);
     (void)ort_->SetSessionGraphOptimizationLevel(opts_, ORT_ENABLE_ALL);
+    /* Enable CPU memory arena to reduce allocation overhead */
+    (void)ort_->EnableCpuMemArena(opts_);
     timing_[4] = std::chrono::duration<double, std::milli>(
                      std::chrono::high_resolution_clock::now() - t3)
                      .count();

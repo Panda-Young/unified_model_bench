@@ -71,6 +71,10 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
     LOGI("MNN: version=%s", MNN::getVersion());
     sched_.numThread = num_threads;
 
+    /* Max speed: pre-allocate all memory, max power */
+    bcfg_.memory = MNN::BackendConfig::Memory_High;
+    bcfg_.power = MNN::BackendConfig::Power_High;
+
     switch (id_) {
     case BackendId::MNN_CPU:
         sched_.type = MNN_FORWARD_CPU;
@@ -103,14 +107,17 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
         sched_.type = MNN_FORWARD_OPENGL;
         bcfg_.precision = MNN::BackendConfig::Precision_High;
         break;
+    case BackendId::MNN_NN:
+        sched_.type = MNN_FORWARD_NN;
+        bcfg_.precision = MNN::BackendConfig::Precision_High;
+        break;
     default:
         sched_.type = MNN_FORWARD_CPU;
         break;
     }
 
-    if (id_ != BackendId::MNN_CPU) {
-        sched_.backendConfig = &bcfg_;
-    }
+    /* Always set backendConfig for all modes to apply Memory_High/Power_High */
+    sched_.backendConfig = &bcfg_;
 
     LOGI("MNN: forward=%d threads=%d precision=%d",
          sched_.type, num_threads, (int)bcfg_.precision);

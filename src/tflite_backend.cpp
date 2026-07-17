@@ -72,13 +72,30 @@ private:
     double init_ms_ = 0;
 };
 
-static TfLiteDelegate *CreateDelegate(BackendId id)
+static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads)
 {
     switch (id) {
-    case BackendId::TFLITE_XNNPACK: {
+    case BackendId::TFLITE_XNNPACK:
+    case BackendId::TFLITE_XNNPACK_FP16: {
+#if defined(__ANDROID__) || defined(__android__)
         TfLiteXNNPackDelegateOptions xo = TfLiteXNNPackDelegateOptionsDefault();
-        xo.num_threads = 4;
+        xo.num_threads = num_threads;
+        xo.flags |= TFLITE_XNNPACK_DELEGATE_FLAG_ENABLE_LATEST_OPERATORS;
+        if (id == BackendId::TFLITE_XNNPACK_FP16) {
+            xo.flags |= TFLITE_XNNPACK_DELEGATE_FLAG_FORCE_FP16;
+        }
         return TfLiteXNNPackDelegateCreate(&xo);
+#else
+        /* Desktop: XNNPACK delegate creation hangs on some Intel GPU drivers.
+         * TFLITE_XNNPACK_FP16 runs as CPU (no delegate). */
+        if (id == BackendId::TFLITE_XNNPACK_FP16) {
+            LOGW("TFLite: XNNPACK_FP16 not available on this platform, running as CPU");
+            return nullptr;
+        }
+        TfLiteXNNPackDelegateOptions xo = TfLiteXNNPackDelegateOptionsDefault();
+        xo.num_threads = num_threads;
+        return TfLiteXNNPackDelegateCreate(&xo);
+#endif
     }
     case BackendId::TFLITE_NNAPI:
 #if defined(__ANDROID__) || defined(__android__)
@@ -93,9 +110,16 @@ static TfLiteDelegate *CreateDelegate(BackendId id)
         return nullptr;
 #endif
     case BackendId::TFLITE_GPU:
+    case BackendId::TFLITE_GPU_FP16:
 #if defined(__ANDROID__) || defined(__android__)
     {
         TfLiteGpuDelegateOptionsV2 go = TfLiteGpuDelegateOptionsV2Default();
+        /* Max speed: allow FP16, prefer min latency over memory savings */
+        go.is_precision_loss_allowed = 1;
+        go.inference_preference = TFLITE_GPU_INFERENCE_PREFERENCE_FAST_SINGLE_ANSWER;
+        go.inference_priority1 = TFLITE_GPU_INFERENCE_PRIORITY_MIN_LATENCY;
+        go.inference_priority2 = TFLITE_GPU_INFERENCE_PRIORITY_MIN_MEMORY_USAGE;
+        go.inference_priority3 = TFLITE_GPU_INFERENCE_PRIORITY_MAX_PRECISION;
         return TfLiteGpuDelegateV2Create(&go);
     }
 #else
@@ -128,40 +152,50 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
 
+    LOGI("TFLite: step 1/7: TfLiteModelCreateFromFile(%s)", model_path);
     model_ = TfLiteModelCreateFromFile(model_path);
     if (!model_) {
         LOGE("TFLite: failed to load model: %s", model_path);
         return false;
     }
+    LOGI("TFLite: step 1 OK");
 
+    LOGI("TFLite: step 2/7: TfLiteInterpreterOptionsCreate");
     opts_ = TfLiteInterpreterOptionsCreate();
     if (!opts_) {
         LOGE("TFLite: failed to create interpreter options");
         return false;
     }
+    LOGI("TFLite: step 2 OK");
+
     TfLiteInterpreterOptionsSetNumThreads(opts_, num_threads);
 
-    delegate_ = CreateDelegate(id_);
+    LOGI("TFLite: step 3/7: CreateDelegate");
+    delegate_ = CreateDelegate(id_, num_threads);
     if (delegate_) {
+        LOGI("TFLite: step 3a: TfLiteInterpreterOptionsAddDelegate");
         TfLiteInterpreterOptionsAddDelegate(opts_, delegate_);
         LOGI("TFLite: delegate attached for backend %d", bid(id_));
     }
+    LOGI("TFLite: step 3 OK");
 
-    /* Flex delegate temporarily disabled - library lacks Flex ops support.
-     * Instead, re-generate TFLite model via onnx_convert.py (Erf->Tanh preproc).
-     * See:  python tools\onnx_convert.py model.onnx --to tflite */
+    /* Flex delegate temporarily disabled */
     (void)flex_delegate_;
 
+    LOGI("TFLite: step 4/7: TfLiteInterpreterCreate");
     interp_ = TfLiteInterpreterCreate(model_, opts_);
     if (!interp_) {
         LOGE("TFLite: interpreter create failed");
         return false;
     }
+    LOGI("TFLite: step 4 OK");
 
+    LOGI("TFLite: step 5/7: TfLiteInterpreterAllocateTensors");
     if (TfLiteInterpreterAllocateTensors(interp_) != kTfLiteOk) {
         LOGE("TFLite: tensor allocation failed");
         return false;
     }
+    LOGI("TFLite: step 5 OK");
 
     num_inputs_ = TfLiteInterpreterGetInputTensorCount(interp_);
     num_outputs_ = TfLiteInterpreterGetOutputTensorCount(interp_);

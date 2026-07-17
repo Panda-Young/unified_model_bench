@@ -20,42 +20,51 @@ enum class BackendType { ONNX_EP = 0,
                          MNN = 3,
                          LITERT = 4 };
 
-/* ONNX Execution Providers:      0-15
- * TFLite Delegates:            100-103
- * NCNN backends:               200-202
- * MNN backends:                300-307
- */
+/* ONNX Execution Providers:      0-17
+     * TFLite Delegates:            100-107
+     * NCNN backends:               200-206
+     * MNN backends:                300-309
+     * LiteRT backends:             400-405
+     */
 enum class BackendId {
     /* ONNX */
     ONNX_CPU = 0,
     ONNX_ONEDNN = 1,
     ONNX_DML_GPU = 2,
-    ONNX_DML_NPU = 3,
-    ONNX_OPENVINO_CPU = 4,
-    ONNX_OPENVINO_GPU = 5,
-    ONNX_OPENVINO_NPU = 6,
-    ONNX_CUDA = 7,
-    ONNX_TENSORRT = 8,
-    ONNX_NNAPI = 9,
-    ONNX_XNNPACK = 10,
-    ONNX_QNN_CPU = 11,
-    ONNX_QNN_GPU = 12,
-    ONNX_QNN_HTP = 13,
-    ONNX_LAST = 14,
+    ONNX_DML_GPU_FP16 = 3,
+    ONNX_DML_NPU = 4,
+    ONNX_OPENVINO_CPU = 5,
+    ONNX_OPENVINO_GPU = 6,
+    ONNX_OPENVINO_GPU_FP16 = 7,
+    ONNX_OPENVINO_GPU_BF16 = 8,
+    ONNX_OPENVINO_NPU = 9,
+    ONNX_CUDA = 10,
+    ONNX_TENSORRT = 11,
+    ONNX_NNAPI = 12,
+    ONNX_XNNPACK = 13,
+    ONNX_QNN_CPU = 14,
+    ONNX_QNN_GPU = 15,
+    ONNX_QNN_HTP = 16,
+    ONNX_LAST = 17,
 
     /* TFLite */
     TFLITE_CPU = 100,
     TFLITE_XNNPACK = 101,
-    TFLITE_NNAPI = 102,
-    TFLITE_GPU = 103,
-    TFLITE_NPU = 104,
-    TFLITE_LAST = 105,
+    TFLITE_XNNPACK_FP16 = 102,
+    TFLITE_NNAPI = 103,
+    TFLITE_GPU = 104,
+    TFLITE_GPU_FP16 = 105,
+    TFLITE_NPU = 106,
+    TFLITE_LAST = 107,
 
     /* NCNN */
     NCNN_CPU = 200,
-    NCNN_VULKAN = 201,
-    NCNN_VULKAN_FP16 = 202,
-    NCNN_LAST = 203,
+    NCNN_CPU_FP16 = 201,
+    NCNN_CPU_BF16 = 202,
+    NCNN_VULKAN = 203,
+    NCNN_VULKAN_BF16 = 204,
+    NCNN_VULKAN_FP16 = 205,
+    NCNN_LAST = 206,
 
     /* MNN */
     MNN_CPU = 300,
@@ -66,13 +75,16 @@ enum class BackendId {
     MNN_VULKAN_FP16 = 305,
     MNN_VULKAN_BF16 = 306,
     MNN_OPENGL = 307,
-    MNN_LAST = 308,
+    MNN_NN = 308,
+    MNN_LAST = 309,
 
     /* LiteRT */
     LITERT_CPU = 400,
     LITERT_GPU = 401,
-    LITERT_NPU = 402,
-    LITERT_LAST = 403,
+    LITERT_GPU_FP16 = 402,
+    LITERT_NPU = 403,
+    LITERT_NPU_FP16 = 404,
+    LITERT_LAST = 405,
 };
 
 inline int bid(BackendId id) { return static_cast<int>(id); }

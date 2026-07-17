@@ -211,9 +211,9 @@ bool LiteRTBackend::Initialize(const char *model_path, int num_threads)
 
     {
         LiteRtHwAcceleratorSet accel;
-        if (id_ == BackendId::LITERT_GPU) {
+        if (id_ == BackendId::LITERT_GPU || id_ == BackendId::LITERT_GPU_FP16) {
             accel = kLiteRtHwAcceleratorGpu;
-        } else if (id_ == BackendId::LITERT_NPU) {
+        } else if (id_ == BackendId::LITERT_NPU || id_ == BackendId::LITERT_NPU_FP16) {
             accel = kLiteRtHwAcceleratorNpu;
         } else {
             accel = kLiteRtHwAcceleratorCpu;
