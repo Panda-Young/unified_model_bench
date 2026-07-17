@@ -136,8 +136,12 @@ public:
     BackendId GetId() const { return id_; }
     void SetId(BackendId id) { id_ = id; }
 
+    /** Return the last error message (set by backend on failure) */
+    const char *GetLastError() const { return last_error_.c_str(); }
+
 protected:
     BackendId id_ = BackendId::ONNX_CPU;
+    std::string last_error_;
 };
 
 using BackendPtr = std::unique_ptr<IBackend>;

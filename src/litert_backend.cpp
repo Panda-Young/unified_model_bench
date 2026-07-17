@@ -40,6 +40,33 @@
 #include "litert/c/options/litert_qualcomm_options.h"
 
 /* ---------------------------------------------------------------------------
+ * LiteRtStatus -> readable string (LiteRT has no built-in status-to-string)
+ * -------------------------------------------------------------------------*/
+static const char *LiteRtStatusStr(LiteRtStatus st)
+{
+    switch (st) {
+    case kLiteRtStatusOk:                       return "Ok";
+    case kLiteRtStatusErrorInvalidArgument:      return "InvalidArgument";
+    case kLiteRtStatusErrorMemoryAllocationFailure: return "MemoryAllocationFailure";
+    case kLiteRtStatusErrorRuntimeFailure:       return "RuntimeFailure";
+    case kLiteRtStatusErrorMissingInputTensor:   return "MissingInputTensor";
+    case kLiteRtStatusErrorUnsupported:          return "Unsupported";
+    case kLiteRtStatusErrorNotFound:             return "NotFound";
+    case kLiteRtStatusErrorTimeoutExpired:       return "TimeoutExpired";
+    case kLiteRtStatusErrorWrongVersion:         return "WrongVersion";
+    case kLiteRtStatusErrorUnknown:              return "Unknown";
+    case kLiteRtStatusErrorAlreadyExists:        return "AlreadyExists";
+    case kLiteRtStatusErrorFileIO:               return "FileIO";
+    case kLiteRtStatusErrorInvalidFlatbuffer:    return "InvalidFlatbuffer";
+    case kLiteRtStatusErrorDynamicLoading:       return "DynamicLoading";
+    case kLiteRtStatusErrorSerialization:        return "Serialization";
+    case kLiteRtStatusErrorCompilation:          return "Compilation";
+    case kLiteRtStatusErrorIndexOOB:             return "IndexOutOfBounds";
+    default:                                     return "UnknownStatus";
+    }
+}
+
+/* ---------------------------------------------------------------------------
  * LiteRTBackend
  * -------------------------------------------------------------------------*/
 class LiteRTBackend : public IBackend
@@ -94,36 +121,56 @@ private:
 bool LiteRTBackend::QueryIOMetadata()
 {
     LiteRtParamIndex num_sigs;
-    if (LiteRtGetNumModelSignatures(model_, &num_sigs) != kLiteRtStatusOk || num_sigs == 0) {
+    LiteRtStatus st_sig = LiteRtGetNumModelSignatures(model_, &num_sigs);
+    if (st_sig != kLiteRtStatusOk || num_sigs == 0) {
         LOGE("LiteRT: no signatures in model");
+        last_error_ = std::string("LiteRT: GetNumModelSignatures: ") + LiteRtStatusStr(st_sig);
         return false;
     }
     /* Use first signature */
     LiteRtSignature sig;
-    if (LiteRtGetModelSignature(model_, 0, &sig) != kLiteRtStatusOk) {
+    LiteRtStatus st_get = LiteRtGetModelSignature(model_, 0, &sig);
+    if (st_get != kLiteRtStatusOk) {
         LOGE("LiteRT: failed to get signature");
+        last_error_ = std::string("LiteRT: GetModelSignature: ") + LiteRtStatusStr(st_get);
         return false;
     }
 
     /* Input count & info */
     LiteRtParamIndex num_in, num_out;
-    if (LiteRtGetNumSignatureInputs(sig, &num_in) != kLiteRtStatusOk) {
-        return false;
+    {
+        LiteRtStatus st = LiteRtGetNumSignatureInputs(sig, &num_in);
+        if (st != kLiteRtStatusOk) {
+            last_error_ = std::string("LiteRT: GetNumSignatureInputs: ") + LiteRtStatusStr(st);
+            return false;
+        }
     }
-    if (LiteRtGetNumSignatureOutputs(sig, &num_out) != kLiteRtStatusOk) {
-        return false;
+    {
+        LiteRtStatus st = LiteRtGetNumSignatureOutputs(sig, &num_out);
+        if (st != kLiteRtStatusOk) {
+            last_error_ = std::string("LiteRT: GetNumSignatureOutputs: ") + LiteRtStatusStr(st);
+            return false;
+        }
     }
     num_inputs_ = (size_t)num_in;
     num_outputs_ = (size_t)num_out;
 
     for (LiteRtParamIndex i = 0; i < num_in; ++i) {
         LiteRtTensor tensor;
-        if (LiteRtGetSignatureInputTensorByIndex(sig, i, &tensor) != kLiteRtStatusOk) {
-            return false;
+        {
+            LiteRtStatus st = LiteRtGetSignatureInputTensorByIndex(sig, i, &tensor);
+            if (st != kLiteRtStatusOk) {
+                last_error_ = std::string("LiteRT: GetSignatureInputTensorByIndex: ") + LiteRtStatusStr(st);
+                return false;
+            }
         }
         LiteRtRankedTensorType rtype;
-        if (LiteRtGetRankedTensorType(tensor, &rtype) != kLiteRtStatusOk) {
-            return false;
+        {
+            LiteRtStatus st = LiteRtGetRankedTensorType(tensor, &rtype);
+            if (st != kLiteRtStatusOk) {
+                last_error_ = std::string("LiteRT: GetRankedTensorType: ") + LiteRtStatusStr(st);
+                return false;
+            }
         }
         int32_t rank = (int32_t)rtype.layout.rank;
         const int32_t *dims = rtype.layout.dimensions;
@@ -138,12 +185,20 @@ bool LiteRTBackend::QueryIOMetadata()
 
     for (LiteRtParamIndex i = 0; i < num_out; ++i) {
         LiteRtTensor tensor;
-        if (LiteRtGetSignatureOutputTensorByIndex(sig, i, &tensor) != kLiteRtStatusOk) {
-            return false;
+        {
+            LiteRtStatus st = LiteRtGetSignatureOutputTensorByIndex(sig, i, &tensor);
+            if (st != kLiteRtStatusOk) {
+                last_error_ = std::string("LiteRT: GetSignatureOutputTensorByIndex: ") + LiteRtStatusStr(st);
+                return false;
+            }
         }
         LiteRtRankedTensorType rtype;
-        if (LiteRtGetRankedTensorType(tensor, &rtype) != kLiteRtStatusOk) {
-            return false;
+        {
+            LiteRtStatus st = LiteRtGetRankedTensorType(tensor, &rtype);
+            if (st != kLiteRtStatusOk) {
+                last_error_ = std::string("LiteRT: GetRankedTensorType: ") + LiteRtStatusStr(st);
+                return false;
+            }
         }
         int32_t rank = (int32_t)rtype.layout.rank;
         const int32_t *dims = rtype.layout.dimensions;
@@ -166,6 +221,7 @@ bool LiteRTBackend::QueryIOMetadata()
 bool LiteRTBackend::Initialize(const char *model_path, int num_threads)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
+    last_error_.clear();
     (void)num_threads;
 
     /* 1. Build environment options for NPU dispatch */
@@ -187,25 +243,36 @@ bool LiteRTBackend::Initialize(const char *model_path, int num_threads)
     }
 
     /* 2. Create environment */
-    if (LiteRtCreateEnvironment(num_env_opts, env_opts, &env_) != kLiteRtStatusOk) {
-        LOGE("LiteRT: failed to create environment");
+    LiteRtStatus st_env;
+    st_env = LiteRtCreateEnvironment(num_env_opts, env_opts, &env_);
+    if (st_env != kLiteRtStatusOk) {
+        LOGE("LiteRT: CreateEnvironment failed: %d", (int)st_env);
+        last_error_ = std::string("LiteRT: CreateEnvironment: ") + LiteRtStatusStr(st_env);
         return false;
     }
 
     /* 3. Load model */
-    if (LiteRtCreateModelFromFile(env_, model_path, &model_) != kLiteRtStatusOk) {
-        LOGE("LiteRT: failed to load model: %s", model_path);
+    LiteRtStatus st_mod;
+    st_mod = LiteRtCreateModelFromFile(env_, model_path, &model_);
+    if (st_mod != kLiteRtStatusOk) {
+        LOGE("LiteRT: CreateModelFromFile(%s) failed: %d", model_path, (int)st_mod);
+        last_error_ = std::string("LiteRT: CreateModelFromFile: ") + LiteRtStatusStr(st_mod);
         return false;
     }
 
     /* 4. Query IO metadata */
     if (!QueryIOMetadata()) {
+        if (last_error_.empty())
+            last_error_ = "LiteRT: QueryIOMetadata failed";
         return false;
     }
 
     /* 5. Create compilation options with accelerator selection */
-    if (LiteRtCreateOptions(&comp_opts_) != kLiteRtStatusOk) {
-        LOGE("LiteRT: failed to create options");
+    LiteRtStatus st_opt;
+    st_opt = LiteRtCreateOptions(&comp_opts_);
+    if (st_opt != kLiteRtStatusOk) {
+        LOGE("LiteRT: CreateOptions failed: %d", (int)st_opt);
+        last_error_ = std::string("LiteRT: CreateOptions: ") + LiteRtStatusStr(st_opt);
         return false;
     }
 
@@ -218,15 +285,21 @@ bool LiteRTBackend::Initialize(const char *model_path, int num_threads)
         } else {
             accel = kLiteRtHwAcceleratorCpu;
         }
-        if (LiteRtSetOptionsHardwareAccelerators(comp_opts_, accel) != kLiteRtStatusOk) {
-            LOGE("LiteRT: failed to set accelerators");
+        LiteRtStatus st_hw;
+        st_hw = LiteRtSetOptionsHardwareAccelerators(comp_opts_, accel);
+        if (st_hw != kLiteRtStatusOk) {
+            LOGE("LiteRT: SetOptionsHardwareAccelerators failed: %d", (int)st_hw);
+            last_error_ = std::string("LiteRT: SetAccelerators: ") + LiteRtStatusStr(st_hw);
             return false;
         }
     }
 
     /* 6. Create compiled model */
-    if (LiteRtCreateCompiledModel(env_, model_, comp_opts_, &compiled_) != kLiteRtStatusOk) {
-        LOGE("LiteRT: failed to compile model");
+    LiteRtStatus st_comp;
+    st_comp = LiteRtCreateCompiledModel(env_, model_, comp_opts_, &compiled_);
+    if (st_comp != kLiteRtStatusOk) {
+        LOGE("LiteRT: CreateCompiledModel failed: %d", (int)st_comp);
+        last_error_ = std::string("LiteRT: CreateCompiledModel: ") + LiteRtStatusStr(st_comp);
         return false;
     }
 
@@ -357,6 +430,14 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
         snaps[i].resize(output_elems_[i] > 0 ? output_elems_[i] : 1);
     }
 
+    /* Helper: clean up N first buffers (on partial failure) */
+    auto cleanup_bufs = [](std::vector<LiteRtTensorBuffer> &bufs, size_t n) {
+        for (size_t j = 0; j < n; ++j) {
+            if (bufs[j])
+                LiteRtDestroyTensorBuffer(bufs[j]);
+        }
+    };
+
     /* Helper: create input tensor buffers from host memory with proper alignment */
     auto create_input_buffers = [&](std::vector<LiteRtTensorBuffer> &bufs) -> bool {
         bufs.resize(num_inputs_, nullptr);
@@ -366,6 +447,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             if (LiteRtGetCompiledModelInputBufferRequirements(
                     compiled_, 0, i, &reqs) != kLiteRtStatusOk) {
                 LOGE("LiteRT: failed to get input %zu buffer requirements", i);
+                cleanup_bufs(bufs, i);
                 return false;
             }
 
@@ -385,6 +467,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             if (!host_mem) {
                 LOGE("LiteRT: failed to allocate %zu bytes for input %zu",
                      buffer_size, i);
+                cleanup_bufs(bufs, i);
                 return false;
             }
             /* Copy input data into the aligned buffer */
@@ -413,6 +496,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
 #endif
                     &bufs[i]) != kLiteRtStatusOk) {
                 LOGE("LiteRT: failed to create input buffer %zu", i);
+                cleanup_bufs(bufs, i);
 #if defined(_WIN32)
                 _aligned_free(host_mem);
 #else
@@ -433,6 +517,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             if (LiteRtGetCompiledModelOutputBufferRequirements(
                     compiled_, 0, i, &reqs) != kLiteRtStatusOk) {
                 LOGE("LiteRT: failed to get output %zu buffer requirements", i);
+                cleanup_bufs(bufs, i);
                 return false;
             }
 
@@ -452,6 +537,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             if (!host_mem) {
                 LOGE("LiteRT: failed to allocate %zu bytes for output %zu",
                      buffer_size, i);
+                cleanup_bufs(bufs, i);
                 return false;
             }
             memset(host_mem, 0, buffer_size);
@@ -476,6 +562,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
 #endif
                     &bufs[i]) != kLiteRtStatusOk) {
                 LOGE("LiteRT: failed to create output buffer %zu", i);
+                cleanup_bufs(bufs, i);
 #if defined(_WIN32)
                 _aligned_free(host_mem);
 #else
@@ -487,7 +574,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
         return true;
     };
 
-    auto destroy_buffers = [](std::vector<LiteRtTensorBuffer> &bufs) {
+    auto destroy_buffers = [](const char *label, std::vector<LiteRtTensorBuffer> &bufs) {
         for (auto &b : bufs) {
             if (b) {
                 LiteRtDestroyTensorBuffer(b);
@@ -503,13 +590,19 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             return false;
         }
         if (!create_output_buffers(out_bufs)) {
-            destroy_buffers(in_bufs);
+            destroy_buffers("warmup_out_err", in_bufs);
             return false;
         }
-        LiteRtRunCompiledModel(compiled_, 0, num_inputs_, in_bufs.data(),
+        LiteRtStatus warmup_st = LiteRtRunCompiledModel(compiled_, 0, num_inputs_, in_bufs.data(),
                                num_outputs_, out_bufs.data());
-        destroy_buffers(in_bufs);
-        destroy_buffers(out_bufs);
+        if (warmup_st != kLiteRtStatusOk) {
+            LOGE("LiteRT: warmup %d run failed: %s", w, LiteRtStatusStr(warmup_st));
+            destroy_buffers("warmup_err", in_bufs);
+            destroy_buffers("warmup_err", out_bufs);
+            return false;
+        }
+        destroy_buffers("warmup_in", in_bufs);
+        destroy_buffers("warmup_out", out_bufs);
     }
 
     /* Benchmark repeats */
@@ -519,7 +612,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             return false;
         }
         if (!create_output_buffers(out_bufs)) {
-            destroy_buffers(in_bufs);
+            destroy_buffers("repeat_buf_err", in_bufs);
             return false;
         }
 
@@ -531,8 +624,8 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
 
         if (st != kLiteRtStatusOk) {
             LOGE("LiteRT: run failed at repeat %d", r);
-            destroy_buffers(in_bufs);
-            destroy_buffers(out_bufs);
+            destroy_buffers("repeat_in_err", in_bufs);
+            destroy_buffers("repeat_out_err", out_bufs);
             return false;
         }
 
@@ -551,8 +644,8 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             }
         }
 
-        destroy_buffers(in_bufs);
-        destroy_buffers(out_bufs);
+        destroy_buffers("repeat_in", in_bufs);
+        destroy_buffers("repeat_out", out_bufs);
         total += ms;
         if (ms > maxv) {
             maxv = ms;

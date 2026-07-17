@@ -93,6 +93,24 @@ static const char *app_name_str()
 }
 
 /* ---------------------------------------------------------------------------
+ * Sanitize a string for CSV export — replace characters that break CSV.
+ * -------------------------------------------------------------------------*/
+static std::string csv_safe(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        switch (c) {
+        case '\n': out += ' '; break;
+        case '\r': out += ' '; break;
+        case '"':  out += "'"; break;
+        default:   out += c;   break;
+        }
+    }
+    return out;
+}
+
+/* ---------------------------------------------------------------------------
  * Constructor
  * -------------------------------------------------------------------------*/
 BenchmarkRunner::BenchmarkRunner(const BenchConfig &cfg, ResultCollector &collector)
@@ -271,6 +289,39 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
 }
 
 /* ---------------------------------------------------------------------------
+ * Record a failed backend
+ * -------------------------------------------------------------------------*/
+static void RecordFailure(ResultCollector &collector, const BackendConfig &bcfg,
+                          const std::string &model_path, ModelFormat fmt,
+                          const BenchConfig &cfg, const std::string &device_info,
+                          const std::string &arch, const char *app,
+                          const char *date, const char *time,
+                          const char *reason)
+{
+    if (!cfg.enable_csv)
+        return;
+    BenchmarkRecord rec;
+    auto last_slash = model_path.find_last_of("/\\");
+    rec.model_name = (last_slash != std::string::npos) ? model_path.substr(last_slash + 1) : model_path;
+    if (fmt == ModelFormat::NCNN) {
+        auto pos = rec.model_name.rfind(".ncnn.param");
+        if (pos != std::string::npos)
+            rec.model_name.replace(pos, 12, ".ncnn.bin");
+    }
+    rec.warmup_runs = cfg.warmup_runs;
+    rec.repeat_runs = cfg.repeat;
+    rec.num_threads = cfg.num_threads;
+    rec.backend_name = bcfg.name;
+    rec.device_info = device_info;
+    rec.arch = arch;
+    rec.app_name = app;
+    rec.notes = csv_safe(reason);
+    rec.acceleration_vs_cpu = -1.0; /* sentinel: no valid measurement */
+    collector.Add(rec);
+    collector.AppendCsv(rec, cfg.csv_path.c_str(), date, time, app);
+}
+
+/* ---------------------------------------------------------------------------
  * TestBackend
  * -------------------------------------------------------------------------*/
 bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
@@ -284,11 +335,22 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     auto backend = BackendRegistry::Create(bcfg.id);
     if (!backend) {
         LOGW("Create failed: %s", bcfg.name.c_str());
+        RecordFailure(collector_, bcfg, model_path, fmt, cfg_,
+                      device_info_, arch_, app_name_str(),
+                      batch_date_.c_str(), batch_time_.c_str(),
+                      "Backend not registered");
         return false;
     }
 
     if (!backend->Initialize(model_path.c_str(), cfg_.num_threads)) {
         LOGW("Init failed: %s", bcfg.name.c_str());
+        const char *reason = backend->GetLastError();
+        if (!reason || !*reason)
+            reason = "Initialization failed";
+        RecordFailure(collector_, bcfg, model_path, fmt, cfg_,
+                      device_info_, arch_, app_name_str(),
+                      batch_date_.c_str(), batch_time_.c_str(),
+                      reason);
         return false;
     }
 
@@ -396,7 +458,7 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     rec.device_info = device_info_;
     rec.arch = arch_;
     rec.app_name = app_name_str();
-    rec.notes = notes.str();
+    rec.notes = csv_safe(notes.str());
 
     collector_.Add(rec);
 

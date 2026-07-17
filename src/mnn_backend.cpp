@@ -67,6 +67,7 @@ private:
 bool MNNBackend::Initialize(const char *model_path, int num_threads)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
+    last_error_.clear();
 
     LOGI("MNN: version=%s", MNN::getVersion());
     sched_.numThread = num_threads;
@@ -126,6 +127,7 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
         MNN::Interpreter::createFromFile(model_path));
     if (!interp_) {
         LOGE("MNN: createFromFile failed");
+        last_error_ = "MNN: createFromFile failed";
         return false;
     }
 
@@ -133,6 +135,7 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
     if (!session_) {
         LOGE("MNN: createSession failed");
         interp_ = nullptr;
+        last_error_ = "MNN: createSession failed";
         return false;
     }
 
@@ -403,6 +406,9 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         float *buf = (float *)malloc(n * sizeof(float));
         if (!buf) {
             LOGE("MNN: malloc(%zu) failed at output %zu, due to %s, %d", n * sizeof(float), i, strerror(errno), errno);
+            for (size_t j = 0; j < i; ++j) {
+                free(odata[j]);
+            }
             return false;
         }
         memcpy(buf, snaps[i].data(), n * sizeof(float));

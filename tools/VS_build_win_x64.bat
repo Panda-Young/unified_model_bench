@@ -83,7 +83,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-set "OUT_PATH=%BUILD_DIR%\Release\unified_bench_win_x64.exe"
+set "OUT_PATH=%BUILD_DIR%\Release\unified_bench.exe"
 
 echo.
 echo ============================================================

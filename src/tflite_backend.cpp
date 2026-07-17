@@ -15,6 +15,7 @@
 #include <tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h>
 
 #include <chrono>
+#include <cstdarg>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -24,6 +25,34 @@
 #else
 #include <dlfcn.h>
 #endif
+
+/* ---------------------------------------------------------------------------
+ * TFLite error reporter callback — captures TFLite's internal error messages
+ * into a thread-local buffer so Initialize() can read them.
+ * -------------------------------------------------------------------------*/
+#ifdef _MSC_VER
+/* MSVC: use __declspec(thread) for thread-local storage */
+static __declspec(thread) char tflite_error_buf[4096] = "";
+#else
+/* GCC/Clang: use __thread */
+static __thread char tflite_error_buf[4096] = "";
+#endif
+
+static void TFLiteErrorReporter(void * /*user_data*/,
+                                const char *format, va_list args)
+{
+    vsnprintf(tflite_error_buf, sizeof(tflite_error_buf), format, args);
+}
+
+/* Helper: call with TFLite model path, returns model ptr.
+ * On failure, tflite_error_buf contains the real TFLite error. */
+static TfLiteModel *TFLiteModelCreateWithError(const char *path)
+{
+    tflite_error_buf[0] = '\0';
+    return TfLiteModelCreateFromFileWithErrorReporter(path,
+                                                      TFLiteErrorReporter,
+                                                      nullptr);
+}
 
 /* Flex delegate for Select TensorFlow ops (FlexErf, etc.).
  * Dynamically loaded at runtime so the binary works with or without
@@ -151,11 +180,14 @@ static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads)
 bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
+    last_error_.clear();
 
     LOGI("TFLite: step 1/7: TfLiteModelCreateFromFile(%s)", model_path);
-    model_ = TfLiteModelCreateFromFile(model_path);
+    model_ = TFLiteModelCreateWithError(model_path);
     if (!model_) {
         LOGE("TFLite: failed to load model: %s", model_path);
+        last_error_ = "TFLite: ";
+        last_error_ += tflite_error_buf[0] ? tflite_error_buf : "failed to load model";
         return false;
     }
     LOGI("TFLite: step 1 OK");
@@ -164,6 +196,7 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
     opts_ = TfLiteInterpreterOptionsCreate();
     if (!opts_) {
         LOGE("TFLite: failed to create interpreter options");
+        last_error_ = "TFLite: failed to create interpreter options";
         return false;
     }
     LOGI("TFLite: step 2 OK");
@@ -186,6 +219,7 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
     interp_ = TfLiteInterpreterCreate(model_, opts_);
     if (!interp_) {
         LOGE("TFLite: interpreter create failed");
+        last_error_ = "TFLite: interpreter create failed";
         return false;
     }
     LOGI("TFLite: step 4 OK");
@@ -193,6 +227,7 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
     LOGI("TFLite: step 5/7: TfLiteInterpreterAllocateTensors");
     if (TfLiteInterpreterAllocateTensors(interp_) != kTfLiteOk) {
         LOGE("TFLite: tensor allocation failed");
+        last_error_ = "TFLite: tensor allocation failed";
         return false;
     }
     LOGI("TFLite: step 5 OK");
@@ -210,6 +245,7 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
         const TfLiteTensor *t = TfLiteInterpreterGetInputTensor(interp_, (int32_t)i);
         if (!t) {
             LOGE("TFLite: null input tensor at %zu", i);
+            last_error_ = "TFLite: null input tensor";
             return false;
         }
         size_t elems = (size_t)TfLiteTensorByteSize(t) / sizeof(float);
@@ -226,6 +262,7 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
         const TfLiteTensor *t = TfLiteInterpreterGetOutputTensor(interp_, (int32_t)i);
         if (!t) {
             LOGE("TFLite: null output tensor at %zu", i);
+            last_error_ = "TFLite: null output tensor";
             return false;
         }
         size_t elems = (size_t)TfLiteTensorByteSize(t) / sizeof(float);
@@ -452,6 +489,9 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
         float *buf = (float *)malloc(n * sizeof(float));
         if (!buf) {
             LOGE("TFLite: malloc(%zu) failed at output %zu, due to %s, %d", n * sizeof(float), i, strerror(errno), errno);
+            for (size_t j = 0; j < i; ++j) {
+                free(odata[j]);
+            }
             return false;
         }
         memcpy(buf, snaps[i].data(), n * sizeof(float));

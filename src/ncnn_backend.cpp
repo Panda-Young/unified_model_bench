@@ -165,6 +165,7 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
 bool NCNNBackend::Initialize(const char *model_path, int num_threads)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
+    last_error_.clear();
 
     /* Derive paths: model.ncnn.param -> model.ncnn.bin, model.ncnn.shapes */
     std::string path(model_path);
@@ -189,6 +190,7 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
 
     /* Read shapes first */
     if (!ReadShapesFile(shapes_path.c_str())) {
+        last_error_ = "NCNN: failed to read shapes file (" + shapes_path + ")";
         return false;
     }
 
@@ -276,6 +278,7 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
         LOGE("NCNN: failed to load param: %s, due to %s, %d",
              path.c_str(), strerror(errno), errno);
         LOGE("NCNN: possible cause - missing/unsupported layer type, or file not found");
+        last_error_ = "NCNN: load_param failed (errno=" + std::to_string(errno) + ": " + strerror(errno) + ")";
         return false;
     }
     LOGI("NCNN: param loaded, loading bin: %s", bin_path.c_str());
@@ -286,6 +289,7 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
         if (mret != 0) {
             LOGE("NCNN: failed to load bin: %s, due to %s, %d",
                  bin_path.c_str(), strerror(errno), errno);
+            last_error_ = "NCNN: load_model failed (errno=" + std::to_string(errno) + ": " + strerror(errno) + ")";
             return false;
         }
     }
@@ -431,7 +435,11 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         }
         for (size_t i = 0; i < num_outputs_; ++i) {
             ncnn::Mat out;
-            ex.extract(output_names_[i].c_str(), out);
+            int ret = ex.extract(output_names_[i].c_str(), out);
+            if (ret != 0) {
+                LOGE("NCNN: warmup extract %zu failed, ret=%d", i, ret);
+                return false;
+            }
         }
     }
 
@@ -480,6 +488,9 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         float *buf = (float *)malloc(n * sizeof(float));
         if (!buf) {
             LOGE("NCNN: malloc(%zu) failed at output %zu, due to %s, %d", n * sizeof(float), i, strerror(errno), errno);
+            for (size_t j = 0; j < i; ++j) {
+                free(odata[j]);
+            }
             return false;
         }
         memcpy(buf, snaps[i].data(), n * sizeof(float));
