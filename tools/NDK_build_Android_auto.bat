@@ -29,7 +29,7 @@ if not exist "%CC%.exe" if not exist "%CC%.cmd" if not exist "%CC%" (
 echo NDK: %ANDROID_NDK_ROOT%
 echo CC:  %CC%
 
-set OUT=unified_bench_arm64-v8a
+set OUT=unified_bench
 set ROOT=%~dp0..
 set INC=%ROOT%\include
 set SRC=%ROOT%\src
@@ -106,12 +106,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM CMake outputs to BUILD_DIR, copy to ROOT for adb push
-copy /Y "%BUILD_DIR%\unified_bench" "%ROOT%\%OUT%" >nul
-
 echo.
 echo ============================================================
-echo  BUILD SUCCESS: %ROOT%\%OUT%
+echo  BUILD SUCCESS: %BUILD_DIR%\unified_bench
 echo ============================================================
 
 REM --- Push and run ---
@@ -124,7 +121,7 @@ if errorlevel 1 (
 echo Pushing to device...
 adb wait-for-device
 adb shell "mkdir -p /data/local/tmp/bench_test/qnn 2>/dev/null"
-adb push "%ROOT%\%OUT%" /data/local/tmp/bench_test/
+adb push "%BUILD_DIR%\unified_bench" /data/local/tmp/bench_test/
 adb push "%ROOT%\test_model.onnx" /data/local/tmp/bench_test/ 2>nul
 adb push "%ROOT%\test_model.tflite" /data/local/tmp/bench_test/ 2>nul
 adb push "%ROOT%\test_model.ncnn.param" /data/local/tmp/bench_test/ 2>nul
