@@ -303,6 +303,39 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         return false;
     }
 
+    /* Allocate output snapshots */
+    std::vector<std::vector<float>> snaps(num_outputs_);
+    for (size_t i = 0; i < num_outputs_; ++i) {
+        snaps[i].resize(output_elems_[i] > 0 ? output_elems_[i] : 1);
+    }
+
+    /* Pre-allocate float host tensors for GPU output (reused across repeats) */
+    bool is_gpu = (sched_.type != MNN_FORWARD_CPU);
+    std::vector<MNN::Tensor *> gpu_out_tensors;
+    if (is_gpu) {
+        gpu_out_tensors.resize(num_outputs_, nullptr);
+        for (size_t i = 0; i < num_outputs_; ++i) {
+            if (output_tensors_[i]) {
+                gpu_out_tensors[i] = MNN::Tensor::create<float>(
+                    output_tensors_[i]->shape(), nullptr,
+                    output_tensors_[i]->getDimensionType());
+            }
+        }
+    }
+
+    /* Pre-allocate float host tensors for GPU input (reused across feeds) */
+    std::vector<MNN::Tensor *> gpu_in_tensors;
+    if (is_gpu) {
+        gpu_in_tensors.resize(num_inputs_, nullptr);
+        for (size_t i = 0; i < num_inputs_; ++i) {
+            MNN::Tensor *t = interp_->getSessionInput(session_, input_names_[i].c_str());
+            if (t && input_bufs_[i]) {
+                gpu_in_tensors[i] = MNN::Tensor::create<float>(
+                    t->shape(), input_bufs_[i], t->getDimensionType());
+            }
+        }
+    }
+
     /* Helper: copy host data to MNN input tensors */
     auto feed_inputs = [&]() {
         for (size_t i = 0; i < num_inputs_; ++i) {
@@ -312,31 +345,18 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
             }
             size_t n = input_elems_[i];
             float *host = t->host<float>();
-            if (host) {
+            if (host && !is_gpu) {
                 memcpy(host, input_bufs_[i], n * sizeof(float));
                 continue;
             }
-            /* Device-only tensor */
-            std::vector<int> sh = t->shape();
-            MNN::Tensor *ht = MNN::Tensor::create<float>(sh, input_bufs_[i], t->getDimensionType());
-            if (ht) {
-                t->copyFromHostTensor(ht);
-                MNN::Tensor::destroy(ht);
+            /* GPU input: use pre-allocated host tensor with copyFromHostTensor
+             * for automatic FP32→FP16 conversion */
+            if (i < gpu_in_tensors.size() && gpu_in_tensors[i]) {
+                t->copyFromHostTensor(gpu_in_tensors[i]);
                 continue;
-            }
-            void *mapped = t->map(MNN::Tensor::MAP_TENSOR_WRITE, MNN::Tensor::TENSORFLOW);
-            if (mapped) {
-                memcpy(mapped, input_bufs_[i], n * sizeof(float));
-                t->unmap(MNN::Tensor::MAP_TENSOR_WRITE, MNN::Tensor::TENSORFLOW, mapped);
             }
         }
     };
-
-    /* Allocate output snapshots */
-    std::vector<std::vector<float>> snaps(num_outputs_);
-    for (size_t i = 0; i < num_outputs_; ++i) {
-        snaps[i].resize(output_elems_[i] > 0 ? output_elems_[i] : 1);
-    }
 
     interp_->resizeSession(session_);
     feed_inputs();
@@ -370,17 +390,21 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
             if (!t) {
                 continue;
             }
-            auto host = t->host<float>();
-            if (host) {
-                memcpy(snaps[i].data(), host, output_elems_[i] * sizeof(float));
+            if (i < gpu_out_tensors.size() && gpu_out_tensors[i]) {
+                /* GPU: use pre-allocated float host tensor for automatic
+                 * FP16→FP32 conversion */
+                t->copyToHostTensor(gpu_out_tensors[i]);
+                float *hp = gpu_out_tensors[i]->host<float>();
+                if (hp) {
+                    memcpy(snaps[i].data(), hp,
+                           output_elems_[i] * sizeof(float));
+                }
             } else {
-                MNN::Tensor *ht = MNN::Tensor::createHostTensorFromDevice(t, true);
-                if (ht) {
-                    float *hp = ht->host<float>();
-                    if (hp) {
-                        memcpy(snaps[i].data(), hp, output_elems_[i] * sizeof(float));
-                    }
-                    MNN::Tensor::destroy(ht);
+                /* CPU: direct copy from host memory */
+                float *host = t->host<float>();
+                if (host) {
+                    memcpy(snaps[i].data(), host,
+                           output_elems_[i] * sizeof(float));
                 }
             }
         }
@@ -395,6 +419,14 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         if (ms < minv) {
             minv = ms;
         }
+    }
+
+    /* Cleanup pre-allocated GPU host tensors */
+    for (auto *ht : gpu_out_tensors) {
+        MNN::Tensor::destroy(ht);
+    }
+    for (auto *ht : gpu_in_tensors) {
+        MNN::Tensor::destroy(ht);
     }
 
     odata.resize(num_outputs_);

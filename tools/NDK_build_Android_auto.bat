@@ -107,7 +107,7 @@ if errorlevel 1 (
 )
 
 REM CMake outputs to BUILD_DIR, copy to ROOT for adb push
-copy /Y "%BUILD_DIR%\unified_bench_arm64-v8a" "%ROOT%\%OUT%" >nul
+copy /Y "%BUILD_DIR%\unified_bench" "%ROOT%\%OUT%" >nul
 
 echo.
 echo ============================================================
