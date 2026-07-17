@@ -4,6 +4,7 @@
  *============================================================================*/
 
 #include <string>
+#include <vector>
 
 struct BenchConfig {
     std::string model_path;
@@ -19,6 +20,9 @@ struct BenchConfig {
     bool enable_output = true;
     bool save_input = false;
     bool save_output = true;
+
+    /* Empty = run all available backends. Populated by --backend <name1,name2,...> */
+    std::vector<int> backend_ids;
 
     bool valid() const { return !model_path.empty(); }
 };

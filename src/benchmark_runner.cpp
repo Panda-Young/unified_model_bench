@@ -178,6 +178,38 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
         return false;
     }
 
+    /* Filter by --backend if specified */
+    if (!cfg_.backend_ids.empty()) {
+        std::vector<BackendConfig> filtered;
+        for (auto &b : backends) {
+            for (int want : cfg_.backend_ids) {
+                if (bid(b.id) == want) {
+                    filtered.push_back(b);
+                    break;
+                }
+            }
+        }
+        if (filtered.empty()) {
+            LOGW("No matching backends after --backend filter");
+            return false;
+        }
+        /* Ensure CPU baseline is always included for comparison */
+        bool has_cpu = false;
+        for (auto &b : filtered) {
+            if (b.is_cpu_baseline) { has_cpu = true; break; }
+        }
+        if (!has_cpu) {
+            for (auto &b : backends) {
+                if (b.is_cpu_baseline) {
+                    LOGI("Auto-added CPU baseline: %s", b.name.c_str());
+                    filtered.insert(filtered.begin(), b);
+                    break;
+                }
+            }
+        }
+        backends = std::move(filtered);
+    }
+
     LOGI("=== %s: %zu backend(s) ===", variant.path.c_str(), backends.size());
 
     /* Find CPU baseline backend ID */

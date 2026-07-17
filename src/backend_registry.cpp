@@ -5,6 +5,7 @@
 #include "backend_interface.hpp"
 #include "log.hpp"
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <mutex>
 #include <vector>
@@ -105,6 +106,22 @@ namespace BackendRegistry
             return nullptr;
         }
         return &it->second.config;
+    }
+
+    int FindByName(const char *name)
+    {
+        std::lock_guard<std::mutex> lock(g_registry_mutex);
+        /* Build lowercase version of the query */
+        std::string lower(name);
+        for (auto &c : lower) c = (char)tolower((unsigned char)c);
+        for (const auto &[id, entry] : g_registry) {
+            std::string ename = entry.config.name;
+            for (auto &c : ename) c = (char)tolower((unsigned char)c);
+            if (ename == lower) {
+                return id;
+            }
+        }
+        return -1;
     }
 
     /* ---------------------------------------------------------------------------

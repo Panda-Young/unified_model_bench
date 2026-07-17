@@ -3,10 +3,12 @@
  *============================================================================*/
 
 #include "cmd_args.hpp"
+#include "backend_interface.hpp"
 #include "log.hpp"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 
 void print_usage(const char *prog)
 {
@@ -24,12 +26,15 @@ void print_usage(const char *prog)
     printf("  --no-save-output    Don't save output tensors\n");
     printf("  --no-csv            Don't write CSV\n");
     printf("  --no-output-print   Don't print output summary\n");
+    printf("  --backend <list>    Comma-separated backend names (default: all)\n");
+    printf("                      Examples: --backend ONNX_CPU,MNN_OpenCL_FP16\n");
     printf("  --help              Show this help\n");
     printf("  --version           Show version\n");
 }
 
 bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
 {
+    bool has_backend_filter = false;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             print_usage(argv[0]);
@@ -70,6 +75,29 @@ bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
             cfg.enable_csv = false;
         } else if (strcmp(argv[i], "--no-output-print") == 0) {
             cfg.enable_output = false;
+        } else if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+            has_backend_filter = true;
+            const char *list = argv[++i];
+            const char *p = list;
+            while (*p) {
+                /* Skip leading spaces */
+                while (*p == ' ') ++p;
+                if (!*p) break;
+                /* Find end of this token (comma or end) */
+                const char *end = p;
+                while (*end && *end != ',') ++end;
+                /* Extract token */
+                std::string token(p, end - p);
+                if (!token.empty()) {
+                    int found = BackendRegistry::FindByName(token.c_str());
+                    if (found >= 0) {
+                        cfg.backend_ids.push_back(found);
+                    } else {
+                        LOGW("Unknown backend name: %s", token.c_str());
+                    }
+                }
+                p = (*end == ',') ? end + 1 : end;
+            }
         } else if (argv[i][0] != '-') {
             /* Positional argument = model path */
             if (cfg.model_path.empty()) {
@@ -85,6 +113,11 @@ bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
     if (cfg.model_path.empty()) {
         LOGE("No model path specified. Use --model <path> or positional arg.");
         print_usage(argv[0]);
+        return false;
+    }
+
+    if (has_backend_filter && cfg.backend_ids.empty()) {
+        LOGE("--backend specified but no valid backend names found");
         return false;
     }
 

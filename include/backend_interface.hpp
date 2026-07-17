@@ -194,6 +194,9 @@ namespace BackendRegistry
     /* Look up config by ID */
     const BackendConfig *GetConfig(BackendId id);
 
+    /* Find backend ID by name (case-insensitive), returns -1 if not found */
+    int FindByName(const char *name);
+
     /* Initialize all default registrations */
     void InitDefaults();
 

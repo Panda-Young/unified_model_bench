@@ -18,6 +18,8 @@ int main(int argc, char *argv[])
 
         LOGI("Unified Benchmark Tool v2.0 (C++)  Arch: %s", ARCH_STR);
 
+        BackendRegistry::InitDefaults();
+
         BenchConfig cfg;
         if (!parse_cmd_args(argc, argv, cfg)) {
             return 1;
@@ -26,7 +28,6 @@ int main(int argc, char *argv[])
         LOGI("Model: %s  Repeat: %d  Warmup: %d  Threads: %d",
              cfg.model_path.c_str(), cfg.repeat, cfg.warmup_runs, cfg.num_threads);
 
-        BackendRegistry::InitDefaults();
         ResultCollector collector;
         BenchmarkRunner runner(cfg, collector);
         bool ok = runner.Run();

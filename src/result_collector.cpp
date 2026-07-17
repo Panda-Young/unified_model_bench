@@ -160,10 +160,18 @@ bool ResultCollector::ExportCsv(const char *path, const char *date,
                 r.input_shape_str.c_str(), r.input_elements,
                 r.output_shape_str.c_str(), r.output_elements);
         fprintf(f, "%d,%d,%d,", r.warmup_runs, r.repeat_runs, r.num_threads);
-        fprintf(f, "%.3f,%.3f,%.3f,%d,",
-                r.total_run_ms, r.avg_run_ms, r.max_run_ms, r.max_run_idx);
-        fprintf(f, "%.3f,%.8f,%.8f,",
-                r.init_ms, r.max_output_diff, r.avg_output_diff);
+        if (r.acceleration_vs_cpu < 0) {
+            fprintf(f, "-,-,-,%d,", r.max_run_idx);
+        } else {
+            fprintf(f, "%.3f,%.3f,%.3f,%d,",
+                    r.total_run_ms, r.avg_run_ms, r.max_run_ms, r.max_run_idx);
+        }
+        if (r.acceleration_vs_cpu < 0) {
+            fprintf(f, "-,-,-,");
+        } else {
+            fprintf(f, "%.3f,%.8f,%.8f,",
+                    r.init_ms, r.max_output_diff, r.avg_output_diff);
+        }
         if (r.acceleration_vs_cpu < 0)
             fprintf(f, "-");
         else
@@ -223,10 +231,18 @@ bool ResultCollector::AppendCsv(const BenchmarkRecord &rec, const char *path,
             rec.input_shape_str.c_str(), rec.input_elements,
             rec.output_shape_str.c_str(), rec.output_elements);
     fprintf(f, "%d,%d,%d,", rec.warmup_runs, rec.repeat_runs, rec.num_threads);
-    fprintf(f, "%.3f,%.3f,%.3f,%d,",
-            rec.total_run_ms, rec.avg_run_ms, rec.max_run_ms, rec.max_run_idx);
-    fprintf(f, "%.3f,%.8f,%.8f,",
-            rec.init_ms, rec.max_output_diff, rec.avg_output_diff);
+    if (rec.acceleration_vs_cpu < 0) {
+        fprintf(f, "-,-,-,%d,", rec.max_run_idx);
+    } else {
+        fprintf(f, "%.3f,%.3f,%.3f,%d,",
+                rec.total_run_ms, rec.avg_run_ms, rec.max_run_ms, rec.max_run_idx);
+    }
+    if (rec.acceleration_vs_cpu < 0) {
+        fprintf(f, "-,-,-,");
+    } else {
+        fprintf(f, "%.3f,%.8f,%.8f,",
+                rec.init_ms, rec.max_output_diff, rec.avg_output_diff);
+    }
     if (rec.acceleration_vs_cpu < 0)
         fprintf(f, "-");
     else
