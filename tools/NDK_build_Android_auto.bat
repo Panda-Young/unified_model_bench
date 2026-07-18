@@ -37,7 +37,6 @@ set ONNX_INC=%ROOT%\deps\onnxruntime\include
 set TFLITE_INC=%ROOT%\deps\tflite\include
 set TFLITE_LIB=%ROOT%\deps\tflite\lib\android\arm64-v8a
 set ONNX_LIB=%ROOT%\deps\onnxruntime\lib\android\arm64-v8a
-set QNN_LIB=%ROOT%\deps\onnxruntime\lib\android\qnn\arm64-v8a
 set NCNN_INC=%ROOT%\deps\ncnn\include-android
 set NCNN_LIB=%ROOT%\deps\ncnn\lib\android\arm64-v8a
 set MNN_INC=%ROOT%\deps\mnn\include
@@ -47,6 +46,9 @@ REM LiteRT (Google next-gen TFLite runtime)
 set LITERT_INC=%ROOT%\deps\litert\litert_cc_sdk
 set LITERT_LIB_DIR=%ROOT%\deps\litert\liteRT_runtime\android_arm64
 set LITERT_LIB_PATH=%LITERT_LIB_DIR%\libLiteRt.so
+
+REM QNN SDK (Qualcomm AI Engine Direct) — for TFLITE_NPU
+set "QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.48.40.260702"
 
 set "BUILD_DIR=%ROOT%\build\android-arm64"
 
@@ -87,7 +89,8 @@ cmake -S "%ROOT%" -B "%BUILD_DIR%" -G "%CMAKE_GEN%" ^
     -DHAVE_TFLITE_BACKEND=ON ^
     -DHAVE_NCNN_BACKEND=ON ^
     -DHAVE_MNN_BACKEND=ON ^
-    -DHAVE_LITERT_BACKEND=ON
+    -DHAVE_LITERT_BACKEND=ON ^
+    -DQNN_SDK_ROOT="!QNN_SDK_ROOT!"
 if errorlevel 1 (
     echo CMake configuration failed.
     exit /b 1
@@ -140,20 +143,21 @@ if errorlevel 1 (
     )
 ) else ( echo ONNX Runtime .so already on device, skip. )
 
-if exist "%QNN_LIB%\libonnxruntime.so" (
+REM --- Push QNN libraries from QAIRT SDK (shared by ONNX QNN & TFLITE_NPU) ---
+if exist "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnHtp.so" (
     adb shell "test -f /data/local/tmp/bench_test/qnn/libQnnHtp.so" >nul 2>&1
     if errorlevel 1 (
-        echo Pushing QNN ONNX Runtime + backend libs...
-        adb push "%QNN_LIB%\libonnxruntime.so"     /data/local/tmp/bench_test/qnn/ || (echo WARNING: QNN .so push failed)
-        adb push "%QNN_LIB%\libQnnCpu.so"          /data/local/tmp/bench_test/qnn/ 2>nul
-        adb push "%QNN_LIB%\libQnnGpu.so"          /data/local/tmp/bench_test/qnn/ 2>nul
-        adb push "%QNN_LIB%\libQnnHtp.so"          /data/local/tmp/bench_test/qnn/ 2>nul
-        adb push "%QNN_LIB%\libQnnHtpPrepare.so"   /data/local/tmp/bench_test/qnn/ 2>nul
-        adb push "%QNN_LIB%\libQnnSaver.so"        /data/local/tmp/bench_test/qnn/ 2>nul
-        adb push "%QNN_LIB%\libQnnSystem.so"       /data/local/tmp/bench_test/qnn/ 2>nul
-    ) else ( echo QNN libs already on device, skip. )
+        echo Pushing QNN backend libs from SDK...
+        adb push "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnCpu.so"          /data/local/tmp/bench_test/qnn/ 2>nul
+        adb push "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnGpu.so"          /data/local/tmp/bench_test/qnn/ 2>nul
+        adb push "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnHtp.so"          /data/local/tmp/bench_test/qnn/ 2>nul
+        adb push "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnHtpPrepare.so"   /data/local/tmp/bench_test/qnn/ 2>nul
+        adb push "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnSaver.so"        /data/local/tmp/bench_test/qnn/ 2>nul
+        adb push "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnSystem.so"       /data/local/tmp/bench_test/qnn/ 2>nul
+        adb push "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnTFLiteDelegate.so" /data/local/tmp/bench_test/qnn/ 2>nul
+    ) else ( echo QNN backend libs already on device, skip. )
 
-    REM Auto-detect SOC → hexagon version → push matching stub + DSP skeleton libs
+    REM Auto-detect SOC → hexagon version → push Stub + DSP Skel
     for /f "usebackq tokens=*" %%i in (`adb shell getprop ro.soc.model 2^>nul`) do set "SOC=%%i"
     if defined SOC (
         set "SOC=!SOC:[=!"
@@ -180,25 +184,26 @@ if exist "%QNN_LIB%\libonnxruntime.so" (
         if /i "!SOC!"=="QCM6490" set HEXVER=hexagon-v68
 
         if defined HEXVER (
-            REM Derive directory name (e.g. v73) and lib version (e.g. V73) from hexagon-v73
             set "HEX_SUBDIR=!HEXVER:hexagon-=!"
             set "HEXLIBVER=!HEXVER:hexagon-v=V!"
-            set QNN_HEX_SDK=%ROOT%\deps\onnxruntime\lib\android\qnn\hexagon\!HEX_SUBDIR!
-            if exist "!QNN_HEX_SDK!\libQnnHtp!HEXLIBVER!.so" (
-                echo Pushing hexagon DSP libs for !HEXVER!...
-                adb shell "mkdir -p /data/local/tmp/bench_test/qnn/hexagon 2>/dev/null"
-                REM Push the matching stub (only one, detected by SOC)
-                adb push "%QNN_LIB%\libQnnHtp!HEXLIBVER!Stub.so"    /data/local/tmp/bench_test/qnn/ 2>nul
-                REM Push hexagon DSP skeleton libs
-                adb push "!QNN_HEX_SDK!\libQnnHtp!HEXLIBVER!.so"      /data/local/tmp/bench_test/qnn/hexagon/ 2>nul
-                adb push "!QNN_HEX_SDK!\libQnnHtp!HEXLIBVER!Skel.so"  /data/local/tmp/bench_test/qnn/hexagon/ 2>nul
-                adb push "!QNN_HEX_SDK!\libQnnSaver.so"               /data/local/tmp/bench_test/qnn/hexagon/ 2>nul
-                adb push "!QNN_HEX_SDK!\libQnnSystem.so"              /data/local/tmp/bench_test/qnn/hexagon/ 2>nul
-            ) else ( echo WARNING: Hexagon libs not found at !QNN_HEX_SDK! )
+            set "QNN_HEX_LIB=!QNN_SDK_ROOT!\lib\!HEXVER!\unsigned"
+
+            REM Push Stub + CalculatorStub (must match Skel from same SDK)
+            echo Pushing QNN Stub + Skel for !HEXVER!...
+            adb push "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnHtp!HEXLIBVER!Stub.so"           /data/local/tmp/bench_test/qnn/ 2>nul
+            adb push "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnHtp!HEXLIBVER!CalculatorStub.so" /data/local/tmp/bench_test/qnn/ 2>nul
+
+            REM Push DSP skeleton libs (hexagon firmware).
+            REM Only Skel + HTP backend — libQnnSystem/Saver are CPU-side
+            REM (already pushed from aarch64-android), DSP versions go on-DSP only.
+            if exist "!QNN_HEX_LIB!\libQnnHtp!HEXLIBVER!Skel.so" (
+                adb push "!QNN_HEX_LIB!\libQnnHtp!HEXLIBVER!.so"     /data/local/tmp/bench_test/qnn/ 2>nul
+                adb push "!QNN_HEX_LIB!\libQnnHtp!HEXLIBVER!Skel.so" /data/local/tmp/bench_test/qnn/ 2>nul
+            ) else ( echo WARNING: DSP Skel not found at !QNN_HEX_LIB! )
         ) else ( echo WARNING: Unknown SOC '!SOC!', skip hexagon DSP libs. )
     ) else ( echo WARNING: Could not detect SOC, skip hexagon DSP libs. )
 ) else (
-    echo WARNING: QNN SDK not found, QNN backends will be unavailable
+    echo WARNING: QNN SDK not found at !QNN_SDK_ROOT!, QNN backends unavailable
 )
 
 adb shell "test -f /data/local/tmp/bench_test/libncnn.so" >nul 2>&1
@@ -262,7 +267,7 @@ echo ============================================================
 echo  Running FULL benchmark (warmup=5, repeat=100)...
 echo ============================================================
 adb shell "rm -f /data/local/tmp/bench_test/summary.csv"
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn/hexagon ./%OUT% test_model.onnx"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% test_model.onnx --backend onnx_QNN_Htp,TFLITE_NPU --repeat 1 --warmup 0"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.

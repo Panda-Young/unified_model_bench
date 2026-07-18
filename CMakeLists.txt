@@ -37,6 +37,22 @@ endif()
 set(MNN_INC   "${DEPS_DIR}/mnn/include")
 set(LITERT_INC "${DEPS_DIR}/litert/litert_cc_sdk")
 
+# QNN SDK (Qualcomm AI Engine Direct) — for TFLITE_NPU on Android
+if(ANDROID AND HAVE_TFLITE_BACKEND)
+    if(NOT DEFINED QNN_SDK_ROOT)
+        set(QNN_SDK_ROOT "C:/Qualcomm/AIStack/QAIRT/2.48.40.260702"
+            CACHE PATH "Qualcomm AI Engine Direct SDK root")
+    endif()
+    if(EXISTS "${QNN_SDK_ROOT}/include/QNN/TFLiteDelegate/QnnTFLiteDelegate.h")
+        include_directories("${QNN_SDK_ROOT}/include")
+        add_definitions(-DHAVE_QNN_DELEGATE)
+        set(HAVE_QNN_DELEGATE TRUE)
+        message(STATUS "QNN SDK found: ${QNN_SDK_ROOT}")
+    else()
+        message(WARNING "QNN SDK not found at ${QNN_SDK_ROOT}; TFLITE_NPU disabled")
+    endif()
+endif()
+
 include_directories(${INC_DIR} ${ONNX_INC})
 if(HAVE_TFLITE_BACKEND)
     include_directories(${TFLITE_INC})
@@ -129,6 +145,10 @@ if(HAVE_TFLITE_BACKEND)
         target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
             "${DEPS_DIR}/tflite/lib/${ARCH_DIR}/libtensorflowlite_c.so"
             "${DEPS_DIR}/tflite/lib/${ARCH_DIR}/libtensorflowlite_gpu_delegate.so")
+        if(HAVE_QNN_DELEGATE)
+            target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
+                "${QNN_SDK_ROOT}/lib/aarch64-android/libQnnTFLiteDelegate.so")
+        endif()
     endif()
 endif()
 

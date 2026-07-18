@@ -77,6 +77,10 @@ private:
 
     double init_ms_ = 0;
     double timing_[10] = {};
+
+    /* EP Context cache for QNN backends */
+    std::string ep_context_path_;
+    const char *model_path_for_create_ = nullptr;
 };
 
 /* ---------------------------------------------------------------------------
@@ -579,7 +583,7 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
                      .count();
 
     auto t2 = std::chrono::high_resolution_clock::now();
-    OrtStatus *st = ort_->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "unified_bench", &env_);
+    OrtStatus *st = ort_->CreateEnv(ORT_LOGGING_LEVEL_VERBOSE, "unified_bench", &env_);
     if (st) {
         LOGE("ONNX: CreateEnv failed");
         ort_->ReleaseStatus(st);
@@ -606,6 +610,38 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
                      std::chrono::high_resolution_clock::now() - t3)
                      .count();
 
+    /* EP Context cache for QNN backends: compile once, reuse later.*/
+    model_path_for_create_ = model_path;
+    if (id_ == BackendId::ONNX_QNN_CPU || id_ == BackendId::ONNX_QNN_GPU ||
+        id_ == BackendId::ONNX_QNN_HTP) {
+        /* Generate EP context file path: <model_stem>-<backend_name>-epContext.onnx */
+        ep_context_path_ = std::string(model_path);
+        const BackendConfig *bcfg = BackendRegistry::GetConfig(id_);
+        const char *bname = bcfg ? bcfg->name.c_str() : "QNN";
+        auto dot = ep_context_path_.rfind('.');
+        if (dot != std::string::npos) {
+            /* Build name like "test_model-ONNX_QNN_HTP-epContext.onnx" */
+            std::string stem = ep_context_path_.substr(0, dot);
+            ep_context_path_ = stem + "-" + bname + "-epContext.onnx";
+        } else {
+            ep_context_path_ += "-" + std::string(bname) + "-epContext.onnx";
+        }
+
+        if (file_readable_nonzero(ep_context_path_.c_str())) {
+            /* Cached context exists — use it directly, skip recompilation */
+            (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionsDisableModelCompile, "1");
+            model_path_for_create_ = ep_context_path_.c_str();
+            LOGI("ONNX: EP Context cache hit: %s", ep_context_path_.c_str());
+        } else {
+            /* First run — enable EP context creation */
+            (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextEnable, "1");
+            (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextFilePath,
+                                              ep_context_path_.c_str());
+            (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextEmbedMode, "0");
+            LOGI("ONNX: EP Context will be created: %s", ep_context_path_.c_str());
+        }
+    }
+
     auto t4 = std::chrono::high_resolution_clock::now();
     if (!ConfigureEP()) {
         LOGE("ONNX: ConfigureEP failed for backend id=%d", bid(id_));
@@ -619,10 +655,10 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
 
     auto t5 = std::chrono::high_resolution_clock::now();
 #ifdef _WIN32
-    std::wstring wpath = utf8_to_wide(model_path);
+    std::wstring wpath = utf8_to_wide(model_path_for_create_);
     st = ort_->CreateSession(env_, wpath.c_str(), opts_, &session_);
 #else
-    st = ort_->CreateSession(env_, model_path, opts_, &session_);
+    st = ort_->CreateSession(env_, model_path_for_create_, opts_, &session_);
 #endif
     if (st) {
         LOGE("ONNX: CreateSession failed: %s", ort_->GetErrorMessage(st));

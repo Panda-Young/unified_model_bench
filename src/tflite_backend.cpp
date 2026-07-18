@@ -11,6 +11,9 @@
 #if defined(__ANDROID__) || defined(__android__)
 #include <tensorflow/lite/delegates/gpu/delegate.h>
 #include <tensorflow/lite/delegates/nnapi/nnapi_delegate.h>
+#ifdef HAVE_QNN_DELEGATE
+#include "QNN/TFLiteDelegate/QnnTFLiteDelegate.h"
+#endif
 #endif
 #include <tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h>
 
@@ -155,23 +158,8 @@ static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads)
         return nullptr;
 #endif
     case BackendId::TFLITE_NPU:
-#if defined(__ANDROID__) || defined(__android__)
-    {
-        /* QNN TFLite delegate for NPU acceleration.
-         * Requires Qualcomm QNN SDK and TFLite delegate library.
-         * Include: #include <QnnTFLiteDelegate.h>
-         * Link with qnntflitedelegate or libQnnTFLiteDelegate.so */
-        // TODO: Replace with actual QNN TFLite delegate initialization
-        // Example:
-        //   QnnTFLiteDelegateOptions qo = QnnTFLiteDelegateOptionsDefault();
-        //   qo.backend_type = QNN_BACKEND_HTP;  // or QNN_BACKEND_ADRENO
-        //   return QnnTFLiteDelegateCreate(&qo);
-        LOGW("TFLite: NPU delegate not implemented - provide QNN TFLite delegate header");
+        /* Handled inline in Initialize() with dynamic loading */
         return nullptr;
-    }
-#else
-        return nullptr;
-#endif
     default:
         return nullptr;
     }
@@ -210,6 +198,23 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
         TfLiteInterpreterOptionsAddDelegate(opts_, delegate_);
         LOGI("TFLite: delegate attached for backend %d", bid(id_));
     }
+
+    if (id_ == BackendId::TFLITE_NPU) {
+#ifdef HAVE_QNN_DELEGATE
+        TfLiteQnnDelegateOptions opts = TfLiteQnnDelegateOptionsDefault();
+        opts.backend_type = kHtpBackend;
+        delegate_ = TfLiteQnnDelegateCreate(&opts);
+        if (!delegate_) {
+            LOGW("TFLite: TfLiteQnnDelegateCreate failed, running as CPU");
+        } else {
+            TfLiteInterpreterOptionsAddDelegate(opts_, delegate_);
+            LOGI("TFLite: TfLiteQnnDelegate created (HTP backend)");
+        }
+#else
+        LOGW("TFLite: NPU delegate not available on this platform (QNN SDK not found)");
+#endif
+    }
+
     LOGI("TFLite: step 3 OK");
 
     /* Flex delegate temporarily disabled */
@@ -218,8 +223,9 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
     LOGI("TFLite: step 4/7: TfLiteInterpreterCreate");
     interp_ = TfLiteInterpreterCreate(model_, opts_);
     if (!interp_) {
-        LOGE("TFLite: interpreter create failed");
-        last_error_ = "TFLite: interpreter create failed";
+        const char *tflite_err = tflite_error_buf[0] ? tflite_error_buf : "no TFLite error detail";
+        LOGE("TFLite: interpreter create failed: %s", tflite_err);
+        last_error_ = std::string("TFLite: interpreter create failed - ") + tflite_err;
         return false;
     }
     LOGI("TFLite: step 4 OK");
@@ -529,10 +535,11 @@ void TFLiteBackend::Cleanup()
 #if defined(__ANDROID__) || defined(__android__)
         if (id_ == BackendId::TFLITE_GPU) {
             TfLiteGpuDelegateV2Delete(delegate_);
-        } else if (id_ == BackendId::TFLITE_NNAPI)
+        } else if (id_ == BackendId::TFLITE_NNAPI) {
             delete static_cast<tflite::StatefulNnApiDelegate *>(delegate_);
-        else if (id_ == BackendId::TFLITE_NPU)
-            TfLiteGpuDelegateV2Delete(delegate_); /* or QnnTFLiteDelegateDelete if available */
+        } else if (id_ == BackendId::TFLITE_NPU) {
+            TfLiteQnnDelegateDelete(delegate_);
+        }
 #endif
         delegate_ = nullptr;
     }
