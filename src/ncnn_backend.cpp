@@ -9,14 +9,20 @@
 
 #include <ncnn/cpu.h>
 #include <ncnn/net.h>
+#include <ncnn/gpu.h>
 #include <ncnn/c_api.h>
-/* ncnn/platform.h may define min/max macros and backend preprocessor names.
- * Undefine all potential conflicts before our C++ code. */
+/* ncnn/platform.h may define min/max macros.
+ * Undefine only the generic name conflicts.
+ * NCNN_VULKAN macro conflicts with BackendId::NCNN_VULKAN enum,
+ * so save its value before undefining (0=disabled, 1=enabled). */
 #ifdef min
 #undef min
 #endif
 #ifdef max
 #undef max
+#endif
+#ifndef NCNN_VULKAN_BUILD
+#define NCNN_VULKAN_BUILD NCNN_VULKAN
 #endif
 #ifdef NCNN_VULKAN
 #undef NCNN_VULKAN
@@ -254,10 +260,12 @@ bool NCNNBackend::TryBf16Trial()
 {
     if (num_inputs_ == 0 || num_outputs_ == 0)
         return false;
+#ifdef _WIN32
     if (!t_veh_handle)
         t_veh_handle = AddVectoredExceptionHandler(1, veh_crash_handler);
 
     InterlockedExchange(&t_veh_bf16_crash, 0);
+#endif
     try {
         ncnn::Extractor ex = net_->create_extractor();
         std::vector<std::vector<float>> buf_pool(num_inputs_);
@@ -275,8 +283,13 @@ bool NCNNBackend::TryBf16Trial()
     } catch (...) {
         /* C++ exceptions caught here */
     }
+#ifdef _WIN32
     int crashed = InterlockedExchange(&t_veh_bf16_crash, 0);
     return crashed == 0;
+#else
+    /* Non-Windows: no VEH available, assume trial passed if no exception */
+    return true;
+#endif
 }
 
 /* ---------------------------------------------------------------------------
@@ -345,43 +358,50 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
         }
     }
     if (id_ == BackendId::NCNN_VULKAN || id_ == BackendId::NCNN_VULKAN_FP16 || id_ == BackendId::NCNN_VULKAN_BF16) {
+#if NCNN_VULKAN_BUILD
         gpu_device_ = ncnn::get_default_gpu_index();
         if (gpu_device_ < 0) {
-            LOGW("NCNN: no Vulkan device found, falling back to CPU");
-        } else {
-            net_->opt.use_vulkan_compute = true;
-            if (id_ == BackendId::NCNN_VULKAN) {
-                /* Force FP32 path: disable all FP16/ BF16 optimizations */
-                net_->opt.use_fp16_packed = false;
-                net_->opt.use_fp16_storage = false;
-                net_->opt.use_fp16_arithmetic = false;
-                net_->opt.use_bf16_packed = false;
-                net_->opt.use_bf16_storage = false;
-            } else if (id_ == BackendId::NCNN_VULKAN_BF16) {
-                /* BF16 path - only enable features the GPU actually supports */
-                net_->opt.use_fp16_packed = false;
-                net_->opt.use_fp16_storage = false;
-                net_->opt.use_fp16_arithmetic = false;
-                const auto &gpu = ncnn::get_gpu_info(gpu_device_);
-                net_->opt.use_bf16_packed = gpu.support_bf16_packed() ? true : false;
-                net_->opt.use_bf16_storage = gpu.support_bf16_storage() ? true : false;
-                if (!net_->opt.use_bf16_packed && !net_->opt.use_bf16_storage) {
-                    LOGE("NCNN: GPU does not support BF16 - aborting");
-                    last_error_ = "NCNN: GPU lacks BF16 support";
-                    return false;
-                }
-                LOGI("NCNN: GPU BF16: packed=%d storage=%d",
-                     (int)net_->opt.use_bf16_packed, (int)net_->opt.use_bf16_storage);
-            } else {
-                /* FP16 path */
-                net_->opt.use_fp16_packed = true;
-                net_->opt.use_fp16_storage = true;
-                net_->opt.use_fp16_arithmetic = true;
-            }
-            LOGI("NCNN: Vulkan enabled (gpu=%d, precision=%s)", gpu_device_,
-                 (id_ == BackendId::NCNN_VULKAN_BF16) ? "BF16" : (id_ == BackendId::NCNN_VULKAN_FP16) ? "FP16"
-                                                                                                      : "FP32");
+            LOGE("NCNN: no Vulkan device found - aborting");
+            last_error_ = "NCNN: no Vulkan device available";
+            return false;
         }
+        net_->opt.use_vulkan_compute = true;
+        if (id_ == BackendId::NCNN_VULKAN) {
+            /* Force FP32 path: disable all FP16/ BF16 optimizations */
+            net_->opt.use_fp16_packed = false;
+            net_->opt.use_fp16_storage = false;
+            net_->opt.use_fp16_arithmetic = false;
+            net_->opt.use_bf16_packed = false;
+            net_->opt.use_bf16_storage = false;
+        } else if (id_ == BackendId::NCNN_VULKAN_BF16) {
+            /* BF16 path - only enable features the GPU actually supports */
+            net_->opt.use_fp16_packed = false;
+            net_->opt.use_fp16_storage = false;
+            net_->opt.use_fp16_arithmetic = false;
+            const auto &gpu = ncnn::get_gpu_info(gpu_device_);
+            net_->opt.use_bf16_packed = gpu.support_bf16_packed() ? true : false;
+            net_->opt.use_bf16_storage = gpu.support_bf16_storage() ? true : false;
+            if (!net_->opt.use_bf16_packed && !net_->opt.use_bf16_storage) {
+                LOGE("NCNN: GPU does not support BF16 - aborting");
+                last_error_ = "NCNN: GPU lacks BF16 support";
+                return false;
+            }
+            LOGI("NCNN: GPU BF16: packed=%d storage=%d",
+                 (int)net_->opt.use_bf16_packed, (int)net_->opt.use_bf16_storage);
+        } else {
+            /* FP16 path */
+            net_->opt.use_fp16_packed = true;
+            net_->opt.use_fp16_storage = true;
+            net_->opt.use_fp16_arithmetic = true;
+        }
+        LOGI("NCNN: Vulkan enabled (gpu=%d, precision=%s)", gpu_device_,
+             (id_ == BackendId::NCNN_VULKAN_BF16) ? "BF16" : (id_ == BackendId::NCNN_VULKAN_FP16) ? "FP16"
+                                                                                                  : "FP32");
+#else
+        LOGE("NCNN: Vulkan backend not available - NCNN built without Vulkan support");
+        last_error_ = "NCNN: Vulkan not supported in this build";
+        return false;
+#endif
     }
     if (id_ == BackendId::NCNN_CPU_FP16) {
         /* CPU FP16: enable packed FP16 storage/arithmetic (ARM NEON FP16) */
@@ -559,7 +579,7 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     }
 
     /* Build ncnn::Mat inputs (NCNN uses [w,h,c] order internally).
-     * Clone each Mat so NCNN owns the data — external pointers into
+     * Clone each Mat so NCNN owns the data external pointers into
      * input_bufs_ may not match the layout NCNN expects after packing. */
     auto build_inputs = [&]() -> std::vector<ncnn::Mat> {
         std::vector<ncnn::Mat> mats;
@@ -692,10 +712,12 @@ bool NCNNBackend::SaveOutputs(const char * /*suffix*/) { return true; }
 void NCNNBackend::Cleanup()
 {
     if (net_) {
+#if NCNN_VULKAN_BUILD
         if (gpu_device_ >= 0) {
             ncnn::VulkanDevice *vkdev = ncnn::get_gpu_device(gpu_device_);
             (void)vkdev; /* Don't destroy - GPU might be shared */
         }
+#endif
         delete net_;
         net_ = nullptr;
     }
