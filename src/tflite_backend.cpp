@@ -118,15 +118,35 @@ static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads)
         }
         return TfLiteXNNPackDelegateCreate(&xo);
 #else
-        /* Desktop: XNNPACK delegate creation hangs on some Intel GPU drivers.
-         * TFLITE_XNNPACK_FP16 runs as CPU (no delegate). */
+        /* Desktop: load XNNPACK delegate from tensorflowlite_c.dll.
+         * libLiteRt.dll also exports TfLiteXNNPackDelegateCreate but that
+         * copy crashes with ACCESS_VIOLATION during init on x86-64.
+         * The tensorflowlite_c.dll copy is verified working (4x speedup). */
         if (id == BackendId::TFLITE_XNNPACK_FP16) {
-            LOGW("TFLite: XNNPACK_FP16 not available on this platform, running as CPU");
+            LOGE("TFLite: XNNPACK_FP16 not available on this platform");
             return nullptr;
         }
-        TfLiteXNNPackDelegateOptions xo = TfLiteXNNPackDelegateOptionsDefault();
-        xo.num_threads = num_threads;
-        return TfLiteXNNPackDelegateCreate(&xo);
+        {
+            static HMODULE tflite_dll = nullptr;
+            static decltype(&TfLiteXNNPackDelegateCreate) pfn_create = nullptr;
+            static decltype(&TfLiteXNNPackDelegateOptionsDefault) pfn_opts = nullptr;
+            if (!tflite_dll) {
+                tflite_dll = LoadLibraryA("tensorflowlite_c.dll");
+                if (tflite_dll) {
+                    pfn_create = (decltype(pfn_create))GetProcAddress(
+                        tflite_dll, "TfLiteXNNPackDelegateCreate");
+                    pfn_opts = (decltype(pfn_opts))GetProcAddress(
+                        tflite_dll, "TfLiteXNNPackDelegateOptionsDefault");
+                }
+                if (!pfn_create || !pfn_opts) {
+                    LOGE("TFLite: XNNPACK functions not found in tensorflowlite_c.dll");
+                    return nullptr;
+                }
+            }
+            TfLiteXNNPackDelegateOptions xo = pfn_opts();
+            xo.num_threads = num_threads;
+            return pfn_create(&xo);
+        }
 #endif
     }
     case BackendId::TFLITE_NNAPI:
@@ -170,7 +190,6 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
     auto t0 = std::chrono::high_resolution_clock::now();
     last_error_.clear();
 
-    LOGI("TFLite: step 1/7: TfLiteModelCreateFromFile(%s)", model_path);
     model_ = TFLiteModelCreateWithError(model_path);
     if (!model_) {
         LOGE("TFLite: failed to load model: %s", model_path);
@@ -178,25 +197,19 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
         last_error_ += tflite_error_buf[0] ? tflite_error_buf : "failed to load model";
         return false;
     }
-    LOGI("TFLite: step 1 OK");
 
-    LOGI("TFLite: step 2/7: TfLiteInterpreterOptionsCreate");
     opts_ = TfLiteInterpreterOptionsCreate();
     if (!opts_) {
         LOGE("TFLite: failed to create interpreter options");
         last_error_ = "TFLite: failed to create interpreter options";
         return false;
     }
-    LOGI("TFLite: step 2 OK");
 
     TfLiteInterpreterOptionsSetNumThreads(opts_, num_threads);
 
-    LOGI("TFLite: step 3/7: CreateDelegate");
     delegate_ = CreateDelegate(id_, num_threads);
     if (delegate_) {
-        LOGI("TFLite: step 3a: TfLiteInterpreterOptionsAddDelegate");
         TfLiteInterpreterOptionsAddDelegate(opts_, delegate_);
-        LOGI("TFLite: delegate attached for backend %d", bid(id_));
     }
 
     if (id_ == BackendId::TFLITE_NPU) {
@@ -215,12 +228,17 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
 #endif
     }
 
-    LOGI("TFLite: step 3 OK");
+    /* Non-CPU backends require a delegate; fail if unavailable
+     * rather than silently falling back to CPU. */
+    if (!delegate_ && id_ != BackendId::TFLITE_CPU) {
+        LOGE("TFLite: delegate not available for backend %d, aborting", bid(id_));
+        last_error_ = "TFLite: delegate not available on this platform";
+        return false;
+    }
 
     /* Flex delegate temporarily disabled */
     (void)flex_delegate_;
 
-    LOGI("TFLite: step 4/7: TfLiteInterpreterCreate");
     interp_ = TfLiteInterpreterCreate(model_, opts_);
     if (!interp_) {
         const char *tflite_err = tflite_error_buf[0] ? tflite_error_buf : "no TFLite error detail";
@@ -228,15 +246,12 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
         last_error_ = std::string("TFLite: interpreter create failed - ") + tflite_err;
         return false;
     }
-    LOGI("TFLite: step 4 OK");
 
-    LOGI("TFLite: step 5/7: TfLiteInterpreterAllocateTensors");
     if (TfLiteInterpreterAllocateTensors(interp_) != kTfLiteOk) {
         LOGE("TFLite: tensor allocation failed");
         last_error_ = "TFLite: tensor allocation failed";
         return false;
     }
-    LOGI("TFLite: step 5 OK");
 
     num_inputs_ = TfLiteInterpreterGetInputTensorCount(interp_);
     num_outputs_ = TfLiteInterpreterGetOutputTensorCount(interp_);

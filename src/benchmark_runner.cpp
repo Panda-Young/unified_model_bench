@@ -198,7 +198,6 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
             }
         }
         if (filtered.empty()) {
-            LOGW("No matching backends after --backend filter");
             return false;
         }
         /* Ensure CPU baseline is always included for comparison */

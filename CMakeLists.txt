@@ -127,20 +127,19 @@ if(HAVE_MNN_BACKEND)
     endif()
 endif()
 
-if(HAVE_LITERT_BACKEND)
-    if(WIN32)
-        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-            "${DEPS_DIR}/litert/liteRT_runtime/windows_x86_64/libLiteRt.lib")
-    else()
-        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-            "${DEPS_DIR}/litert/liteRT_runtime/android_arm64/libLiteRt.so")
-    endif()
-endif()
-
 if(HAVE_TFLITE_BACKEND)
     if(WIN32)
-        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-            "${DEPS_DIR}/tflite/lib/${ARCH_DIR}/tensorflowlite_c.dll.if.lib")
+        # On Windows, libLiteRt.dll also exports the full TFLite C API
+        # (TfLiteModelCreate, TfLiteInterpreterCreate, etc.) which works
+        # correctly.  We link libLiteRt.lib to get basic TFLite symbols and
+        # dynamically load XNNPACK/GPU delegates from tensorflowlite_c.dll
+        # at runtime to avoid the buggy XNNPACK in libLiteRt.
+        # Do NOT link tensorflowlite_c.dll.if.lib — it conflicts with
+        # libLiteRt.lib for TfLite* symbols.
+        if(HAVE_LITERT_BACKEND)
+            message(STATUS "TFLite + LiteRT coexistence: TFLite symbols from libLiteRt.lib, "
+                           "XNNPACK from tensorflowlite_c.dll (dynamic)")
+        endif()
     else()
         target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
             "${DEPS_DIR}/tflite/lib/${ARCH_DIR}/libtensorflowlite_c.so"
@@ -152,9 +151,19 @@ if(HAVE_TFLITE_BACKEND)
     endif()
 endif()
 
+if(HAVE_LITERT_BACKEND)
+    if(WIN32)
+        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
+            "${DEPS_DIR}/litert/liteRT_runtime/windows_x86_64/libLiteRt.lib")
+    else()
+        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
+            "${DEPS_DIR}/litert/liteRT_runtime/android_arm64/libLiteRt.so")
+    endif()
+endif()
+
 # ---- Post-build: copy dependency DLLs to output dir (Windows only) ----
 if(WIN32)
-set(OUT_DIR "${CMAKE_BINARY_DIR}/Release")
+set(OUT_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>")
 if(HAVE_NCNN_BACKEND)
     add_custom_command(TARGET unified_bench_${TARGET_SUFFIX} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -170,11 +179,13 @@ if(HAVE_MNN_BACKEND)
         COMMENT "Copying MNN.dll")
 endif()
 if(HAVE_TFLITE_BACKEND)
+    # Always copy tensorflowlite_c.dll — it's loaded dynamically for
+    # XNNPACK/GPU delegates on Windows (to avoid libLiteRt's buggy copy).
     add_custom_command(TARGET unified_bench_${TARGET_SUFFIX} POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${DEPS_DIR}/tflite/lib/${ARCH_DIR}/tensorflowlite_c.dll"
             "${OUT_DIR}/"
-        COMMENT "Copying tensorflowlite_c.dll")
+        COMMENT "Copying tensorflowlite_c.dll (dynamic load)")
 endif()
 if(HAVE_LITERT_BACKEND)
     add_custom_command(TARGET unified_bench_${TARGET_SUFFIX} POST_BUILD

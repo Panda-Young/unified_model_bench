@@ -222,38 +222,6 @@ bool ONNXBackend::ConfigureEP()
         }
         return true;
     }
-    case BackendId::ONNX_OPENVINO_GPU_BF16: {
-        /* OpenVINO GPU BF16 explicit precision */
-        if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
-            const char *keys[] = {"device_type", "precision", "cache_dir"};
-            const char *values[] = {"GPU", "BF16", "model_cache"};
-            OrtStatus *st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3);
-            if (st) {
-                LOGE("ONNX: OpenVINO GPU_BF16 append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO GPU_BF16: ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
-                return false;
-            }
-            LOGI("ONNX: OpenVINO GPU_BF16 EP configured (V2, BF16, cache)");
-        } else {
-            auto pfnV1 = (PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)
-                load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_OpenVINO");
-            if (!pfnV1) {
-                LOGE("ONNX: OpenVINO EP function not found in DLL");
-                last_error_ = "ONNX: OpenVINO EP function not found";
-                return false;
-            }
-            OrtStatus *st = pfnV1(opts_, "GPU_BF16");
-            if (st) {
-                LOGE("ONNX: OpenVINO GPU_BF16 append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO GPU_BF16 (V1): ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
-                return false;
-            }
-            LOGW("ONNX: OpenVINO GPU_BF16 EP configured (V1 fallback)");
-        }
-        return true;
-    }
     case BackendId::ONNX_OPENVINO_GPU_FP16: {
         /* OpenVINO GPU FP16 explicit precision */
         if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
@@ -500,7 +468,6 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     case BackendId::ONNX_OPENVINO_CPU:
     case BackendId::ONNX_OPENVINO_GPU:
     case BackendId::ONNX_OPENVINO_GPU_FP16:
-    case BackendId::ONNX_OPENVINO_GPU_BF16:
         ep_subdir = "openvino";
         break;
     case BackendId::ONNX_OPENVINO_NPU:

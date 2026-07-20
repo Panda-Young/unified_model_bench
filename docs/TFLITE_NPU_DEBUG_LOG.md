@@ -253,3 +253,53 @@ TFLITE_NPU 初始化:
 | `tools/NDK_build_Android_auto.bat` | Android NDK 构建脚本 |
 | `deps/onnxruntime/lib/android/qnn/` | QNN 运行时库（需从 SDK 更新） |
 | `memories/repo/qnn_delegate_symbols.md` | QNN delegate 符号表备忘 |
+
+---
+
+## 6. Desktop TFLITE_XNNPACK Crash (2026-07-21)
+
+### 问题现象
+Windows x64 Desktop (Intel Iris Xe GPU) 运行 TFLITE_XNNPACK 时，程序打印：
+```
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+```
+后立即崩溃（无任何错误日志），退出码 1。
+
+### 调试过程
+
+1. **定位崩溃点**：在 `TfLiteXNNPackDelegateCreate` 调用前后添加 `LOGI`+`fflush` 日志，
+   发现 TFLite 内部日志打印后，我们的日志从未出现 → 崩溃在 `TfLiteXNNPackDelegateCreate` 内部。
+
+2. **SEH 捕获异常**：用 `__try/__except` 包裹调用，捕获到：
+   - 异常码：`0xC0000005` (STATUS_ACCESS_VIOLATION)
+   - 崩溃地址：`0x00007FF8471785F0`
+   - 崩溃模块：`libLiteRt.dll`
+
+3. **根因分析**：
+   - `libLiteRt.dll` 是 Google LiteRT 运行时库（`deps/litert/liteRT_runtime/windows_x86_64/`）
+   - `libLiteRt.dll` 是 Google LiteRT 运行时（也导出完整 TFLite C API）
+   - `tensorflowlite_c.dll` 是标准 TFLite C API DLL
+   - 两个 DLL 都导出 21 个 `TfLite*` 符号（`TfLiteModelCreate`, `TfLiteInterpreterCreate`, `TfLiteXNNPackDelegateCreate` 等）
+   - `libLiteRt.lib` 是**导入库**（不是静态库），但导出 1053 个符号（LiteRt* + TfLite*）
+   - Linker 将 `TfLite*` 符号解析到 `libLiteRt.dll` → XNNPACK delegate 在该 DLL 中有 bug（ACCESS_VIOLATION）
+   - 基础 TFLite 操作（模型加载、解释器创建、CPU 推理）在 `libLiteRt.dll` 中**正常工作**
+
+4. **最终解决方案（两者共存）**：
+   - **不链接** `tensorflowlite_c.dll.if.lib`（避免符号冲突）
+   - 所有 TFLite C API 函数从 `libLiteRt.lib` 获取（→ `libLiteRt.dll`），经验证完全正常
+   - **仅 XNNPACK delegate 创建** 使用 `LoadLibrary("tensorflowlite_c.dll")` + `GetProcAddress` 动态加载
+   - LiteRT 后端正常链接 `libLiteRt.lib`，调用 `LiteRt*` 函数
+   - 两者在同一进程中和平共存
+
+### 验证结果（三者同时运行）
+```
+TFLITE_CPU         avg=31.6 ms   ← 使用 libLiteRt.dll 的 TFLite C API
+TFLITE_XNNPACK     avg=16.7 ms   ← XNNPACK 从 tensorflowlite_c.dll 动态加载
+LiteRT_CPU         avg=39.9 ms   ← LiteRT 原生 API
+```
+
+### 关键教训
+- **同名 DLL 导出冲突**：两个 DLL 都导出相同的 `TfLite*` 符号，linker 选其一；无法通过链接顺序控制
+- **按需动态加载**：仅对有 bug 的函数使用 `GetProcAddress`，无需重构整个后端
+- **`libLiteRt.dll` 可用作 TFLite 运行时**：其 TFLite C API 实现完整可用，仅有 XNNPACK delegate 有 bug
+- **跨平台差异**：Android 上两者各用独立 .so（ELF 无冲突），Windows 上导入库重叠需要特殊处理

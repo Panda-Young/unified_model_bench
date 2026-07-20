@@ -338,9 +338,10 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
             bin_path = fp16_bin;
             LOGI("NCNN: using FP16 weights: %s", fp16_bin.c_str());
         } else {
-            LOGW("NCNN: FP16 weights not found (%s), falling back to FP32 "
-                 "(run: python onnx_to_ncnn.py model.onnx --dual)",
+            LOGE("NCNN: FP16 weights not found (%s) - aborting (run: python onnx_to_ncnn.py model.onnx --dual)",
                  fp16_bin.c_str());
+            last_error_ = "NCNN: FP16 weights file not found (" + fp16_bin + ")";
+            return false;
         }
     }
     if (id_ == BackendId::NCNN_VULKAN || id_ == BackendId::NCNN_VULKAN_FP16 || id_ == BackendId::NCNN_VULKAN_BF16) {
@@ -365,11 +366,12 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
                 net_->opt.use_bf16_packed = gpu.support_bf16_packed() ? true : false;
                 net_->opt.use_bf16_storage = gpu.support_bf16_storage() ? true : false;
                 if (!net_->opt.use_bf16_packed && !net_->opt.use_bf16_storage) {
-                    LOGW("NCNN: GPU does not support BF16, falling back to FP32");
-                } else {
-                    LOGI("NCNN: GPU BF16: packed=%d storage=%d",
-                         (int)net_->opt.use_bf16_packed, (int)net_->opt.use_bf16_storage);
+                    LOGE("NCNN: GPU does not support BF16 - aborting");
+                    last_error_ = "NCNN: GPU lacks BF16 support";
+                    return false;
                 }
+                LOGI("NCNN: GPU BF16: packed=%d storage=%d",
+                     (int)net_->opt.use_bf16_packed, (int)net_->opt.use_bf16_storage);
             } else {
                 /* FP16 path */
                 net_->opt.use_fp16_packed = true;
@@ -397,12 +399,12 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
 #else
         bool have_bf16 = true;
 #endif
-        if (have_bf16) {
-            net_->opt.use_bf16_storage = true;
-            /* Load model must happen before trial - see below */
-        } else {
-            LOGW("NCNN: CPU BF16 disabled - CPU lacks BF16 support, falling back to FP32");
+        if (!have_bf16) {
+            LOGE("NCNN: CPU BF16 not supported - CPU lacks BF16 instructions, aborting");
+            last_error_ = "NCNN: CPU lacks BF16 support";
+            return false;
         }
+        net_->opt.use_bf16_storage = true;
     }
 
     /* Load model */
@@ -431,11 +433,11 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
     /* If BF16 was enabled, run a quick trial to verify it doesn't crash */
     if (id_ == BackendId::NCNN_CPU_BF16 && net_->opt.use_bf16_storage) {
         if (!TryBf16Trial()) {
-            LOGE("NCNN: CPU BF16 trial failed (access violation) - disabling BF16, falling back to FP32");
-            net_->opt.use_bf16_storage = false;
-        } else {
-            LOGI("NCNN: CPU BF16 trial passed");
+            LOGE("NCNN: CPU BF16 trial crashed (access violation) - aborting");
+            last_error_ = "NCNN: CPU BF16 runtime crash (unsupported on this CPU)";
+            return false;
         }
+        LOGI("NCNN: CPU BF16 trial passed");
     }
 
     init_ms_ = std::chrono::duration<double, std::milli>(

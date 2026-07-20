@@ -36,7 +36,7 @@ enum class BackendId {
     ONNX_OPENVINO_CPU = 5,
     ONNX_OPENVINO_GPU = 6,
     ONNX_OPENVINO_GPU_FP16 = 7,
-    ONNX_OPENVINO_GPU_BF16 = 8,
+    /* 8 was ONNX_OPENVINO_GPU_BF16 — removed, unsupported by OpenVINO */
     ONNX_OPENVINO_NPU = 9,
     ONNX_CUDA = 10,
     ONNX_TENSORRT = 11,

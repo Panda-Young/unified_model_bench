@@ -59,7 +59,6 @@ echo  Configuring (CMake)...
 echo ============================================================
 cmake -S "%PROJ_ROOT%" -B "%BUILD_DIR%" ^
     -G "Visual Studio %VS_VER%" -A x64 ^
-    -DCMAKE_BUILD_TYPE=Release ^
     -DHAVE_ONNX_BACKEND=ON ^
     -DHAVE_TFLITE_BACKEND=ON ^
     -DHAVE_NCNN_BACKEND=ON ^

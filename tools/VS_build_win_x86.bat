@@ -39,7 +39,6 @@ echo  Configuring (CMake) - x86 with ONNX + NCNN backends
 echo ============================================================
 cmake -S "%PROJ_ROOT%" -B "%BUILD_DIR%" ^
     -G "Visual Studio %VS_VER%" -A Win32 ^
-    -DCMAKE_BUILD_TYPE=Release ^
     -DHAVE_ONNX_BACKEND=ON ^
     -DHAVE_TFLITE_BACKEND=OFF ^
     -DHAVE_NCNN_BACKEND=ON ^
