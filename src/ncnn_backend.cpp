@@ -7,8 +7,8 @@
 
 #ifdef HAVE_NCNN_BACKEND
 
-#include <ncnn/net.h>
 #include <ncnn/cpu.h>
+#include <ncnn/net.h>
 
 /* ncnn/platform.h may define min/max macros and backend preprocessor names.
  * Undefine all potential conflicts before our C++ code. */
@@ -24,9 +24,9 @@
 
 #include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
-#include <csignal>
 #include <setjmp.h>
 #include <string>
 #include <vector>
@@ -35,19 +35,18 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
-#include <dbghelp.h>
-#include <cstdlib>
 #include <cstdarg>
+#include <cstdlib>
+#include <dbghelp.h>
 #include <io.h>
+#include <windows.h>
 #pragma comment(lib, "dbghelp.lib")
 
 /* Detect how NCNN terminates the process */
 static int t_crash_exit_count = 0;
 static void crash_atexit_handler()
 {
-    fprintf(stderr, "[CRASH] atexit handler called - NCNN called exit()\n");
-    fflush(stderr);
+    LOGE("NCNN: atexit handler called - NCNN called exit()");
     t_crash_exit_count = 1;
 }
 
@@ -60,7 +59,7 @@ static LONG CALLBACK veh_crash_handler(EXCEPTION_POINTERS *ep)
     if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION) {
         InterlockedExchange(&t_veh_bf16_crash, 1);
     }
-    return EXCEPTION_CONTINUE_SEARCH; /* let next handler try */
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 /* Per-thread abort recovery via SIGABRT + longjmp */
@@ -70,8 +69,7 @@ static __declspec(thread) int t_abort_ready = 0;
 static void abort_signal_handler(int sig)
 {
     (void)sig;
-    fprintf(stderr, "[ABORT] NCNN called abort() - recovering via longjmp\n");
-    fflush(stderr);
+    LOGW("NCNN: abort() detected - recovering via longjmp");
     if (t_abort_ready) {
         longjmp(t_abort_jmp, 1);
     }
@@ -95,19 +93,19 @@ static int safe_extract(ncnn::Extractor *ex, const char *name, ncnn::Mat &out)
     __try {
         return ex->extract(name, out);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        fprintf(stderr, "[SEH] HW exception (code=0x%08lX) in extract(%s)\n", GetExceptionCode(), name);
+        LOGE("NCNN: HW exception (0x%08lX) in extract(%s)", GetExceptionCode(), name);
         /* Write minidump */
         HANDLE hFile = CreateFileA("ncnn_crash.dmp", GENERIC_WRITE, 0, NULL,
-                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                                   CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
         if (hFile != INVALID_HANDLE_VALUE) {
             MINIDUMP_EXCEPTION_INFORMATION mei;
             mei.ThreadId = GetCurrentThreadId();
-            mei.ExceptionPointers = NULL; /* use current exception context */
+            mei.ExceptionPointers = NULL;
             mei.ClientPointers = FALSE;
             MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
                               hFile, MiniDumpWithDataSegs, NULL, NULL, NULL);
             CloseHandle(hFile);
-            fprintf(stderr, "[SEH] Minidump written: ncnn_crash.dmp\n");
+            LOGI("NCNN: minidump written: ncnn_crash.dmp");
         }
         fflush(stderr);
         return -1;
@@ -140,7 +138,7 @@ private:
     bool TryBf16Trial();
 
     ncnn::Net *net_ = nullptr;
-    int gpu_device_ = -1; /* -1 = CPU only */
+    int gpu_device_ = -1;      /* -1 = CPU only */
     bool bf16_unsafe_ = false; /* true if BF16 causes access violation */
 
     size_t num_inputs_ = 0;
@@ -254,8 +252,10 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
  * -------------------------------------------------------------------------*/
 bool NCNNBackend::TryBf16Trial()
 {
-    if (num_inputs_ == 0 || num_outputs_ == 0) return false;
-    if (!t_veh_handle) t_veh_handle = AddVectoredExceptionHandler(1, veh_crash_handler);
+    if (num_inputs_ == 0 || num_outputs_ == 0)
+        return false;
+    if (!t_veh_handle)
+        t_veh_handle = AddVectoredExceptionHandler(1, veh_crash_handler);
 
     InterlockedExchange(&t_veh_bf16_crash, 0);
     try {
