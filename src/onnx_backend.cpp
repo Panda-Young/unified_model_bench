@@ -56,6 +56,7 @@ private:
 
     void *lib_handle_ = nullptr;
     const OrtApi *ort_ = nullptr;
+    uint32_t ort_api_ver_ = ORT_API_VERSION;
     OrtEnv *env_ = nullptr;
     OrtSessionOptions *opts_ = nullptr;
     OrtSession *session_ = nullptr;
@@ -117,7 +118,7 @@ bool ONNXBackend::ConfigureEP()
 #if defined(_WIN32)
         /* Try V2 API with HighPerformance preference (auto-select best GPU) */
         const OrtDmlApi *dml_api = nullptr;
-        OrtStatus *st = ort_->GetExecutionProviderApi("DML", ORT_API_VERSION, (const void **)&dml_api);
+        OrtStatus *st = ort_->GetExecutionProviderApi("DML", ort_api_ver_, (const void **)&dml_api);
         if (!st && dml_api && dml_api->SessionOptionsAppendExecutionProvider_DML2) {
             /* V2 API available — use HighPerformance + Gpu filter */
             OrtDmlDeviceOptions device_opts;
@@ -166,7 +167,7 @@ bool ONNXBackend::ConfigureEP()
 #if defined(_WIN32)
         /* Must use V2 API with NPU filter (V1 has no NPU support) */
         const OrtDmlApi *dml_api = nullptr;
-        OrtStatus *st = ort_->GetExecutionProviderApi("DML", ORT_API_VERSION, (const void **)&dml_api);
+        OrtStatus *st = ort_->GetExecutionProviderApi("DML", ort_api_ver_, (const void **)&dml_api);
         if (st || !dml_api || !dml_api->SessionOptionsAppendExecutionProvider_DML2) {
             ort_->ReleaseStatus(st);
             LOGE("ONNX: DML_NPU requires V2 API, not available");
@@ -574,11 +575,28 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
         last_error_ = "ONNX: OrtGetApiBase returned NULL";
         return false;
     }
-    ort_ = base->GetApi(ORT_API_VERSION);
+
+    /* Resolve API version at runtime — not hardcoded ORT_API_VERSION.
+     * GetVersionString() returns e.g. "1.22.0", minor version = API version. */
+    const char *ort_ver_str = base->GetVersionString();
+    ort_api_ver_ = ORT_API_VERSION; /* fallback for unparseable version */
+    if (ort_ver_str) {
+        LOGI("ONNX Runtime version: %s", ort_ver_str);
+        const char *dot = strchr(ort_ver_str, '.');
+        if (dot) {
+            ort_api_ver_ = (uint32_t)atoi(dot + 1);
+        }
+    } else {
+        LOGW("ONNX: failed to get runtime version string, falling back to API v=1");
+    }
+
+    ort_ = base->GetApi(ort_api_ver_);
     if (!ort_) {
-        LOGE("ONNX: GetApi(v=%u) returned NULL", ORT_API_VERSION);
+        LOGE("ONNX: GetApi(v=%u) returned NULL", ort_api_ver_);
         last_error_ = "ONNX: GetApi returned NULL";
         return false;
+    } else {
+        LOGI("get ONNX Runtime API version: %s", ort_ver_str);
     }
     timing_[2] = std::chrono::duration<double, std::milli>(
                      std::chrono::high_resolution_clock::now() - t1)

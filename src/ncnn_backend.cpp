@@ -9,7 +9,7 @@
 
 #include <ncnn/cpu.h>
 #include <ncnn/net.h>
-
+#include <ncnn/c_api.h>
 /* ncnn/platform.h may define min/max macros and backend preprocessor names.
  * Undefine all potential conflicts before our C++ code. */
 #ifdef min
@@ -260,13 +260,14 @@ bool NCNNBackend::TryBf16Trial()
     InterlockedExchange(&t_veh_bf16_crash, 0);
     try {
         ncnn::Extractor ex = net_->create_extractor();
+        std::vector<std::vector<float>> buf_pool(num_inputs_);
         std::vector<ncnn::Mat> mats;
         for (size_t i = 0; i < num_inputs_; ++i) {
             size_t n = input_elems_[i] > 0 ? input_elems_[i] : 1;
-            std::vector<float> buf(n, 0.0f);
+            buf_pool[i].resize(n, 0.0f);
             int w = (int)input_shapes_[i][3], h = (int)input_shapes_[i][2], c = (int)input_shapes_[i][1];
-            ncnn::Mat m(w, h, c, buf.data());
-            mats.push_back(m);
+            ncnn::Mat m(w, h, c, buf_pool[i].data());
+            mats.push_back(m.clone());  /* clone: NCNN owns data, no dangling ptr */
             ex.input(input_names_[i].c_str(), mats.back());
         }
         ncnn::Mat out;
@@ -316,7 +317,9 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
     net_ = new ncnn::Net();
     net_->opt.num_threads = num_threads;
     net_->opt.lightmode = true;
-    net_->opt.use_packing_layout = true;
+    /* Disable packing layout for multi-input models: PNNX may reorder channels
+     * during conversion, and packing interacts badly with external-data Mats. */
+    net_->opt.use_packing_layout = (num_inputs_ <= 1);
     /* Max speed: enable Winograd convolution (biggest single perf gain for CNNs) */
     net_->opt.use_winograd_convolution = true;
     net_->opt.use_sgemm_convolution = true;
@@ -439,7 +442,7 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
                    std::chrono::high_resolution_clock::now() - t0)
                    .count();
 
-    LOGI("NCNN: init complete (%.1f ms)", init_ms_);
+    LOGI("NCNN: init complete (%.1f ms), version %s", init_ms_, ncnn_version());
     return true;
 }
 
@@ -553,25 +556,23 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         snaps[i].resize(output_elems_[i] > 0 ? output_elems_[i] : 1);
     }
 
-    /* Build ncnn::Mat inputs (NCNN uses [w,h,c] order internally) */
+    /* Build ncnn::Mat inputs (NCNN uses [w,h,c] order internally).
+     * Clone each Mat so NCNN owns the data — external pointers into
+     * input_bufs_ may not match the layout NCNN expects after packing. */
     auto build_inputs = [&]() -> std::vector<ncnn::Mat> {
         std::vector<ncnn::Mat> mats;
         for (size_t i = 0; i < num_inputs_; ++i) {
             auto &sh = input_shapes_[i];
             /* Convert ONNX [N,C,H,W] to NCNN [w,h,c] */
             int w = (int)sh[3], h = (int)sh[2], c = (int)sh[1];
-            ncnn::Mat m(w, h, c, input_bufs_[i]);
-            mats.push_back(m);
+            ncnn::Mat tmp(w, h, c, input_bufs_[i]);
+            mats.push_back(tmp.clone());
         }
         return mats;
     };
 
-    LOGD("NCNN: RunBenchmark starting (warmup=%d, repeat=%d, inputs=%zu, outputs=%zu)",
-         warmup, repeat, num_inputs_, num_outputs_);
-
     (void)warmup;
     for (int w = 0; w < warmup; ++w) {
-        LOGD("NCNN: warmup %d/%d", w + 1, warmup);
         ncnn::Extractor ex = net_->create_extractor();
         auto mats = build_inputs();
         for (size_t i = 0; i < num_inputs_; ++i) {
@@ -600,11 +601,9 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     }
 
     for (int r = 0; r < repeat; ++r) {
-        LOGD("NCNN: repeat %d/%d starting", r + 1, repeat);
         ncnn::Extractor ex = net_->create_extractor();
         auto mats = build_inputs();
         for (size_t i = 0; i < num_inputs_; ++i) {
-            LOGD("NCNN: setting input %s", input_names_[i].c_str());
             ex.input(input_names_[i].c_str(), mats[i]);
         }
 
@@ -621,8 +620,6 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
                      ret);
                 return false;
             }
-            LOGD("NCNN: extract %s ok, empty=%d, total=%zu",
-                 output_names_[i].c_str(), (int)out.empty(), out.total());
 #else
             ret = ex.extract(output_names_[i].c_str(), out);
             if (ret != 0) {
