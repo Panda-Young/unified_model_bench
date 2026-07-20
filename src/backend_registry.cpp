@@ -113,10 +113,12 @@ namespace BackendRegistry
         std::lock_guard<std::mutex> lock(g_registry_mutex);
         /* Build lowercase version of the query */
         std::string lower(name);
-        for (auto &c : lower) c = (char)tolower((unsigned char)c);
+        for (auto &c : lower)
+            c = (char)tolower((unsigned char)c);
         for (const auto &[id, entry] : g_registry) {
             std::string ename = entry.config.name;
-            for (auto &c : ename) c = (char)tolower((unsigned char)c);
+            for (auto &c : ename)
+                c = (char)tolower((unsigned char)c);
             if (ename == lower) {
                 return id;
             }
@@ -221,7 +223,7 @@ namespace BackendRegistry
         Register(BackendId::MNN_VULKAN, {BackendId::MNN_VULKAN, BackendType::MNN, "MNN_VULKAN", "", false}, CreateMnnBackend);
         Register(BackendId::MNN_VULKAN_FP16, {BackendId::MNN_VULKAN_FP16, BackendType::MNN, "MNN_VULKAN_FP16", "", false}, CreateMnnBackend);
         Register(BackendId::MNN_VULKAN_BF16, {BackendId::MNN_VULKAN_BF16, BackendType::MNN, "MNN_VULKAN_BF16", "", false}, CreateMnnBackend);
-        Register(BackendId::MNN_OPENGL, {BackendId::MNN_OPENGL, BackendType::MNN, "MNN_OPENGL", "", false}, CreateMnnBackend);        
+        Register(BackendId::MNN_OPENGL, {BackendId::MNN_OPENGL, BackendType::MNN, "MNN_OPENGL", "", false}, CreateMnnBackend);
 #endif
 #endif
 

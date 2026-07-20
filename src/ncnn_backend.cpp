@@ -255,8 +255,8 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
                 net_->opt.use_fp16_arithmetic = true;
             }
             LOGI("NCNN: Vulkan enabled (gpu=%d, precision=%s)", gpu_device_,
-                 (id_ == BackendId::NCNN_VULKAN_BF16) ? "BF16" :
-                 (id_ == BackendId::NCNN_VULKAN_FP16) ? "FP16" : "FP32");
+                 (id_ == BackendId::NCNN_VULKAN_BF16) ? "BF16" : (id_ == BackendId::NCNN_VULKAN_FP16) ? "FP16"
+                                                                                                      : "FP32");
         }
     }
     if (id_ == BackendId::NCNN_CPU_FP16) {

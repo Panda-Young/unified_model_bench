@@ -45,24 +45,42 @@
 static const char *LiteRtStatusStr(LiteRtStatus st)
 {
     switch (st) {
-    case kLiteRtStatusOk:                       return "Ok";
-    case kLiteRtStatusErrorInvalidArgument:      return "InvalidArgument";
-    case kLiteRtStatusErrorMemoryAllocationFailure: return "MemoryAllocationFailure";
-    case kLiteRtStatusErrorRuntimeFailure:       return "RuntimeFailure";
-    case kLiteRtStatusErrorMissingInputTensor:   return "MissingInputTensor";
-    case kLiteRtStatusErrorUnsupported:          return "Unsupported";
-    case kLiteRtStatusErrorNotFound:             return "NotFound";
-    case kLiteRtStatusErrorTimeoutExpired:       return "TimeoutExpired";
-    case kLiteRtStatusErrorWrongVersion:         return "WrongVersion";
-    case kLiteRtStatusErrorUnknown:              return "Unknown";
-    case kLiteRtStatusErrorAlreadyExists:        return "AlreadyExists";
-    case kLiteRtStatusErrorFileIO:               return "FileIO";
-    case kLiteRtStatusErrorInvalidFlatbuffer:    return "InvalidFlatbuffer";
-    case kLiteRtStatusErrorDynamicLoading:       return "DynamicLoading";
-    case kLiteRtStatusErrorSerialization:        return "Serialization";
-    case kLiteRtStatusErrorCompilation:          return "Compilation";
-    case kLiteRtStatusErrorIndexOOB:             return "IndexOutOfBounds";
-    default:                                     return "UnknownStatus";
+    case kLiteRtStatusOk:
+        return "Ok";
+    case kLiteRtStatusErrorInvalidArgument:
+        return "InvalidArgument";
+    case kLiteRtStatusErrorMemoryAllocationFailure:
+        return "MemoryAllocationFailure";
+    case kLiteRtStatusErrorRuntimeFailure:
+        return "RuntimeFailure";
+    case kLiteRtStatusErrorMissingInputTensor:
+        return "MissingInputTensor";
+    case kLiteRtStatusErrorUnsupported:
+        return "Unsupported";
+    case kLiteRtStatusErrorNotFound:
+        return "NotFound";
+    case kLiteRtStatusErrorTimeoutExpired:
+        return "TimeoutExpired";
+    case kLiteRtStatusErrorWrongVersion:
+        return "WrongVersion";
+    case kLiteRtStatusErrorUnknown:
+        return "Unknown";
+    case kLiteRtStatusErrorAlreadyExists:
+        return "AlreadyExists";
+    case kLiteRtStatusErrorFileIO:
+        return "FileIO";
+    case kLiteRtStatusErrorInvalidFlatbuffer:
+        return "InvalidFlatbuffer";
+    case kLiteRtStatusErrorDynamicLoading:
+        return "DynamicLoading";
+    case kLiteRtStatusErrorSerialization:
+        return "Serialization";
+    case kLiteRtStatusErrorCompilation:
+        return "Compilation";
+    case kLiteRtStatusErrorIndexOOB:
+        return "IndexOutOfBounds";
+    default:
+        return "UnknownStatus";
     }
 }
 
@@ -594,7 +612,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             return false;
         }
         LiteRtStatus warmup_st = LiteRtRunCompiledModel(compiled_, 0, num_inputs_, in_bufs.data(),
-                               num_outputs_, out_bufs.data());
+                                                        num_outputs_, out_bufs.data());
         if (warmup_st != kLiteRtStatusOk) {
             LOGE("LiteRT: warmup %d run failed: %s", w, LiteRtStatusStr(warmup_st));
             destroy_buffers("warmup_err", in_bufs);

@@ -35,10 +35,10 @@
  * Log levels
  * -------------------------------------------------------------------------*/
 enum class LogLevel { OFF = 0,
-                      ERR = 1,
-                      WARN = 2,
-                      INFO = 3,
-                      DBG = 4 };
+                      DBG = 1,
+                      INFO = 2,
+                      WARN = 3,
+                      ERR = 4 };
 
 /* Re-export as convenience macros using the clean names */
 constexpr LogLevel LOG_ERR = LogLevel::ERR;

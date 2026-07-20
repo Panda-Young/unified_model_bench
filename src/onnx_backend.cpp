@@ -101,7 +101,9 @@ bool ONNXBackend::ConfigureEP()
         }
         OrtStatus *st = pfn(opts_, 1);
         if (st) {
-            LOGE("ONNX: oneDNN append failed: %s", ort_->GetErrorMessage(st));            last_error_ = std::string("ONNX: OpenVINO NPU: ") + ort_->GetErrorMessage(st);            ort_->ReleaseStatus(st);
+            LOGE("ONNX: oneDNN append failed: %s", ort_->GetErrorMessage(st));
+            last_error_ = std::string("ONNX: OpenVINO NPU: ") + ort_->GetErrorMessage(st);
+            ort_->ReleaseStatus(st);
             return false;
         }
         LOGI("ONNX: oneDNN EP configured");
@@ -583,7 +585,26 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
                      .count();
 
     auto t2 = std::chrono::high_resolution_clock::now();
-    OrtStatus *st = ort_->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "unified_bench", &env_);
+    /* Map app log level to ORT logging level: DBG→VERBOSE, INFO→INFO, WARN→WARNING, ERR→ERROR, OFF→FATAL */
+    OrtLoggingLevel ort_lvl;
+    switch (Logger::level) {
+    case LogLevel::DBG:
+        ort_lvl = ORT_LOGGING_LEVEL_VERBOSE;
+        break;
+    case LogLevel::INFO:
+        ort_lvl = ORT_LOGGING_LEVEL_INFO;
+        break;
+    case LogLevel::WARN:
+        ort_lvl = ORT_LOGGING_LEVEL_WARNING;
+        break;
+    case LogLevel::ERR:
+        ort_lvl = ORT_LOGGING_LEVEL_ERROR;
+        break;
+    default:
+        ort_lvl = ORT_LOGGING_LEVEL_FATAL;
+        break;
+    }
+    OrtStatus *st = ort_->CreateEnv(ort_lvl, "unified_bench", &env_);
     if (st) {
         LOGE("ONNX: CreateEnv failed");
         ort_->ReleaseStatus(st);

@@ -5,10 +5,10 @@
 #include "cmd_args.hpp"
 #include "backend_interface.hpp"
 #include "log.hpp"
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cctype>
 
 void print_usage(const char *prog)
 {
@@ -28,6 +28,7 @@ void print_usage(const char *prog)
     printf("  --no-output-print   Don't print output summary\n");
     printf("  --backend <list>    Comma-separated backend names (default: all)\n");
     printf("                      Examples: --backend ONNX_CPU,MNN_OpenCL_FP16\n");
+    printf("  --log-level <N>     Log level: 0=OFF, 1=DBG, 2=INFO, 3=WARN, 4=ERR (default: 3)\n");
     printf("  --help              Show this help\n");
     printf("  --version           Show version\n");
 }
@@ -75,17 +76,26 @@ bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
             cfg.enable_csv = false;
         } else if (strcmp(argv[i], "--no-output-print") == 0) {
             cfg.enable_output = false;
+        } else if (strcmp(argv[i], "--log-level") == 0 && i + 1 < argc) {
+            cfg.log_level = atoi(argv[++i]);
+            if (cfg.log_level < 0)
+                cfg.log_level = 0;
+            if (cfg.log_level > 4)
+                cfg.log_level = 4;
         } else if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
             has_backend_filter = true;
             const char *list = argv[++i];
             const char *p = list;
             while (*p) {
                 /* Skip leading spaces */
-                while (*p == ' ') ++p;
-                if (!*p) break;
+                while (*p == ' ')
+                    ++p;
+                if (!*p)
+                    break;
                 /* Find end of this token (comma or end) */
                 const char *end = p;
-                while (*end && *end != ',') ++end;
+                while (*end && *end != ',')
+                    ++end;
                 /* Extract token */
                 std::string token(p, end - p);
                 if (!token.empty()) {

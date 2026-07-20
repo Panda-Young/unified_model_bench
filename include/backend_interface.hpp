@@ -21,11 +21,11 @@ enum class BackendType { ONNX_EP = 0,
                          LITERT = 4 };
 
 /* ONNX Execution Providers:      0-17
-     * TFLite Delegates:            100-107
-     * NCNN backends:               200-206
-     * MNN backends:                300-309
-     * LiteRT backends:             400-405
-     */
+ * TFLite Delegates:            100-107
+ * NCNN backends:               200-206
+ * MNN backends:                300-309
+ * LiteRT backends:             400-405
+ */
 enum class BackendId {
     /* ONNX */
     ONNX_CPU = 0,

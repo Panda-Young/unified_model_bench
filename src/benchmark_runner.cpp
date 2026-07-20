@@ -101,10 +101,18 @@ static std::string csv_safe(const std::string &s)
     out.reserve(s.size());
     for (char c : s) {
         switch (c) {
-        case '\n': out += ' '; break;
-        case '\r': out += ' '; break;
-        case '"':  out += "'"; break;
-        default:   out += c;   break;
+        case '\n':
+            out += ' ';
+            break;
+        case '\r':
+            out += ' ';
+            break;
+        case '"':
+            out += "'";
+            break;
+        default:
+            out += c;
+            break;
         }
     }
     return out;
@@ -196,7 +204,10 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
         /* Ensure CPU baseline is always included for comparison */
         bool has_cpu = false;
         for (auto &b : filtered) {
-            if (b.is_cpu_baseline) { has_cpu = true; break; }
+            if (b.is_cpu_baseline) {
+                has_cpu = true;
+                break;
+            }
         }
         if (!has_cpu) {
             for (auto &b : backends) {

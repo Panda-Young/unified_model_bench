@@ -14,16 +14,18 @@ int main(int argc, char *argv[])
     try {
         setvbuf(stderr, nullptr, _IONBF, 0);
         Logger::init("unified_bench");
-        Logger::level = LogLevel::INFO;
 
-        LOGI("Unified Benchmark Tool v2.0 (C++)  Arch: %s", ARCH_STR);
+        BenchConfig cfg;
 
         BackendRegistry::InitDefaults();
 
-        BenchConfig cfg;
         if (!parse_cmd_args(argc, argv, cfg)) {
             return 1;
         }
+
+        Logger::level = static_cast<LogLevel>(cfg.log_level);
+
+        LOGI("Unified Benchmark Tool v2.0 (C++)  Arch: %s", ARCH_STR);
 
         LOGI("Model: %s  Repeat: %d  Warmup: %d  Threads: %d",
              cfg.model_path.c_str(), cfg.repeat, cfg.warmup_runs, cfg.num_threads);
