@@ -583,7 +583,7 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
                      .count();
 
     auto t2 = std::chrono::high_resolution_clock::now();
-    OrtStatus *st = ort_->CreateEnv(ORT_LOGGING_LEVEL_VERBOSE, "unified_bench", &env_);
+    OrtStatus *st = ort_->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "unified_bench", &env_);
     if (st) {
         LOGE("ONNX: CreateEnv failed");
         ort_->ReleaseStatus(st);
