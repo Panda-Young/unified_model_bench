@@ -8,6 +8,7 @@
 #ifdef HAVE_NCNN_BACKEND
 
 #include <ncnn/net.h>
+#include <ncnn/cpu.h>
 
 /* ncnn/platform.h may define min/max macros and backend preprocessor names.
  * Undefine all potential conflicts before our C++ code. */
@@ -25,8 +26,94 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <csignal>
+#include <setjmp.h>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#include <cstdlib>
+#include <cstdarg>
+#include <io.h>
+#pragma comment(lib, "dbghelp.lib")
+
+/* Detect how NCNN terminates the process */
+static int t_crash_exit_count = 0;
+static void crash_atexit_handler()
+{
+    fprintf(stderr, "[CRASH] atexit handler called - NCNN called exit()\n");
+    fflush(stderr);
+    t_crash_exit_count = 1;
+}
+
+/* VectoredExceptionHandler - runs BEFORE SEH __except */
+static volatile LONG t_veh_bf16_crash = 0;
+static PVOID t_veh_handle = NULL;
+static LONG CALLBACK veh_crash_handler(EXCEPTION_POINTERS *ep)
+{
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_ILLEGAL_INSTRUCTION) {
+        InterlockedExchange(&t_veh_bf16_crash, 1);
+    }
+    return EXCEPTION_CONTINUE_SEARCH; /* let next handler try */
+}
+
+/* Per-thread abort recovery via SIGABRT + longjmp */
+static __declspec(thread) jmp_buf t_abort_jmp;
+static __declspec(thread) int t_abort_ready = 0;
+
+static void abort_signal_handler(int sig)
+{
+    (void)sig;
+    fprintf(stderr, "[ABORT] NCNN called abort() - recovering via longjmp\n");
+    fflush(stderr);
+    if (t_abort_ready) {
+        longjmp(t_abort_jmp, 1);
+    }
+}
+
+/* SEH-safe helper: check x86_64 AVX-512 BF16 support.
+ * Must be in a function with no C++ object unwinding. */
+static int safe_check_bf16()
+{
+    __try {
+        return ncnn::cpu_support_x86_avx512_bf16();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0; /* assume unsupported on crash */
+    }
+}
+
+/* SEH-safe helper: extract a blob by name, catching access violations.
+ * Must be in a function with no C++ object unwinding (no destructors). */
+static int safe_extract(ncnn::Extractor *ex, const char *name, ncnn::Mat &out)
+{
+    __try {
+        return ex->extract(name, out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        fprintf(stderr, "[SEH] HW exception (code=0x%08lX) in extract(%s)\n", GetExceptionCode(), name);
+        /* Write minidump */
+        HANDLE hFile = CreateFileA("ncnn_crash.dmp", GENERIC_WRITE, 0, NULL,
+                                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hFile != INVALID_HANDLE_VALUE) {
+            MINIDUMP_EXCEPTION_INFORMATION mei;
+            mei.ThreadId = GetCurrentThreadId();
+            mei.ExceptionPointers = NULL; /* use current exception context */
+            mei.ClientPointers = FALSE;
+            MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(),
+                              hFile, MiniDumpWithDataSegs, NULL, NULL, NULL);
+            CloseHandle(hFile);
+            fprintf(stderr, "[SEH] Minidump written: ncnn_crash.dmp\n");
+        }
+        fflush(stderr);
+        return -1;
+    }
+}
+#endif
 
 class NCNNBackend : public IBackend
 {
@@ -50,9 +137,11 @@ public:
 private:
     void Cleanup();
     bool ReadShapesFile(const char *shapes_path);
+    bool TryBf16Trial();
 
     ncnn::Net *net_ = nullptr;
     int gpu_device_ = -1; /* -1 = CPU only */
+    bool bf16_unsafe_ = false; /* true if BF16 causes access violation */
 
     size_t num_inputs_ = 0;
     size_t num_outputs_ = 0;
@@ -157,6 +246,36 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
 
     LOGI("NCNN: shapes loaded: %zu in, %zu out", num_inputs_, num_outputs_);
     return num_inputs_ > 0 && num_outputs_ > 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * Try a single forward pass with BF16 to detect runtime crashes.
+ * VEH catches access violations and sets t_veh_bf16_crash flag.
+ * -------------------------------------------------------------------------*/
+bool NCNNBackend::TryBf16Trial()
+{
+    if (num_inputs_ == 0 || num_outputs_ == 0) return false;
+    if (!t_veh_handle) t_veh_handle = AddVectoredExceptionHandler(1, veh_crash_handler);
+
+    InterlockedExchange(&t_veh_bf16_crash, 0);
+    try {
+        ncnn::Extractor ex = net_->create_extractor();
+        std::vector<ncnn::Mat> mats;
+        for (size_t i = 0; i < num_inputs_; ++i) {
+            size_t n = input_elems_[i] > 0 ? input_elems_[i] : 1;
+            std::vector<float> buf(n, 0.0f);
+            int w = (int)input_shapes_[i][3], h = (int)input_shapes_[i][2], c = (int)input_shapes_[i][1];
+            ncnn::Mat m(w, h, c, buf.data());
+            mats.push_back(m);
+            ex.input(input_names_[i].c_str(), mats.back());
+        }
+        ncnn::Mat out;
+        ex.extract(output_names_[0].c_str(), out);
+    } catch (...) {
+        /* C++ exceptions caught here */
+    }
+    int crashed = InterlockedExchange(&t_veh_bf16_crash, 0);
+    return crashed == 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -267,9 +386,20 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
         LOGI("NCNN: CPU FP16 mode enabled");
     }
     if (id_ == BackendId::NCNN_CPU_BF16) {
-        /* CPU BF16: enable BF16 storage (ARM BF16, Intel AMX BF16) */
-        net_->opt.use_bf16_storage = true;
-        LOGI("NCNN: CPU BF16 mode enabled");
+        /* CPU BF16: use CPUID check + trial forward pass to verify */
+#if defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64)
+        bool have_bf16 = !!ncnn::cpu_support_arm_bf16();
+#elif defined(__x86_64__) || defined(_M_AMD64) || defined(_M_X64)
+        bool have_bf16 = !!safe_check_bf16();
+#else
+        bool have_bf16 = true;
+#endif
+        if (have_bf16) {
+            net_->opt.use_bf16_storage = true;
+            /* Load model must happen before trial - see below */
+        } else {
+            LOGW("NCNN: CPU BF16 disabled - CPU lacks BF16 support, falling back to FP32");
+        }
     }
 
     /* Load model */
@@ -294,6 +424,16 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
         }
     }
     LOGI("NCNN: model loaded successfully");
+
+    /* If BF16 was enabled, run a quick trial to verify it doesn't crash */
+    if (id_ == BackendId::NCNN_CPU_BF16 && net_->opt.use_bf16_storage) {
+        if (!TryBf16Trial()) {
+            LOGE("NCNN: CPU BF16 trial failed (access violation) - disabling BF16, falling back to FP32");
+            net_->opt.use_bf16_storage = false;
+        } else {
+            LOGI("NCNN: CPU BF16 trial passed");
+        }
+    }
 
     init_ms_ = std::chrono::duration<double, std::milli>(
                    std::chrono::high_resolution_clock::now() - t0)
@@ -426,8 +566,12 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         return mats;
     };
 
+    LOGD("NCNN: RunBenchmark starting (warmup=%d, repeat=%d, inputs=%zu, outputs=%zu)",
+         warmup, repeat, num_inputs_, num_outputs_);
+
     (void)warmup;
     for (int w = 0; w < warmup; ++w) {
+        LOGD("NCNN: warmup %d/%d", w + 1, warmup);
         ncnn::Extractor ex = net_->create_extractor();
         auto mats = build_inputs();
         for (size_t i = 0; i < num_inputs_; ++i) {
@@ -435,25 +579,57 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         }
         for (size_t i = 0; i < num_outputs_; ++i) {
             ncnn::Mat out;
-            int ret = ex.extract(output_names_[i].c_str(), out);
+            int ret;
+#ifdef _WIN32
+            ret = safe_extract(&ex, output_names_[i].c_str(), out);
             if (ret != 0) {
-                LOGE("NCNN: warmup extract %zu failed, ret=%d", i, ret);
+                LOGE("NCNN: warmup extract %s %s (ret=%d)",
+                     output_names_[i].c_str(),
+                     (ret == -1) ? "crashed (SEH)" : "failed",
+                     ret);
                 return false;
             }
+#else
+            ret = ex.extract(output_names_[i].c_str(), out);
+            if (ret != 0) {
+                LOGE("NCNN: warmup extract %s failed, ret=%d", output_names_[i].c_str(), ret);
+                return false;
+            }
+#endif
         }
     }
 
     for (int r = 0; r < repeat; ++r) {
+        LOGD("NCNN: repeat %d/%d starting", r + 1, repeat);
         ncnn::Extractor ex = net_->create_extractor();
         auto mats = build_inputs();
         for (size_t i = 0; i < num_inputs_; ++i) {
+            LOGD("NCNN: setting input %s", input_names_[i].c_str());
             ex.input(input_names_[i].c_str(), mats[i]);
         }
 
         auto t0 = std::chrono::high_resolution_clock::now();
         for (size_t i = 0; i < num_outputs_; ++i) {
             ncnn::Mat out;
-            ex.extract(output_names_[i].c_str(), out);
+            int ret;
+#ifdef _WIN32
+            ret = safe_extract(&ex, output_names_[i].c_str(), out);
+            if (ret != 0) {
+                LOGE("NCNN: extract %s %s (ret=%d)",
+                     output_names_[i].c_str(),
+                     (ret == -1) ? "crashed (SEH)" : "failed",
+                     ret);
+                return false;
+            }
+            LOGD("NCNN: extract %s ok, empty=%d, total=%zu",
+                 output_names_[i].c_str(), (int)out.empty(), out.total());
+#else
+            ret = ex.extract(output_names_[i].c_str(), out);
+            if (ret != 0) {
+                LOGE("NCNN: extract %s failed, ret=%d", output_names_[i].c_str(), ret);
+                return false;
+            }
+#endif
             /* Convert NCNN [w,h,c] back to flat float.
              * Use out.data (raw pointer to entire blob) instead of
              * out.channel(0) which only points to the first channel.

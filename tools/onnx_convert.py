@@ -40,6 +40,33 @@ import sys
 import tempfile
 from pathlib import Path
 
+# ── TFLite compatibility patches (applied early so onnx_graphsurgeon loads) ──
+# onnx 1.22+ removed onnx.helper.float32_to_bfloat16; onnx_graphsurgeon needs it.
+import numpy as np
+import onnx.helper as _onnx_helper
+
+if not hasattr(_onnx_helper, 'float32_to_bfloat16'):
+    def _float32_to_bfloat16(f: float) -> int:
+        return np.float32(f).view(np.uint16).item()
+    _onnx_helper.float32_to_bfloat16 = _float32_to_bfloat16
+
+if not hasattr(_onnx_helper, 'bfloat16_to_float32'):
+    def _bfloat16_to_float32(b: int) -> float:
+        return np.uint16(b).view(np.float32).item()
+    _onnx_helper.bfloat16_to_float32 = _bfloat16_to_float32
+
+# Also patch the module-level reference used by onnx_graphsurgeon
+import onnx
+onnx.helper.float32_to_bfloat16 = _onnx_helper.float32_to_bfloat16
+onnx.helper.bfloat16_to_float32 = _onnx_helper.bfloat16_to_float32
+
+# np.load allow_pickle compatibility
+_orig_np_load = np.load
+np.load = lambda *a, **kw: _orig_np_load(*a, **{**kw, 'allow_pickle': kw.get('allow_pickle', True)})
+
+# Prevent onnx2tf from downloading test images
+os.environ['ONNX2TF_DOWNLOAD_TEST_DATA'] = '0'
+
 # ──────────────────────────────────────────────────────────────────────
 # Common helpers
 # ──────────────────────────────────────────────────────────────────────
@@ -905,72 +932,27 @@ def convert_tflite_inner(input_onnx: Path, output_tflite: Path, keep_temp: bool)
     ensure_tflite_deps()
 
     # Set env vars to avoid GBK encoding issues and oneDNN numerical warnings
-    tflite_env = os.environ.copy()
-    tflite_env["PYTHONIOENCODING"] = "utf-8"
-    tflite_env["PYTHONUTF8"] = "1"
-    tflite_env["TF_ENABLE_ONEDNN_OPTS"] = "0"
-    tflite_env["TF_CPP_MIN_LOG_LEVEL"] = "2"
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    os.environ.setdefault("PYTHONUTF8", "1")
+    os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+    os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
     with tempfile.TemporaryDirectory(prefix="onnx2tf_") as tmp:
         tmp_dir = Path(tmp)
 
-        # Generate PRF to fix NCHW->NHWC Transpose/Concat axis mapping
-        import onnx as onnx_mod
-        onnx_model = onnx_mod.load(str(input_onnx), load_external_data=False)
-        prf_path = None  # Disable PRF - can cause extra subgraph inputs
-
-        wrapper = Path(__file__).resolve().parent / "_onnx2tf_wrapper.py"
-        if wrapper.exists():
-            cmd = [sys.executable, str(wrapper),
-                   "-i", str(input_onnx), "-o", str(tmp_dir),
-                   "-coion", "-nuo", "-n"]
-        else:
-            cmd = [sys.executable, "-m", "onnx2tf",
-                   "-i", str(input_onnx), "-o", str(tmp_dir),
-                   "-coion", "-nuo", "-n"]
-        if prf_path:
-            cmd += ["-prf", str(prf_path)]
-        print(f"  Running: {' '.join(cmd)}")
-        proc = subprocess.run(cmd, text=True, capture_output=True, env=tflite_env,
-                              encoding="utf-8", errors="replace")
-
-        def safe_print(prefix: str, text: str):
-            try:
-                # Replace Unicode chars that can't be encoded in GBK
-                safe_text = text.encode("utf-8", errors="replace").decode("utf-8")
-                safe_text = safe_text.replace('\u26a0', '!')  # ⚠ -> !
-                safe_text = safe_text.replace('\U0001f4e6', '[P]')  # 📦 -> [P]
-                safe_text = safe_text.replace('\U0001f4d0', '[D]')  # 📐 -> [D]
-                safe_text = safe_text.replace('\u2728', '*')  # ✨ -> *
-                safe_text = safe_text.replace('\u2757', '!!')  # ❗ -> !!
-                print(f"{prefix} {safe_text}")
-            except UnicodeEncodeError:
-                safe = text.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
-                print(f"{prefix} {safe}")
-
-        for line in proc.stdout.splitlines():
-            lo = line.lower()
-            if any(w in lo for w in ("warn", "error", "fail", "traceback")):
-                safe_print(" [onnx2tf] [W]", line)
-            else:
-                safe_print(" [onnx2tf]", line)
-
-        if proc.stderr:
-            prev = None
-            for line in proc.stderr.splitlines():
-                s = line.strip()
-                if not s or s == prev: continue
-                prev = s
-                lo = s.lower()
-                if any(w in lo for w in ("warn", "error", "fail", "traceback")):
-                    safe_print(" [onnx2tf:err] [W]", s)
-                elif re.search(r"100%\|", s):
-                    safe_print(" [onnx2tf:err]", s)
-                elif not re.search(r"\d+%\|.*it/s", s):
-                    safe_print(" [onnx2tf:err]", s)
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"onnx2tf failed:\n{proc.stdout}\n{proc.stderr}")
+        # Patches are already applied at module top; call onnx2tf inline
+        import onnx2tf.onnx2tf as _onnx2tf_mod
+        _old_argv = sys.argv.copy()
+        try:
+            sys.argv = [_onnx2tf_mod.__file__,
+                        "-i", str(input_onnx), "-o", str(tmp_dir),
+                        "-coion", "-nuo", "-n"]
+            print(f"  Running: onnx2tf {' '.join(sys.argv[1:])}")
+            _onnx2tf_mod.main()
+        except SystemExit:
+            pass
+        finally:
+            sys.argv = _old_argv
 
         produced = find_latest_tflite(tmp_dir)
         output_tflite.parent.mkdir(parents=True, exist_ok=True)
