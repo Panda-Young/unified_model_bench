@@ -16,7 +16,7 @@
 #include <vector>
 
 #if defined(__ANDROID__) || defined(__android__)
-#include <nnapi_provider_factory.h>
+/* NNAPI symbols loaded dynamically — avoid link-time dependency */
 #endif
 
 #ifdef _WIN32
@@ -25,10 +25,11 @@
 #include <dml_provider_factory.h>
 #endif
 
-/* DML / oneDNN / OpenVINO function pointer types (avoid including heavy provider headers) */
+/* DML / oneDNN / OpenVINO / NNAPI function pointer types (avoid including heavy provider headers) */
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_DML)(OrtSessionOptions *options, int device_id);
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_Dnnl)(OrtSessionOptions *options, int use_arena);
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)(OrtSessionOptions *options, const char *device_type);
+typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_Nnapi)(OrtSessionOptions *options, int use_nnapi);
 
 class ONNXBackend : public IBackend
 {
@@ -321,12 +322,21 @@ bool ONNXBackend::ConfigureEP()
     case BackendId::ONNX_NNAPI:
 #if defined(__ANDROID__) || defined(__android__)
     {
-        OrtStatus *st = OrtSessionOptionsAppendExecutionProvider_Nnapi(opts_, 0);
+        auto pfnNnapi = (PFN_OrtSessionOptionsAppendExecutionProvider_Nnapi)
+            load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_Nnapi");
+        if (!pfnNnapi) {
+            LOGE("ONNX: NNAPI EP function not found in ONNX Runtime library");
+            last_error_ = "ONNX: NNAPI EP function not found";
+            return false;
+        }
+        OrtStatus *st = pfnNnapi(opts_, 0);
         if (st) {
-            LOGW("ONNX: NNAPI failed");
+            LOGW("ONNX: NNAPI failed: %s", ort_->GetErrorMessage(st));
+            last_error_ = std::string("ONNX: NNAPI: ") + ort_->GetErrorMessage(st);
             ort_->ReleaseStatus(st);
             return false;
         }
+        LOGI("ONNX: NNAPI EP configured");
         return true;
     }
 #else

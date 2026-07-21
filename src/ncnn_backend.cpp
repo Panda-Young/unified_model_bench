@@ -349,7 +349,7 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
         }
     }
     if (id_ == BackendId::NCNN_VK || id_ == BackendId::NCNN_VK_FP16 || id_ == BackendId::NCNN_VK_BF16) {
-#ifdef NCNN_VULKAN
+#if NCNN_VULKAN
         gpu_device_ = ncnn::get_default_gpu_index();
         if (gpu_device_ < 0) {
             LOGE("NCNN: no Vulkan device found - aborting");
@@ -703,7 +703,7 @@ bool NCNNBackend::SaveOutputs(const char * /*suffix*/) { return true; }
 void NCNNBackend::Cleanup()
 {
     if (net_) {
-#ifdef NCNN_VULKAN
+#if NCNN_VULKAN
         if (gpu_device_ >= 0) {
             ncnn::VulkanDevice *vkdev = ncnn::get_gpu_device(gpu_device_);
             (void)vkdev; /* Don't destroy - GPU might be shared */

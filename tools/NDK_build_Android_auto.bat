@@ -63,7 +63,11 @@ REM ---- Add NDK prebuilt + VS bundled CMake/Ninja to PATH ----
 set "PATH=%ANDROID_NDK_ROOT%\prebuilt\windows-x86_64\bin;%PATH%"
 for /f "usebackq tokens=*" %%i in (
     `"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -prerelease -property installationPath`
-) do set "PATH=%%i\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;%PATH%"
+) do (
+    set "VS_INSTALL=%%i"
+    set "PATH=%%i\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin;%%i\Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja;!PATH!"
+)
+REM Also try Android SDK cmake (may be on different drive)
 set "PATH=%LOCALAPPDATA%\Android\Sdk\cmake\3.22.1\bin;%PATH%"
 
 REM ---- Detect build tool (prefer Ninja for speed) ----
@@ -142,6 +146,21 @@ if errorlevel 1 (
         exit /b 1
     )
 ) else ( echo ONNX Runtime .so already on device, skip. )
+
+REM Push QNN-specific ONNX Runtime .so (with NNAPI/QNN EPs) to qnn/ dir
+adb shell "test -f /data/local/tmp/bench_test/qnn/libonnxruntime.so" >nul 2>&1
+if errorlevel 1 (
+    set "ORT_QNN=%ROOT%\deps\onnxruntime\lib\android\qnn\arm64-v8a\libonnxruntime.so"
+    if exist "!ORT_QNN!" (
+        echo Pushing QNN ONNX Runtime .so...
+        adb push "!ORT_QNN!" /data/local/tmp/bench_test/qnn/ || (
+            echo ERROR: Failed to push QNN ONNX Runtime .so
+            exit /b 1
+        )
+    ) else (
+        echo WARNING: QNN ONNX Runtime .so not found at !ORT_QNN!
+    )
+) else ( echo QNN ONNX Runtime .so already on device, skip. )
 
 REM --- Push QNN libraries from QAIRT SDK (shared by ONNX QNN & TFLITE_NPU) ---
 if exist "!QNN_SDK_ROOT!\lib\aarch64-android\libQnnHtp.so" (
@@ -267,7 +286,7 @@ echo ============================================================
 echo  Running FULL benchmark (warmup=5, repeat=100)...
 echo ============================================================
 adb shell "rm -f /data/local/tmp/bench_test/summary.csv"
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% test_model.onnx --backend onnx_QNN_Htp,TFLITE_NPU --repeat 1 --warmup 0"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% test_model.onnx --repeat 1 --warmup 0"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.
