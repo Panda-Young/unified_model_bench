@@ -11,21 +11,12 @@
 #include <ncnn/net.h>
 #include <ncnn/gpu.h>
 #include <ncnn/c_api.h>
-/* ncnn/platform.h may define min/max macros.
- * Undefine only the generic name conflicts.
- * NCNN_VULKAN macro conflicts with BackendId::NCNN_VULKAN enum,
- * so save its value before undefining (0=disabled, 1=enabled). */
+/* ncnn/platform.h may define min/max macros. */
 #ifdef min
 #undef min
 #endif
 #ifdef max
 #undef max
-#endif
-#ifndef NCNN_VULKAN_BUILD
-#define NCNN_VULKAN_BUILD NCNN_VULKAN
-#endif
-#ifdef NCNN_VULKAN
-#undef NCNN_VULKAN
 #endif
 
 #include <cerrno>
@@ -341,7 +332,7 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
      * The FP16 model has weights already quantized, giving smaller and
      * more accurate results than runtime FP32→FP16 conversion.
      * .param is shared with FP32 (identical structure), only .bin differs. */
-    if (id_ == BackendId::NCNN_VULKAN_FP16) {
+    if (id_ == BackendId::NCNN_VK_FP16) {
         std::string fp16_bin = base + "_fp16.ncnn.bin";
         FILE *test_fp16 = fopen(fp16_bin.c_str(), "r");
         if (test_fp16) {
@@ -357,8 +348,8 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
             return false;
         }
     }
-    if (id_ == BackendId::NCNN_VULKAN || id_ == BackendId::NCNN_VULKAN_FP16 || id_ == BackendId::NCNN_VULKAN_BF16) {
-#if NCNN_VULKAN_BUILD
+    if (id_ == BackendId::NCNN_VK || id_ == BackendId::NCNN_VK_FP16 || id_ == BackendId::NCNN_VK_BF16) {
+#ifdef NCNN_VULKAN
         gpu_device_ = ncnn::get_default_gpu_index();
         if (gpu_device_ < 0) {
             LOGE("NCNN: no Vulkan device found - aborting");
@@ -366,14 +357,14 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
             return false;
         }
         net_->opt.use_vulkan_compute = true;
-        if (id_ == BackendId::NCNN_VULKAN) {
+        if (id_ == BackendId::NCNN_VK) {
             /* Force FP32 path: disable all FP16/ BF16 optimizations */
             net_->opt.use_fp16_packed = false;
             net_->opt.use_fp16_storage = false;
             net_->opt.use_fp16_arithmetic = false;
             net_->opt.use_bf16_packed = false;
             net_->opt.use_bf16_storage = false;
-        } else if (id_ == BackendId::NCNN_VULKAN_BF16) {
+        } else if (id_ == BackendId::NCNN_VK_BF16) {
             /* BF16 path - only enable features the GPU actually supports */
             net_->opt.use_fp16_packed = false;
             net_->opt.use_fp16_storage = false;
@@ -395,7 +386,7 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
             net_->opt.use_fp16_arithmetic = true;
         }
         LOGI("NCNN: Vulkan enabled (gpu=%d, precision=%s)", gpu_device_,
-             (id_ == BackendId::NCNN_VULKAN_BF16) ? "BF16" : (id_ == BackendId::NCNN_VULKAN_FP16) ? "FP16"
+             (id_ == BackendId::NCNN_VK_BF16) ? "BF16" : (id_ == BackendId::NCNN_VK_FP16) ? "FP16"
                                                                                                   : "FP32");
 #else
         LOGE("NCNN: Vulkan backend not available - NCNN built without Vulkan support");
@@ -712,7 +703,7 @@ bool NCNNBackend::SaveOutputs(const char * /*suffix*/) { return true; }
 void NCNNBackend::Cleanup()
 {
     if (net_) {
-#if NCNN_VULKAN_BUILD
+#ifdef NCNN_VULKAN
         if (gpu_device_ >= 0) {
             ncnn::VulkanDevice *vkdev = ncnn::get_gpu_device(gpu_device_);
             (void)vkdev; /* Don't destroy - GPU might be shared */

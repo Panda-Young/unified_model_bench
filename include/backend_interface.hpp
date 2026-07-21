@@ -61,9 +61,9 @@ enum class BackendId {
     NCNN_CPU = 200,
     NCNN_CPU_FP16 = 201,
     NCNN_CPU_BF16 = 202,
-    NCNN_VULKAN = 203,
-    NCNN_VULKAN_BF16 = 204,
-    NCNN_VULKAN_FP16 = 205,
+    NCNN_VK = 203,
+    NCNN_VK_BF16 = 204,
+    NCNN_VK_FP16 = 205,
     NCNN_LAST = 206,
 
     /* MNN */

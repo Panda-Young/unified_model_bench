@@ -171,9 +171,6 @@ bool BenchmarkRunner::Run()
     return collector_.Count() > 0;
 }
 
-/* ---------------------------------------------------------------------------
- * TestVariant
- * -------------------------------------------------------------------------*/
 bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
                                   const ModelSearchResult &ref_variant)
 {
@@ -182,7 +179,6 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
 
     auto backends = BackendRegistry::GetAvailable(fmt);
     if (backends.empty()) {
-        LOGW("No backends for %s", model_format_name(fmt));
         return false;
     }
 
@@ -474,7 +470,7 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     if (fmt == ModelFormat::NCNN) {
         auto pos = rec.model_name.rfind(".ncnn.param");
         if (pos != std::string::npos) {
-            if (bcfg.id == BackendId::NCNN_VULKAN_FP16) {
+            if (bcfg.id == BackendId::NCNN_VK_FP16) {
                 rec.model_name.replace(pos, 12, "_fp16.ncnn.bin");
             } else {
                 rec.model_name.replace(pos, 12, ".ncnn.bin");

@@ -161,9 +161,9 @@ namespace BackendRegistry
         Register(BackendId::NCNN_CPU, {BackendId::NCNN_CPU, BackendType::NCNN, "NCNN_CPU", "", true}, CreateNcnnBackend);
         Register(BackendId::NCNN_CPU_FP16, {BackendId::NCNN_CPU_FP16, BackendType::NCNN, "NCNN_CPU_FP16", "", false}, CreateNcnnBackend);
         Register(BackendId::NCNN_CPU_BF16, {BackendId::NCNN_CPU_BF16, BackendType::NCNN, "NCNN_CPU_BF16", "", false}, CreateNcnnBackend);
-        Register(BackendId::NCNN_VULKAN, {BackendId::NCNN_VULKAN, BackendType::NCNN, "NCNN_Vulkan", "", false}, CreateNcnnBackend);
-        Register(BackendId::NCNN_VULKAN_FP16, {BackendId::NCNN_VULKAN_FP16, BackendType::NCNN, "NCNN_Vulkan_FP16", "", false}, CreateNcnnBackend);
-        Register(BackendId::NCNN_VULKAN_BF16, {BackendId::NCNN_VULKAN_BF16, BackendType::NCNN, "NCNN_Vulkan_BF16", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_VK, {BackendId::NCNN_VK, BackendType::NCNN, "NCNN_VK", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_VK_FP16, {BackendId::NCNN_VK_FP16, BackendType::NCNN, "NCNN_VK_FP16", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_VK_BF16, {BackendId::NCNN_VK_BF16, BackendType::NCNN, "NCNN_VK_BF16", "", false}, CreateNcnnBackend);
 #endif
 #ifdef HAVE_MNN_BACKEND
         Register(BackendId::MNN_CPU, {BackendId::MNN_CPU, BackendType::MNN, "MNN_CPU", "", true}, CreateMnnBackend);
@@ -211,9 +211,9 @@ namespace BackendRegistry
         Register(BackendId::NCNN_CPU, {BackendId::NCNN_CPU, BackendType::NCNN, "NCNN_CPU", "", true}, CreateNcnnBackend);
         Register(BackendId::NCNN_CPU_FP16, {BackendId::NCNN_CPU_FP16, BackendType::NCNN, "NCNN_CPU_FP16", "", false}, CreateNcnnBackend);
         Register(BackendId::NCNN_CPU_BF16, {BackendId::NCNN_CPU_BF16, BackendType::NCNN, "NCNN_CPU_BF16", "", false}, CreateNcnnBackend);
-        Register(BackendId::NCNN_VULKAN, {BackendId::NCNN_VULKAN, BackendType::NCNN, "NCNN_Vulkan", "", false}, CreateNcnnBackend);
-        Register(BackendId::NCNN_VULKAN_BF16, {BackendId::NCNN_VULKAN_BF16, BackendType::NCNN, "NCNN_Vulkan_BF16", "", false}, CreateNcnnBackend);
-        Register(BackendId::NCNN_VULKAN_FP16, {BackendId::NCNN_VULKAN_FP16, BackendType::NCNN, "NCNN_Vulkan_FP16", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_VK, {BackendId::NCNN_VK, BackendType::NCNN, "NCNN_VK", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_VK_BF16, {BackendId::NCNN_VK_BF16, BackendType::NCNN, "NCNN_VK_BF16", "", false}, CreateNcnnBackend);
+        Register(BackendId::NCNN_VK_FP16, {BackendId::NCNN_VK_FP16, BackendType::NCNN, "NCNN_VK_FP16", "", false}, CreateNcnnBackend);
 #endif
 #ifdef HAVE_MNN_BACKEND
         Register(BackendId::MNN_CPU, {BackendId::MNN_CPU, BackendType::MNN, "MNN_CPU", "", true}, CreateMnnBackend);
