@@ -60,7 +60,7 @@ public:
     static void log(LogLevel lv, const char *file, int line,
                     const char *func, const char *fmt, ...)
     {
-        if (lv > level) {
+        if (lv < level) {
             return;
         }
 

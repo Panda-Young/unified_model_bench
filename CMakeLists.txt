@@ -194,5 +194,27 @@ if(HAVE_LITERT_BACKEND)
             "${DEPS_DIR}/litert/liteRT_runtime/windows_x86_64/libLiteRtWebGpuAccelerator.dll"
             "${OUT_DIR}/"
         COMMENT "Copying LiteRT DLLs")
+
+    # LiteRT GPU accelerator uses Dawn/WebGPU which requires DXC (DirectX Shader Compiler)
+    # at runtime for D3D12 shader compilation.  Search Windows SDK for matching DLLs.
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(DXC_ARCH "x64")
+    else()
+        set(DXC_ARCH "x86")
+    endif()
+    # Try latest Windows SDK version first
+    foreach(sdk_ver "10.0.26100.0" "10.0.22621.0" "10.0.22000.0" "10.0.19041.0")
+        set(DXC_DIR "C:/Program Files (x86)/Windows Kits/10/bin/${sdk_ver}/${DXC_ARCH}")
+        if(EXISTS "${DXC_DIR}/dxcompiler.dll")
+            message(STATUS "Found DXC DLLs in: ${DXC_DIR}")
+            add_custom_command(TARGET unified_bench_${TARGET_SUFFIX} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${DXC_DIR}/dxcompiler.dll"
+                    "${DXC_DIR}/dxil.dll"
+                    "${OUT_DIR}/"
+                COMMENT "Copying DXC DLLs (${sdk_ver})")
+            break()
+        endif()
+    endforeach()
 endif()
 endif()

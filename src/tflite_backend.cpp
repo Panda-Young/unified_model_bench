@@ -104,8 +104,14 @@ private:
     double init_ms_ = 0;
 };
 
-static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads)
+static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads,
+                                     std::string *error_out)
 {
+    auto fail = [&](const char *msg) -> TfLiteDelegate * {
+        if (error_out) *error_out = msg;
+        return nullptr;
+    };
+
     switch (id) {
     case BackendId::TFLITE_XNNPACK:
     case BackendId::TFLITE_XNNPACK_FP16: {
@@ -122,10 +128,6 @@ static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads)
          * libLiteRt.dll also exports TfLiteXNNPackDelegateCreate but that
          * copy crashes with ACCESS_VIOLATION during init on x86-64.
          * The tensorflowlite_c.dll copy is verified working (4x speedup). */
-        if (id == BackendId::TFLITE_XNNPACK_FP16) {
-            LOGE("TFLite: XNNPACK_FP16 not available on this platform");
-            return nullptr;
-        }
         {
             static HMODULE tflite_dll = nullptr;
             static decltype(&TfLiteXNNPackDelegateCreate) pfn_create = nullptr;
@@ -140,11 +142,15 @@ static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads)
                 }
                 if (!pfn_create || !pfn_opts) {
                     LOGE("TFLite: XNNPACK functions not found in tensorflowlite_c.dll");
-                    return nullptr;
+                    return fail("XNNPACK functions not found in tensorflowlite_c.dll");
                 }
             }
             TfLiteXNNPackDelegateOptions xo = pfn_opts();
             xo.num_threads = num_threads;
+            xo.flags |= TFLITE_XNNPACK_DELEGATE_FLAG_ENABLE_LATEST_OPERATORS;
+            if (id == BackendId::TFLITE_XNNPACK_FP16) {
+                xo.flags |= TFLITE_XNNPACK_DELEGATE_FLAG_FORCE_FP16;
+            }
             return pfn_create(&xo);
         }
 #endif
@@ -159,7 +165,7 @@ static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads)
         return delegate;
     }
 #else
-        return nullptr;
+        return fail("NNAPI only available on Android");
 #endif
     case BackendId::TFLITE_GPU:
     case BackendId::TFLITE_GPU_FP16:
@@ -175,13 +181,13 @@ static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads)
         return TfLiteGpuDelegateV2Create(&go);
     }
 #else
-        return nullptr;
+        return fail("GPU delegate only available on Android");
 #endif
     case BackendId::TFLITE_NPU:
         /* Handled inline in Initialize() with dynamic loading */
         return nullptr;
     default:
-        return nullptr;
+        return fail("Unknown backend");
     }
 }
 
@@ -207,7 +213,8 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
 
     TfLiteInterpreterOptionsSetNumThreads(opts_, num_threads);
 
-    delegate_ = CreateDelegate(id_, num_threads);
+    std::string delegate_error;
+    delegate_ = CreateDelegate(id_, num_threads, &delegate_error);
     if (delegate_) {
         TfLiteInterpreterOptionsAddDelegate(opts_, delegate_);
     }
@@ -231,8 +238,12 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
     /* Non-CPU backends require a delegate; fail if unavailable
      * rather than silently falling back to CPU. */
     if (!delegate_ && id_ != BackendId::TFLITE_CPU) {
+        std::string reason = "TFLite: delegate creation failed for backend ";
+        reason += std::to_string(bid(id_));
+        if (!delegate_error.empty())
+            reason += " (" + delegate_error + ")";
         LOGE("TFLite: delegate not available for backend %d, aborting", bid(id_));
-        last_error_ = "TFLite: delegate not available on this platform";
+        last_error_ = reason;
         return false;
     }
 

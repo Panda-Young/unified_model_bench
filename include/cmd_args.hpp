@@ -15,7 +15,7 @@ struct BenchConfig {
     int repeat = 100;
     int warmup_runs = 1;
     int num_threads = 4;
-    int log_level = 3; // 0=OFF, 1=DBG, 2=INFO, 3=WARN, 4=ERR
+    int log_level = 2; // 0=OFF, 1=DBG, 2=INFO, 3=WARN, 4=ERR
 
     bool enable_csv = true;
     bool enable_output = true;
