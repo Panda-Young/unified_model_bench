@@ -37,6 +37,7 @@
 #include "litert/c/litert_tensor_buffer.h"
 #include "litert/c/litert_tensor_buffer_requirements.h"
 #include "litert/c/litert_tensor_buffer_types.h"
+#include "litert/c/litert_opaque_options.h"
 #include "litert/c/options/litert_qualcomm_options.h"
 
 /* ---------------------------------------------------------------------------
@@ -311,6 +312,44 @@ bool LiteRTBackend::Initialize(const char *model_path, int num_threads)
             return false;
         }
     }
+
+    /* 5b. For NPU backends: configure QNN-specific options.
+     * Without this, the dispatch receives "Null Qualcomm options"
+     * and CreateCompiledModel returns error 504.
+     * NOTE: QNN functions only available in Android libLiteRt.so. */
+#if defined(__ANDROID__) || defined(__android__)
+    if (id_ == BackendId::LITERT_NPU || id_ == BackendId::LITERT_NPU_FP16) {
+        LrtQualcommOptions qnn_opts = nullptr;
+        LiteRtStatus st_qnn = LrtCreateQualcommOptions(&qnn_opts);
+        if (st_qnn == kLiteRtStatusOk && qnn_opts) {
+            LrtQualcommOptionsSetBackend(qnn_opts, kLiteRtQualcommBackendHtp);
+            LrtQualcommOptionsSetHtpPerformanceMode(
+                qnn_opts, kLiteRtQualcommHtpPerformanceModeBurst);
+            LrtQualcommOptionsSetOptimizationLevel(
+                qnn_opts, kHtpOptimizeForInferenceO3);
+
+            /* Extract opaque payload and attach to compilation options */
+            const char *payload_id = nullptr;
+            void *payload_data = nullptr;
+            void (*payload_dtor)(void *) = nullptr;
+            if (LrtGetOpaqueQualcommOptionsData(
+                    qnn_opts, &payload_id, &payload_data,
+                    &payload_dtor) == kLiteRtStatusOk) {
+                LiteRtOpaqueOptions opaque = nullptr;
+                if (LiteRtCreateOpaqueOptions(
+                        payload_id, payload_data, payload_dtor,
+                        &opaque) == kLiteRtStatusOk) {
+                    LiteRtAddOpaqueOptions(comp_opts_, opaque);
+                    LOGI("LiteRT: QNN HTP options configured (burst, O3)");
+                }
+            }
+            LrtDestroyQualcommOptions(qnn_opts);
+        } else {
+            LOGW("LiteRT: LrtCreateQualcommOptions failed (%d), "
+                 "proceeding without QNN options", (int)st_qnn);
+        }
+    }
+#endif
 
     /* 6. Create compiled model */
     LiteRtStatus st_comp;
