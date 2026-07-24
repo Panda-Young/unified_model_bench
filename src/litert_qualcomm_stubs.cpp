@@ -1,5 +1,5 @@
 /*============================================================================
- * litert_qualcomm_stubs.cpp — Minimal Qualcomm options stubs for Android
+ * litert_qualcomm_stubs.cpp -- Minimal Qualcomm options stubs for Android
  *
  * On Android, libLiteRt.so does NOT export the LrtQualcommOptions* helper
  * functions (they live in the static litert_cc_api library which is meant
@@ -10,10 +10,12 @@
  * functions used by litert_backend.cpp, compiled only for Android.
  *============================================================================*/
 
+#ifdef HAVE_LITERT_BACKEND
+
 #include "litert/c/litert_common.h"
 #include "litert/c/options/litert_qualcomm_options.h"
 
-/* Only compile on Android — Windows libLiteRt.dll exports these natively. */
+/* Only compile on Android -- Windows libLiteRt.dll exports these natively. */
 #if defined(__ANDROID__) || defined(__android__)
 
 #include <cstdlib>
@@ -22,7 +24,7 @@
 #include <string>
 
 /* ---------------------------------------------------------------------------
- * Internal options struct — mirrors LrtQualcommOptionsT from the SDK.
+ * Internal options struct -- mirrors LrtQualcommOptionsT from the SDK.
  * We only define the fields actually used by our code path:
  *   qnn_backend, htp_performance_mode, optimization_level
  * -------------------------------------------------------------------------*/
@@ -89,7 +91,7 @@ LiteRtStatus LrtGetOpaqueQualcommOptionsData(
 
     auto *o = reinterpret_cast<LiteRTQualcommOptionsInternal *>(options);
 
-    /* Serialize to TOML — same format as the SDK's implementation */
+    /* Serialize to TOML -- same format as the SDK's implementation */
     std::ostringstream toml;
     if (o->has_backend)
         toml << "qnn_backend = " << o->backend << "\n";
@@ -111,3 +113,5 @@ LiteRtStatus LrtGetOpaqueQualcommOptionsData(
 }
 
 #endif /* defined(__ANDROID__) || defined(__android__) */
+
+#endif /* HAVE_LITERT_BACKEND */
