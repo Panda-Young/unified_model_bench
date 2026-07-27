@@ -89,10 +89,30 @@ def csv_to_xlsx(in_csv, out_xlsx=None, hide_cols=None, sheet_name="Sheet1", enco
     hide_cols = hide_cols or DEFAULT_HIDE_COLS
     hide_cols_lower = [c.strip().lower() for c in hide_cols]
 
-    try:
-        df = pd.read_csv(in_csv, encoding=encoding, dtype=str, keep_default_na=False)
-    except Exception as e:
-        print(f"Error reading CSV '{in_csv}': {e}")
+    # Try multiple encodings: UTF-8 first, then GBK (Chinese Windows locale),
+    # then latin-1 as a last resort (never fails, but may mangle characters).
+    encodings_to_try = [encoding]
+    if encoding != "gbk":
+        encodings_to_try.append("gbk")
+    if encoding != "gb2312":
+        encodings_to_try.append("gb2312")
+    encodings_to_try.append("latin-1")
+
+    df = None
+    for enc in encodings_to_try:
+        try:
+            df = pd.read_csv(in_csv, encoding=enc, dtype=str, keep_default_na=False)
+            if enc != encoding:
+                print(f"Note: CSV read with encoding '{enc}' (fallback from '{encoding}')")
+            break
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        except Exception as e:
+            print(f"Error reading CSV '{in_csv}' with encoding '{enc}': {e}")
+            continue
+
+    if df is None:
+        print(f"Error: Could not read CSV '{in_csv}' with any encoding.")
         return
 
     if "device_info" in df.columns:
