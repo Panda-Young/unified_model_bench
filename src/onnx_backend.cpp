@@ -111,10 +111,6 @@ bool ONNXBackend::ConfigureEP()
         LOGI("ONNX: oneDNN EP configured");
         return true;
     }
-    case BackendId::ONNX_DML_GPU_FP16:
-        /* DML GPU FP16: HighPerformance already prefers FP16 on capable hardware */
-        LOGI("ONNX: DML GPU FP16 via HighPerformance preference");
-        [[fallthrough]];
     case BackendId::ONNX_DML_GPU: {
 #if defined(_WIN32)
         /* Try V2 API with HighPerformance preference (auto-select best GPU) */
@@ -469,7 +465,6 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
         break;
     case BackendId::ONNX_DML_GPU:
     case BackendId::ONNX_DML_NPU:
-    case BackendId::ONNX_DML_GPU_FP16:
         ep_subdir = "dml";
         break;
     case BackendId::ONNX_ONEDNN:

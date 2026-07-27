@@ -188,13 +188,11 @@ namespace BackendRegistry
         Register(BackendId::ONNX_OPENVINO_CPU, {BackendId::ONNX_OPENVINO_CPU, BackendType::ONNX_EP, "ONNX_OpenVINO_CPU", "", false}, CreateOnnxBackend);
         Register(BackendId::ONNX_OPENVINO_GPU, {BackendId::ONNX_OPENVINO_GPU, BackendType::ONNX_EP, "ONNX_OpenVINO_GPU", "", false}, CreateOnnxBackend);
         Register(BackendId::ONNX_OPENVINO_NPU, {BackendId::ONNX_OPENVINO_NPU, BackendType::ONNX_EP, "ONNX_OpenVINO_NPU", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_DML_GPU_FP16, {BackendId::ONNX_DML_GPU_FP16, BackendType::ONNX_EP, "ONNX_DML_GPU_FP16", "", false}, CreateOnnxBackend);
         Register(BackendId::ONNX_OPENVINO_GPU_FP16, {BackendId::ONNX_OPENVINO_GPU_FP16, BackendType::ONNX_EP, "ONNX_OpenVINO_GPU_FP16", "", false}, CreateOnnxBackend);
 #else /* 32-bit Windows */
         Register(BackendId::ONNX_CPU, {BackendId::ONNX_CPU, BackendType::ONNX_EP, "ONNX_CPU", "", true}, CreateOnnxBackend);
         Register(BackendId::ONNX_DML_GPU, {BackendId::ONNX_DML_GPU, BackendType::ONNX_EP, "ONNX_DML_GPU", "", false}, CreateOnnxBackend);
         Register(BackendId::ONNX_DML_NPU, {BackendId::ONNX_DML_NPU, BackendType::ONNX_EP, "ONNX_DML_NPU", "", false}, CreateOnnxBackend);
-        Register(BackendId::ONNX_DML_GPU_FP16, {BackendId::ONNX_DML_GPU_FP16, BackendType::ONNX_EP, "ONNX_DML_GPU_FP16", "", false}, CreateOnnxBackend);
 #endif
 #endif
 #ifdef HAVE_TFLITE_BACKEND

@@ -31,7 +31,7 @@ enum class BackendId {
     ONNX_CPU = 0,
     ONNX_ONEDNN = 1,
     ONNX_DML_GPU = 2,
-    ONNX_DML_GPU_FP16 = 3,
+    // ONNX_DML_GPU_FP16 = 3, removed, same as ONNX_DML_GPU (DML auto-selects FP16 if supported)
     ONNX_DML_NPU = 4,
     ONNX_OPENVINO_CPU = 5,
     ONNX_OPENVINO_GPU = 6,
