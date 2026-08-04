@@ -49,6 +49,10 @@ public:
                       std::vector<size_t> &odims) override;
     void GetTiming(std::array<double, 10> &timing) override;
     bool SaveOutputs(const char *suffix) override;
+    const std::vector<std::string> &GetOutputNames() const override
+    {
+        return output_names_str_;
+    }
 
 private:
     void Cleanup();
@@ -68,6 +72,7 @@ private:
     size_t num_outputs_ = 0;
     std::vector<char *> input_names_;
     std::vector<char *> output_names_;
+    std::vector<std::string> output_names_str_; /* stable copies for GetOutputNames */
     std::vector<size_t> input_elems_;
     std::vector<size_t> output_elems_;
     std::vector<std::vector<int64_t>> input_shapes_;
@@ -774,6 +779,7 @@ bool ONNXBackend::QueryIOMetadata()
         char *name = nullptr;
         (void)ort_->SessionGetOutputName(session_, i, alloc_, &name);
         output_names_.push_back(name);
+        output_names_str_.emplace_back(name ? name : "");
         OrtTypeInfo *ti;
         (void)ort_->SessionGetOutputTypeInfo(session_, i, &ti);
         const OrtTensorTypeAndShapeInfo *si;

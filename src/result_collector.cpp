@@ -44,8 +44,9 @@ void ResultCollector::Add(const BenchmarkRecord &rec)
 /* ---------------------------------------------------------------------------
  * Baseline management
  * -------------------------------------------------------------------------*/
-bool ResultCollector::SetBaseline(ModelFormat fmt, const float *data, size_t n,
-                                  double cpu_avg_ms, BackendId cpu_id)
+bool ResultCollector::SetBaseline(ModelFormat fmt, const std::vector<float *> &data,
+                                  const std::vector<size_t> &elems, double cpu_avg_ms,
+                                  BackendId cpu_id, const std::vector<std::string> &names)
 {
     FormatBaseline *fb = get_baseline(fmt);
     if (!fb) {
@@ -53,13 +54,20 @@ bool ResultCollector::SetBaseline(ModelFormat fmt, const float *data, size_t n,
         return false;
     }
 
-    fb->output = OutputData(data, n);
-    fb->has_baseline = true;
+    /* Store the first output as the reference and remember its name so the
+     * comparison can later match by name (output order may differ across
+     * backends for multi-output models). */
+    if (!data.empty() && data[0] && !elems.empty() && elems[0] > 0) {
+        fb->output = OutputData(data[0], elems[0]);
+        fb->has_baseline = true;
+    }
+    fb->output_name = (!names.empty()) ? names[0] : "";
     fb->cpu_avg_ms = cpu_avg_ms;
     fb->cpu_backend_id = cpu_id;
 
-    LOGI("[%s] Baseline stored: %zu elements, cpu_avg=%.3f ms",
-         model_format_name(fmt), n, cpu_avg_ms);
+    LOGI("[%s] Baseline stored: %zu elements, first_output='%s', cpu_avg=%.3f ms",
+         model_format_name(fmt), fb->output.size(), fb->output_name.c_str(),
+         cpu_avg_ms);
     return true;
 }
 
@@ -78,20 +86,55 @@ double ResultCollector::GetCpuBaselineMs(ModelFormat fmt) const
 /* ---------------------------------------------------------------------------
  * Accuracy comparison
  * -------------------------------------------------------------------------*/
-bool ResultCollector::CompareWithBaseline(ModelFormat fmt, const float *data,
-                                          size_t n, double &max_diff,
-                                          double &avg_diff,
-                                          int64_t &element_count)
+bool ResultCollector::CompareWithBaseline(ModelFormat fmt,
+                                          const std::vector<float *> &data,
+                                          const std::vector<size_t> &elems,
+                                          double &max_diff, double &avg_diff,
+                                          int64_t &element_count,
+                                          const std::vector<std::string> &names)
 {
     max_diff = 0.0;
     avg_diff = 0.0;
-    element_count = (int64_t)n;
+    element_count = 0;
 
     const FormatBaseline *fb = get_baseline(fmt);
     if (!fb || !fb->has_baseline || fb->output.empty()) {
         LOGW("[%s] Baseline not available for comparison", model_format_name(fmt));
         return false;
     }
+
+    /* Choose the output to compare:
+     * - Name-based: when the baseline recorded its first output's name and the
+     *   current backend exposes output names, compare the output with the SAME
+     *   name (backends may reorder multi-outputs, e.g. QNN SDK model.so).
+     * - Fallback: position 0 when either side provides no names. */
+    size_t match_idx = 0;
+    if (!fb->output_name.empty() && !names.empty()) {
+        bool found = false;
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (names[i] == fb->output_name) {
+                match_idx = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            LOGW("[%s] Output name '%s' not found in current outputs; "
+                 "fallback to position 0",
+                 model_format_name(fmt), fb->output_name.c_str());
+        }
+    }
+
+    if (match_idx >= data.size() || match_idx >= elems.size() ||
+        !data[match_idx]) {
+        LOGW("[%s] No output available for comparison (idx=%zu)",
+             model_format_name(fmt), match_idx);
+        return false;
+    }
+
+    const float *data_ptr = data[match_idx];
+    size_t n = elems[match_idx];
+    element_count = (int64_t)n;
 
     if (n != fb->output.size()) {
         LOGW("[%s] Output size mismatch: current=%zu, baseline=%zu",
@@ -109,7 +152,7 @@ bool ResultCollector::CompareWithBaseline(ModelFormat fmt, const float *data,
     int64_t nan_count = 0;
 
     for (size_t i = 0; i < n; ++i) {
-        double da = static_cast<double>(data[i]);
+        double da = static_cast<double>(data_ptr[i]);
         double db = static_cast<double>(base[i]);
         if (std::isnan(da) || std::isnan(db)) {
             if (nan_count < 10) {

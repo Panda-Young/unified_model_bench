@@ -360,7 +360,7 @@ echo ============================================================
 echo  Running benchmark ...
 echo ============================================================
 adb shell "rm -f /data/local/tmp/bench_test/summary.csv"
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% %MODEL_NAME% --repeat 1"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% %MODEL_NAME% --no-backend onnx_nnapi"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.

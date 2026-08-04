@@ -147,6 +147,10 @@ public:
                       std::vector<size_t> &odims) override;
     void GetTiming(std::array<double, 10> &timing) override;
     bool SaveOutputs(const char *suffix) override;
+    const std::vector<std::string> &GetOutputNames() const override
+    {
+        return out_names_;
+    }
 
 private:
     void Cleanup();
@@ -503,11 +507,15 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
         return false;
     }
 
-    /* 4. Create device (HTP requires it) */
+    /* 4. Create device. HTP requires a device; CPU has no device concept and
+     * GPU device creation is best-effort, so only surface a failure for HTP
+     * (where a missing device means the graph cannot run). */
     if (qnn_->deviceCreate) {
         const QnnDevice_Config_t *dev_configs[] = {nullptr};
         if (QNN_DEVICE_NO_ERROR != qnn_->deviceCreate(log_, dev_configs, &device_)) {
-            LOGW("QNN: deviceCreate failed, continuing without device");
+            if (id_ == BackendId::QNN_SDK_HTP) {
+                LOGW("QNN: deviceCreate failed, continuing without device");
+            }
             device_ = nullptr;
         } else {
             LOGI("QNN: device created");
@@ -734,6 +742,18 @@ bool QnnSdkBackend::SetupTensorsFromModelSo()
 bool QnnSdkBackend::AllocateBuffers()
 {
     LOGI("QNN: AllocateBuffers: %zu in, %zu out", in_tensors_.size(), out_tensors_.size());
+    /* dma-heap zero-copy is HTP-specific: the registered descriptor is a
+     * QnnMemHtp_Descriptor_t, so CPU/GPU backends would always fail
+     * memRegister. Skip the attempt for them to keep the log clean; the
+     * "buffers: x/y shared" summary below still reports the result. */
+    const bool try_dma_heap = (id_ == BackendId::QNN_SDK_HTP);
+    bool dma_heap_warned = false;
+    auto warn_dma_heap_once = [&](const char *msg) {
+        if (!dma_heap_warned) {
+            LOGW("QNN: %s - fallback client buffer", msg);
+            dma_heap_warned = true;
+        }
+    };
     auto alloc_one = [&](Qnn_Tensor_t &t, size_t elems, Qnn_DataType_t dt,
                          std::vector<void *> &bufs, std::vector<Qnn_MemHandle_t> &mem,
                          std::vector<bool> &is_shared, std::vector<DmaBuf> &dma) -> bool {
@@ -741,58 +761,63 @@ bool QnnSdkBackend::AllocateBuffers()
         void *p = nullptr;
         bool shared = false;
 #if defined(__ANDROID__) || defined(__android__)
-        /* Allocate a DMA-BUF from the system dma-heap. This needs no
-         * libcdsprpc/fastrpc on the app side — QNN registers the fd with the
-         * DSP through its own channel. (Direct rpcmem_* calls into the system
-         * libcdsprpc crash in the shell domain on SM8550.) */
-        size_t alloc_size = (bytes + 4095u) & ~(size_t)4095u;
-        int dmafd = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC);
-        if (dmafd >= 0) {
-            struct dma_heap_allocation_data dmabuf = {};
-            dmabuf.len = alloc_size;
-            dmabuf.fd_flags = O_RDWR | O_CLOEXEC;
-            if (ioctl(dmafd, DMA_HEAP_IOCTL_ALLOC, &dmabuf) == 0) {
-                int fd = (int)dmabuf.fd;
-                void *addr = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-                if (addr != MAP_FAILED) {
-                    Qnn_MemHandle_t h = nullptr;
-                    /* HTP backend requires a CUSTOM memory descriptor with a
-                     * QnnMemHtp_Descriptor_t of type QNN_HTP_MEM_SHARED_BUFFER.
-                     * Using QNN_MEM_TYPE_DMA_BUF here crashes libQnnHtp (the
-                     * backend reads the union as a custom descriptor). */
-                    QnnMemHtp_Descriptor_t htp_desc = {};
-                    htp_desc.type = QNN_HTP_MEM_SHARED_BUFFER;
-                    htp_desc.size = alloc_size;
-                    htp_desc.sharedBufferConfig.fd = fd;
-                    htp_desc.sharedBufferConfig.offset = 0;
+        if (try_dma_heap) {
+            /* Allocate a DMA-BUF from the system dma-heap. This needs no
+             * libcdsprpc/fastrpc on the app side — QNN registers the fd with the
+             * DSP through its own channel. (Direct rpcmem_* calls into the system
+             * libcdsprpc crash in the shell domain on SM8550.) */
+            size_t alloc_size = (bytes + 4095u) & ~(size_t)4095u;
+            int dmafd = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC);
+            if (dmafd >= 0) {
+                struct dma_heap_allocation_data dmabuf = {};
+                dmabuf.len = alloc_size;
+                dmabuf.fd_flags = O_RDWR | O_CLOEXEC;
+                if (ioctl(dmafd, DMA_HEAP_IOCTL_ALLOC, &dmabuf) == 0) {
+                    int fd = (int)dmabuf.fd;
+                    void *addr = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                    if (addr != MAP_FAILED) {
+                        Qnn_MemHandle_t h = nullptr;
+                        /* HTP backend requires a CUSTOM memory descriptor with a
+                         * QnnMemHtp_Descriptor_t of type QNN_HTP_MEM_SHARED_BUFFER.
+                         * Using QNN_MEM_TYPE_DMA_BUF here crashes libQnnHtp (the
+                         * backend reads the union as a custom descriptor). */
+                        QnnMemHtp_Descriptor_t htp_desc = {};
+                        htp_desc.type = QNN_HTP_MEM_SHARED_BUFFER;
+                        htp_desc.size = alloc_size;
+                        htp_desc.sharedBufferConfig.fd = fd;
+                        htp_desc.sharedBufferConfig.offset = 0;
 
-                    Qnn_MemDescriptor_t desc = QNN_MEM_DESCRIPTOR_INIT;
-                    desc.dataType = dt;
-                    desc.memType = QNN_MEM_TYPE_CUSTOM;
-                    desc.customInfo = &htp_desc;
-                    if (qnn_->memRegister && QNN_SUCCESS == qnn_->memRegister(context_, &desc, 1, &h)) {
-                        shared = true;
-                        mem.push_back(h);
-                        dma.push_back({fd, alloc_size, addr});
-                        p = addr;
-                        LOGI("QNN: dma-heap %zu B (aligned %zu) fd=%d memHandle=%p (shared)",
-                             bytes, alloc_size, fd, (void *)h);
+                        Qnn_MemDescriptor_t desc = QNN_MEM_DESCRIPTOR_INIT;
+                        desc.dataType = dt;
+                        desc.memType = QNN_MEM_TYPE_CUSTOM;
+                        desc.customInfo = &htp_desc;
+                        if (qnn_->memRegister && QNN_SUCCESS == qnn_->memRegister(context_, &desc, 1, &h)) {
+                            shared = true;
+                            mem.push_back(h);
+                            dma.push_back({fd, alloc_size, addr});
+                            p = addr;
+                            /* Per-tensor detail at DBG level (floods the log on
+                             * multi-tensor models); the "buffers: x/y shared"
+                             * INFO summary below reports the outcome. */
+                            LOGD("QNN: dma-heap %zu B (aligned %zu) fd=%d memHandle=%p (shared)",
+                                 bytes, alloc_size, fd, (void *)h);
+                        } else {
+                            munmap(addr, alloc_size);
+                            close(fd);
+                            warn_dma_heap_once("dma-heap memRegister failed");
+                        }
                     } else {
-                        munmap(addr, alloc_size);
                         close(fd);
-                        LOGW("QNN: memRegister failed for dma-buf fd=%d - fallback client buffer", fd);
+                        warn_dma_heap_once("dma-heap mmap failed");
                     }
                 } else {
-                    close(fd);
-                    LOGW("QNN: mmap dma-buf failed - fallback client buffer");
+                    warn_dma_heap_once("dma-heap DMA_HEAP_IOCTL_ALLOC failed");
                 }
+                close(dmafd);
             } else {
-                LOGW("QNN: DMA_HEAP_IOCTL_ALLOC failed (errno=%d) - fallback client buffer", errno);
+                warn_dma_heap_once("open /dev/dma_heap/system failed");
             }
-            close(dmafd);
-        } else {
-            LOGW("QNN: open /dev/dma_heap/system failed (errno=%d) - fallback client buffer", errno);
-        }
+        } /* if (try_dma_heap) */
 #endif
         if (!p) {
             p = malloc(bytes > 0 ? bytes : 1);

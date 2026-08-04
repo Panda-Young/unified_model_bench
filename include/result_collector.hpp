@@ -33,6 +33,7 @@ struct OutputData {
 struct FormatBaseline {
     bool has_baseline = false;
     OutputData output;
+    std::string output_name; /* name of the stored output, for name-based matching */
     double cpu_avg_ms = 0.0;
     BackendId cpu_backend_id = BackendId::ONNX_CPU;
 };
@@ -87,15 +88,17 @@ public:
     const BenchmarkRecord &Get(size_t i) const { return records_[i]; }
 
     /* Baseline management */
-    bool SetBaseline(ModelFormat fmt, const float *data, size_t n,
-                     double cpu_avg_ms, BackendId cpu_id);
+    bool SetBaseline(ModelFormat fmt, const std::vector<float *> &data,
+                     const std::vector<size_t> &elems, double cpu_avg_ms,
+                     BackendId cpu_id, const std::vector<std::string> &names);
     bool HasBaseline(ModelFormat fmt) const;
     double GetCpuBaselineMs(ModelFormat fmt) const;
 
     /* Accuracy comparison */
-    bool CompareWithBaseline(ModelFormat fmt, const float *data, size_t n,
-                             double &max_diff, double &avg_diff,
-                             int64_t &element_count);
+    bool CompareWithBaseline(ModelFormat fmt, const std::vector<float *> &data,
+                             const std::vector<size_t> &elems, double &max_diff,
+                             double &avg_diff, int64_t &element_count,
+                             const std::vector<std::string> &names);
 
     /* CSV export */
     bool ExportCsv(const char *path, const char *date, const char *time,

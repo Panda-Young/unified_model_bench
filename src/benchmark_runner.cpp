@@ -568,20 +568,23 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     double max_diff = 0, avg_diff = 0, accel = 1.0;
     int64_t elem_count = 0;
 
-    float *cmp_data = odata.empty() ? nullptr : odata[0];
-    size_t cmp_elems = oelems.empty() ? 0 : oelems[0];
+    /* Output tensor names enable name-based accuracy comparison: multi-output
+     * models can have a different output ORDER across backends (e.g. QNN SDK
+     * model.so vs ONNX), so pass all outputs + names and let the collector
+     * match by name (falls back to position when names are unavailable). */
+    const std::vector<std::string> &out_names = backend->GetOutputNames();
 
     if (bcfg.is_cpu_baseline && fmt == ref_fmt) {
         /* Store as baseline */
-        if (cmp_data) {
-            collector_.SetBaseline(fmt, cmp_data, cmp_elems, avg_ms, bcfg.id);
+        if (!odata.empty() && odata[0]) {
+            collector_.SetBaseline(fmt, odata, oelems, avg_ms, bcfg.id, out_names);
             LOGI("Baseline set: %s avg=%.3f ms", bcfg.name.c_str(), avg_ms);
         }
     } else {
         /* Compare with baseline */
-        if (collector_.HasBaseline(ref_fmt) && cmp_data) {
-            collector_.CompareWithBaseline(ref_fmt, cmp_data, cmp_elems,
-                                           max_diff, avg_diff, elem_count);
+        if (collector_.HasBaseline(ref_fmt) && !odata.empty() && odata[0]) {
+            collector_.CompareWithBaseline(ref_fmt, odata, oelems,
+                                           max_diff, avg_diff, elem_count, out_names);
             double cpu_ms = collector_.GetCpuBaselineMs(ref_fmt);
             if (cpu_ms > 0) {
                 accel = cpu_ms / avg_ms;

@@ -146,6 +146,19 @@ public:
     /** Return the last error message (set by backend on failure) */
     const char *GetLastError() const { return last_error_.c_str(); }
 
+    /**
+     * Output tensor names in the same order as RunBenchmark's outputs.
+     * Enables name-based accuracy comparison: multi-output models can have a
+     * different output ORDER across backends (e.g. QNN SDK model.so), so the
+     * collector matches outputs by name instead of by position.
+     * Returns an empty list by default → position-based comparison.
+     */
+    virtual const std::vector<std::string> &GetOutputNames() const
+    {
+        static const std::vector<std::string> kEmpty;
+        return kEmpty;
+    }
+
 protected:
     BackendId id_ = BackendId::ONNX_CPU;
     std::string last_error_;
