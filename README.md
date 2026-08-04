@@ -170,13 +170,16 @@ unified_bench <model_path> [选项]
 
 选项：
   --model <path>       模型路径（也支持位置参数）
+  --input <path>       单个输入文件（二进制 float32）
+  --input-list <path>  输入列表文件（见下），由 tools/generate_test_data_for_onnx.py 生成
+  --input-format <fmt> 输入数据格式：auto|float32|uint8（默认 auto，按文件大小探测）
   --backend <name,...> 指定 backend（逗号分隔，缺省=全部可用）
+  --no-backend <name,...> 排除 backend（黑名单，可与 --backend 组合，先白名单后排除）
   --repeat <N>         推理次数（默认 100）
   --warmup <N>         预热次数（默认 1）
   --threads <N>        线程数（默认 4）
   --csv <path>         CSV 输出路径（默认 summary.csv）
   --log-level <0-4>    日志级别（0=OFF..4=ERR，默认 2=INFO）
-  --input <path>       外部输入
   --output-dir <path>  输出目录
   --save-input         保存输入
   --no-save-output     不保存输出
@@ -184,6 +187,43 @@ unified_bench <model_path> [选项]
   --no-output-print    不打印输出
   --help / --version
 ```
+
+### 使用外部输入（--input-list）
+
+通过 `tools/generate_test_data_for_onnx.py` 生成模型测试数据与输入列表：
+
+```bash
+# 生成 float32（+可选 uint8）输入与 input_list 文件
+python tools/generate_test_data_for_onnx.py
+#   交互式输入模型路径；或直接用函数：
+python -c "import sys; sys.path.insert(0,'tools'); \
+  from generate_test_data_for_onnx import generate_test_data; \
+  generate_test_data('test_model.onnx','data','relative',gen_uint8=True)"
+```
+
+生成的 `input_list_<model>_float32.txt` 格式（每行一个 .bin，`#` 为注释）：
+
+```
+# float32 inputs for test_model (2 input(s))
+# one input .bin file per line (relative to this file's dir):
+
+input_data_test_model_float32/input_a_1x3x224x224.bin
+input_data_test_model_float32/input_b_1x48x1x1.bin
+```
+
+运行基准时通过 `--input-list` 加载（**路径按列表文件所在目录解析**，可从任意工作目录运行）：
+
+```bash
+# float32（auto 自动探测）
+unified_bench test_model.onnx --input-list data/input_list_test_model_float32.txt
+
+# uint8（auto 探测，或显式指定）
+unified_bench test_model.onnx --input-list data/input_list_test_model_uint8.txt --input-format uint8
+```
+
+- **auto 探测**：文件大小 = 元素数×4 → float32；= 元素数 → uint8（uint8 按 /255 归一化到 float）
+- **格式不匹配** / 文件缺失 / 输入数量不符 → 直接报错并跳过该变体，不静默兜底
+- 输入数据对**所有 backend 共享**，保证公平对比
 
 ### 示例
 

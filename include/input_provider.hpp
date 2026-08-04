@@ -3,6 +3,7 @@
  * input_provider.hpp - Deterministic shared input management (RAII)
  *============================================================================*/
 
+#include "cmd_args.hpp" /* InputDataFormat */
 #include "platform.hpp"
 #include <string>
 #include <vector>
@@ -18,6 +19,15 @@ public:
 
     /* Generate deterministic inputs (seed=42) from element counts */
     void GenerateFromSizes(const std::vector<size_t> &element_counts);
+
+    /* Load inputs from raw binary files.
+     *   - paths[i] must exist and contain exactly element_counts[i] floats (float32)
+     *     or element_counts[i] bytes (uint8). With Auto, the format is detected
+     *     from the file size (n*4 bytes -> float32, n bytes -> uint8).
+     *   - Returns false on any error (missing file, size mismatch). */
+    bool LoadFromFiles(const std::vector<std::string> &paths,
+                       const std::vector<size_t> &element_counts,
+                       InputDataFormat fmt = InputDataFormat::Auto);
 
     size_t Count() const { return slots_.size(); }
     bool Empty() const { return slots_.empty(); }

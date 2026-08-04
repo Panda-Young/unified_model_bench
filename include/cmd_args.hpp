@@ -6,9 +6,14 @@
 #include <string>
 #include <vector>
 
+/* Input data format for --input-list files */
+enum class InputDataFormat { Auto = 0, Float32, UInt8 };
+
 struct BenchConfig {
     std::string model_path;
     std::string input_path;
+    std::string input_list_path;   /* --input-list: file of .bin input paths */
+    InputDataFormat input_format = InputDataFormat::Auto; /* --input-format */
     std::string output_dir;
     std::string csv_path = "summary.csv";
 
@@ -24,6 +29,10 @@ struct BenchConfig {
 
     /* Empty = run all available backends. Populated by --backend <name1,name2,...> */
     std::vector<int> backend_ids;
+
+    /* Backends to EXCLUDE (blacklist). Populated by --no-backend <name1,...>.
+     * Applied after the --backend whitelist filter. */
+    std::vector<int> no_backend_ids;
 
     bool valid() const { return !model_path.empty(); }
 };
