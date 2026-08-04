@@ -392,7 +392,9 @@ bool ONNXBackend::ConfigureEP()
                 "burst", // htp_performance_mode: burst balanced default high_performance ...
                 "3",     // htp_graph_finalization_optimization_mode: 0 1 2 3
                 "1",     // enable_htp_fp16_precision: 0 1
-                "1",     // enable_htp_shared_memory_allocator: 0 1
+                "0",     // enable_htp_shared_memory_allocator: 0 1 (1 requires rpcmem attr2,
+                         //   only present in system libcdsprpc via HIDL without attr2 -> cache-hit
+                         //   fails; 0 keeps epContext cache reuse working)
             };
             int num_opts = sizeof(htp_keys) / sizeof(htp_keys[0]);
             st = ort_->SessionOptionsAppendExecutionProvider(
@@ -623,6 +625,7 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
 
     /* EP Context cache for QNN backends: compile once, reuse later.*/
     model_path_for_create_ = model_path;
+    bool ep_cache_hit = false;
     if (id_ == BackendId::ONNX_QNN_CPU || id_ == BackendId::ONNX_QNN_GPU ||
         id_ == BackendId::ONNX_QNN_HTP) {
         /* Generate EP context file path: <model_stem>-<backend_name>-epContext.onnx */
@@ -642,6 +645,7 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
             /* Cached context exists — use it directly, skip recompilation */
             (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionsDisableModelCompile, "1");
             model_path_for_create_ = ep_context_path_.c_str();
+            ep_cache_hit = true;
             LOGI("ONNX: EP Context cache hit: %s", ep_context_path_.c_str());
         } else {
             /* First run — enable EP context creation */
@@ -680,6 +684,31 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     timing_[6] = std::chrono::duration<double, std::milli>(
                      std::chrono::high_resolution_clock::now() - t5)
                      .count();
+
+    /* Design rule (see README): a backend whose initialization failed must NOT
+     * silently fall back to CPU and report a fake CPU-speed number. ORT's QNN EP
+     * falls back to CPU when the QNN backend cannot be set up (wrong
+     * libonnxruntime.so build, mismatched QNN libs, missing rpcmem/attr2, no
+     * libcdsprpc/HIDL DSP access, ...). Detect it via the EP context file: when
+     * the QNN EP actually partitioned the graph, the epContext file is written;
+     * when it fell back to CPU, no file is produced. Fail loudly instead.
+     * NOTE: only GPU/HTP write an epContext; the QNN CPU backend does not
+     * produce one (it re-compiles each run and runs at CPU speed anyway), so it
+     * is excluded from this check. */
+    if ((id_ == BackendId::ONNX_QNN_GPU || id_ == BackendId::ONNX_QNN_HTP) &&
+        !ep_cache_hit && !file_readable_nonzero(ep_context_path_.c_str())) {
+        LOGE("ONNX: QNN EP did NOT activate - no epContext was generated: %s. "
+             "The QNN backend silently fell back to CPU; marking this backend FAILED "
+             "instead of reporting a misleading CPU-speed result. "
+             "Check: libonnxruntime.so must be the QNN-enabled build; QNN backend libs "
+             "(libQnnHtp.so/... ) must be reachable via LD_LIBRARY_PATH; libcdsprpc/HIDL "
+             "DSP access; QNN SDK version match.",
+             ep_context_path_.c_str());
+        last_error_ = "ONNX: QNN EP inactive (silent CPU fallback) - no epContext generated";
+        ort_->ReleaseSession(session_);
+        session_ = nullptr;
+        return false;
+    }
 
     (void)ort_->GetAllocatorWithDefaultOptions(&alloc_);
 

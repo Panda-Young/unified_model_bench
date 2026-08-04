@@ -39,6 +39,9 @@ extern BackendPtr CreateMnnBackend(BackendId id);
 #ifdef HAVE_LITERT_BACKEND
 extern BackendPtr CreateLitertBackend(BackendId id);
 #endif
+#ifdef HAVE_QNN_SDK_BACKEND
+extern BackendPtr CreateQnnSdkBackend(BackendId id);
+#endif
 
 /* ---------------------------------------------------------------------------
  * Public API
@@ -82,6 +85,9 @@ namespace BackendRegistry
                 break;
             case ModelFormat::MNN:
                 match = is_mnn_backend(static_cast<BackendId>(id));
+                break;
+            case ModelFormat::QNN:
+                match = is_qnn_sdk_backend(static_cast<BackendId>(id));
                 break;
             default:
                 break;
@@ -156,6 +162,11 @@ namespace BackendRegistry
         Register(BackendId::LITERT_GPU_FP16, {BackendId::LITERT_GPU_FP16, BackendType::LITERT, "LiteRT_GPU_FP16", "", false}, CreateLitertBackend);
         Register(BackendId::LITERT_NPU, {BackendId::LITERT_NPU, BackendType::LITERT, "LiteRT_NPU", "", false}, CreateLitertBackend);
         Register(BackendId::LITERT_NPU_FP16, {BackendId::LITERT_NPU_FP16, BackendType::LITERT, "LiteRT_NPU_FP16", "", false}, CreateLitertBackend);
+#endif
+#ifdef HAVE_QNN_SDK_BACKEND
+        Register(BackendId::QNN_SDK_HTP, {BackendId::QNN_SDK_HTP, BackendType::QNN_SDK, "QNN_SDK_HTP", "", false}, CreateQnnSdkBackend);
+        Register(BackendId::QNN_SDK_GPU, {BackendId::QNN_SDK_GPU, BackendType::QNN_SDK, "QNN_SDK_GPU", "", false}, CreateQnnSdkBackend);
+        Register(BackendId::QNN_SDK_CPU, {BackendId::QNN_SDK_CPU, BackendType::QNN_SDK, "QNN_SDK_CPU", "", false}, CreateQnnSdkBackend);
 #endif
 #ifdef HAVE_NCNN_BACKEND
         Register(BackendId::NCNN_CPU, {BackendId::NCNN_CPU, BackendType::NCNN, "NCNN_CPU", "", true}, CreateNcnnBackend);

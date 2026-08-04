@@ -94,6 +94,7 @@ cmake -S "%ROOT%" -B "%BUILD_DIR%" -G "%CMAKE_GEN%" ^
     -DHAVE_NCNN_BACKEND=ON ^
     -DHAVE_MNN_BACKEND=ON ^
     -DHAVE_LITERT_BACKEND=ON ^
+    -DHAVE_QNN_SDK_BACKEND=ON ^
     -DQNN_SDK_ROOT="!QNN_SDK_ROOT!"
 if errorlevel 1 (
     echo CMake configuration failed.
@@ -136,6 +137,7 @@ adb push "%ROOT%\test_model.ncnn.bin"   /data/local/tmp/bench_test/ 2>nul
 adb push "%ROOT%\test_model_fp16.ncnn.bin" /data/local/tmp/bench_test/ 2>nul
 adb push "%ROOT%\test_model.shapes" /data/local/tmp/bench_test/ 2>nul
 adb push "%ROOT%\test_model.mnn" /data/local/tmp/bench_test/ 2>nul
+adb push "%ROOT%\libtest_model.so" /data/local/tmp/bench_test/ 2>nul
 
 REM --- Push .so files (skip if already on device) ---
 adb shell "test -f /data/local/tmp/bench_test/libonnxruntime.so" >nul 2>&1
@@ -283,7 +285,7 @@ echo.
 
 echo.
 echo ============================================================
-echo  Running FULL benchmark (warmup=5, repeat=100)...
+echo  Running benchmark ...
 echo ============================================================
 adb shell "rm -f /data/local/tmp/bench_test/summary.csv"
 adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% test_model.onnx --repeat 1 --warmup 0"

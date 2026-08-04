@@ -22,6 +22,10 @@ struct ModelBundle {
     ModelSearchResult tflite_model;
     ModelSearchResult ncnn_model;
     ModelSearchResult mnn_model;
+    /* QNN can have multiple model sources: a model.so (lib{base}.so) runs on
+     * CPU/GPU/HTP, plus context binaries ({base}.serialized.bin/.bin/.dlc)
+     * which are backend-specific. Priority: model.so first. */
+    std::vector<ModelSearchResult> qnn_models;
 
     int total_variants = 0;
 

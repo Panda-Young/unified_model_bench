@@ -261,6 +261,24 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
         return false;
     }
 
+    /* QNN: a model.so (lib{base}.so) is runtime-composed and runs on ALL QNN
+     * SDK backends (CPU/GPU/HTP); a context binary (.serialized.bin/.bin/.dlc)
+     * is offline-compiled and backend-specific — default to HTP only. */
+    if (fmt == ModelFormat::QNN) {
+        bool is_model_so = (variant.path.size() > 3 &&
+                            stricmp_(variant.path.c_str() + variant.path.size() - 3,
+                                     ".so") == 0);
+        if (!is_model_so) {
+            std::vector<BackendConfig> keep;
+            for (auto &b : backends) {
+                if (b.id == BackendId::QNN_SDK_HTP) {
+                    keep.push_back(b);
+                }
+            }
+            backends = std::move(keep);
+        }
+    }
+
     /* Filter by --backend (whitelist) if specified */
     if (!cfg_.backend_ids.empty()) {
         std::vector<BackendConfig> filtered;
@@ -387,7 +405,19 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
 
     /* For non-NCNN: use temp backend to query shapes */
     if (input_sizes.empty() && fmt != ModelFormat::NCNN) {
-        std::vector<BackendId> candidate_ids = {cpu_id};
+        std::vector<BackendId> candidate_ids;
+        if (fmt == ModelFormat::QNN) {
+            /* QNN context binaries are backend-specific (HTP/GPU/CPU), so the
+             * ONNX CPU temp backend cannot parse them. Query shapes via a QNN
+             * SDK backend that can restore the binary. */
+            for (auto &bc : backends) {
+                if (is_qnn_sdk_backend(bc.id)) {
+                    candidate_ids.push_back(bc.id);
+                }
+            }
+        } else {
+            candidate_ids.push_back(cpu_id);
+        }
         /* TFLite CPU backend may fail for models with Select TF ops (FlexErf).
          * Fall back to GPU delegate which handles Flex ops via GL shaders. */
         if (fmt == ModelFormat::TFLITE) {

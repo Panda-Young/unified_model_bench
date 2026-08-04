@@ -12,7 +12,8 @@ enum class ModelFormat {
     ONNX = 1,
     TFLITE = 2,
     NCNN = 3,
-    MNN = 4
+    MNN = 4,
+    QNN = 5   /* QNN context binary or model (.dlc / .serialized.bin / .so) */
 };
 
 inline const char *model_format_name(ModelFormat fmt)
@@ -26,6 +27,8 @@ inline const char *model_format_name(ModelFormat fmt)
         return "NCNN";
     case ModelFormat::MNN:
         return "MNN";
+    case ModelFormat::QNN:
+        return "QNN";
     default:
         return "UNKNOWN";
     }
@@ -56,11 +59,20 @@ inline ModelFormat detect_model_format(const std::string &path)
     if (ends_with(path, ".tflite")) {
         return ModelFormat::TFLITE;
     }
-    if (ends_with(path, ".param")) {
+    if (ends_with(path, ".ncnn.bin")) {
         return ModelFormat::NCNN;
     }
     if (ends_with(path, ".mnn")) {
         return ModelFormat::MNN;
+    }
+    if (ends_with(path, ".dlc")) {
+        return ModelFormat::QNN;
+    }
+    if (ends_with(path, ".so")) {
+        return ModelFormat::QNN;
+    }
+    if (ends_with(path, "serialized.bin")) {
+        return ModelFormat::QNN;
     }
 
     /* Magic-number fallback for ONNX */

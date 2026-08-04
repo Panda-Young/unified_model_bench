@@ -10,6 +10,7 @@ option(HAVE_TFLITE_BACKEND "Build TFLite backend"       OFF)
 option(HAVE_NCNN_BACKEND  "Build NCNN backend"          ON)
 option(HAVE_MNN_BACKEND   "Build MNN backend"           OFF)
 option(HAVE_LITERT_BACKEND "Build LiteRT backend"       OFF)
+option(HAVE_QNN_SDK_BACKEND "Build native QNN SDK backend" OFF)
 
 # ---- Architecture detection ----
 if(ANDROID)
@@ -38,18 +39,22 @@ set(MNN_INC   "${DEPS_DIR}/mnn/include")
 set(LITERT_INC "${DEPS_DIR}/litert/litert_cc_sdk")
 
 # QNN SDK (Qualcomm AI Engine Direct) — for TFLITE_NPU on Android
-if(ANDROID AND HAVE_TFLITE_BACKEND)
+if(ANDROID AND (HAVE_TFLITE_BACKEND OR HAVE_QNN_SDK_BACKEND))
     if(NOT DEFINED QNN_SDK_ROOT)
         set(QNN_SDK_ROOT "C:/Qualcomm/AIStack/QAIRT/2.48.40.260702"
             CACHE PATH "Qualcomm AI Engine Direct SDK root")
     endif()
-    if(EXISTS "${QNN_SDK_ROOT}/include/QNN/TFLiteDelegate/QnnTFLiteDelegate.h")
-        include_directories("${QNN_SDK_ROOT}/include")
-        add_definitions(-DHAVE_QNN_DELEGATE)
+    if(EXISTS "${QNN_SDK_ROOT}/include/QNN/TFLiteDelegate/QnnTFLiteDelegate.h" OR
+       EXISTS "${QNN_SDK_ROOT}/include/QNN/QnnInterface.h")
+        include_directories("${QNN_SDK_ROOT}/include"
+                            "${QNN_SDK_ROOT}/include/QNN")
         set(HAVE_QNN_DELEGATE TRUE)
         message(STATUS "QNN SDK found: ${QNN_SDK_ROOT}")
+        if(EXISTS "${QNN_SDK_ROOT}/include/QNN/TFLiteDelegate/QnnTFLiteDelegate.h")
+            add_definitions(-DHAVE_QNN_DELEGATE)
+        endif()
     else()
-        message(WARNING "QNN SDK not found at ${QNN_SDK_ROOT}; TFLITE_NPU disabled")
+        message(WARNING "QNN SDK not found at ${QNN_SDK_ROOT}; QNN backends disabled")
     endif()
 endif()
 
@@ -87,6 +92,9 @@ if(HAVE_MNN_BACKEND)
 endif()
 if(HAVE_LITERT_BACKEND)
     add_definitions(-DHAVE_LITERT_BACKEND)
+endif()
+if(HAVE_QNN_SDK_BACKEND AND ANDROID AND HAVE_QNN_DELEGATE)
+    add_definitions(-DHAVE_QNN_SDK_BACKEND)
 endif()
 
 # ---- Source files (glob all .cpp in src/) ----

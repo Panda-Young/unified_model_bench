@@ -26,6 +26,7 @@ unified_model_bench/
 │   ├── tflite_backend.cpp      # TFLite Delegate（XNNPACK/NNAPI/GPU/QNN-NPU）
 │   ├── litert_backend.cpp      # LiteRT（CPU/GPU/NPU，QNN dispatch）
 │   ├── litert_qualcomm_stubs.cpp # Android 专用：QNN options API 的 stub 实现
+│   ├── qnn_backend.cpp         # QNN SDK 原生后端（context binary，直接调 QNN C API）
 │   ├── ncnn_backend.cpp        # NCNN（CPU/Vulkan，FP32/FP16/BF16）
 │   ├── mnn_backend.cpp         # MNN（CPU/OpenCL/Vulkan）
 │   └── ...                     # cmd_args / device_info / file_ops / input_provider / result_collector / log
@@ -63,6 +64,7 @@ unified_model_bench/
 | 200–206 | NCNN | CPU/Vulkan |
 | 300–309 | MNN | CPU/OpenCL/Vulkan |
 | 400–405 | LiteRT | CPU/GPU/NPU |
+| 500–503 | QNN SDK | HTP/GPU/CPU（context binary） |
 
 ### 2.2 各框架后端
 
@@ -117,6 +119,16 @@ unified_model_bench/
 
 **MNN（300–309）**：CPU / OpenCL / Vulkan / OpenGL，桌面与 Android 均支持（桌面默认关闭 `HAVE_MNN_BACKEND=OFF`）。
 
+**QNN SDK（500–503，Android）**
+
+| Backend | 名称 | 桌面 | Android | 说明 |
+|---------|------|------|---------|------|
+| QNN_HTP | `QNN_HTP` | ❌ | ✅ | 直接加载 context binary 到 Hexagon（零拷贝共享内存） |
+| QNN_GPU | `QNN_GPU` | ❌ | ✅ | 同一 context binary 在 Adreno GPU 执行 |
+| QNN_CPU | `QNN_CPU` | ❌ | ✅ | 同一 context binary 在 CPU 执行 |
+
+> 模型格式为 **QNN context binary**（`.dlc`/`.serialized.bin`/`.bin`/`.so`），由 `qnn-context-binary-generator` 从 DLC 离线生成。仅 Android 且 `HAVE_QNN_SDK_BACKEND=ON` 时编译。
+
 ---
 
 ## 3. 构建系统
@@ -141,6 +153,7 @@ unified_model_bench/
 | `HAVE_NCNN_BACKEND` | ON | NCNN |
 | `HAVE_MNN_BACKEND` | OFF | MNN |
 | `HAVE_LITERT_BACKEND` | OFF | LiteRT |
+| `HAVE_QNN_SDK_BACKEND` | OFF | 原生 QNN SDK 后端（仅 Android） |
 | `QNN_SDK_ROOT` | — | QNN SDK 路径（Android） |
 
 ### 3.3 Windows x64 构建
@@ -372,6 +385,15 @@ IBackend
 └── (qtld-net-run)               # QNN 官方验证工具
 ```
 
+### 7.5 QNN_SDK（原生 QNN C API backend）
+
+- 模型格式：**QNN context binary**（`.dlc`/`.serialized.bin`/`.bin`/`.so`），由 `qnn-context-binary-generator` 从 DLC 离线生成；检测到上述后缀自动路由到 QNN SDK backend
+- 执行流程（仿 `SampleAppSharedBuffer`）：`dlopen(libQnnHtp.so)` → `QnnInterface_getProviders` → 版本匹配选 `QNN_INTERFACE_VER_TYPE` → `backendCreate` → `deviceCreate` → `dlopen(libQnnSystem.so)` → `systemContextCreate` + `systemContextGetBinaryInfo` → `contextCreateFromBinary` → `graphRetrieve` → `graphExecute`
+- **输入/输出缓冲**：Android 上优先用 `rpc_mem`（dlopen `libcdsprpc.so`，无需头文件）分配共享内存并经 `QnnMem_register` 注册为 DMA-BUF 实现零拷贝；失败时回退普通 client buffer
+- **量化**：根据 context binary 的 `Qnn_ScaleOffset_t` 做 float↔uint8 量化/反量化，自动适配量化模型
+- **QNN 2.48 API 差异**（已在实现中踩坑）：`Qnn_Tensor_t` 无 `QNN_TENSOR_GET/SET_*` 宏，需直接访问 `tensor.v1.*`；`QnnMem_register` 需 `Qnn_MemDescriptor_t`（含 memType=QNN_MEM_TYPE_DMA_BUF、fd）；`QnnSystemContext_getBinaryInfo` 首参为 `sysCtxHandle`；`QnnSystemContext_free` 仅 1 参数；BinaryInfo 用 `contextBinaryInfoV1/V2`（非 `binaryInfoV1`），GraphInfo 用 `graphInfoV1.graphName/numGraphInputs/graphInputs/numGraphOutputs/graphOutputs`
+- 编译开关：`-DHAVE_QNN_SDK_BACKEND=ON -DQNN_SDK_ROOT=...`（自动检测 `QnnInterface.h`）；仅 Android
+
 ---
 
 ## 8. 调试文档索引
@@ -382,6 +404,7 @@ IBackend
 | `docs/TFLITE_NPU_DEBUG_LOG.md` | QNN TFLite Delegate 全链路（dlopen、struct ABI、版本匹配）+ 桌面 XNNPACK 崩溃与 TFLite/LiteRT 共存方案 |
 | `docs/NCNN_DEBUG_LOG.md` | NaN（clone + packing）、BF16 崩溃（buf_pool）、版本输出、BF16 检测 |
 | `docs/LiteRT_GPU_DEBUG_LOG.md` | DXC 版本过旧导致 D3D12 shader 编译失败 |
+| `docs/QNN_SDK_DEBUG_LOG.md` | QNN SDK 后端全链路（2.48 API 差异、BinaryInfo V3、tensor 悬空指针、model.so composeGraphs、libQnnHtpPrepare.so 版本匹配、QNN log callback） |
 
 ---
 
@@ -391,6 +414,7 @@ IBackend
 |------|------|------|
 | LiteRT_NPU `CreateCompiledModel` 504 | 🔄 待解决 | QNN 库版本（2.37/5.48）与 dispatch 期望（2.36/5.47）不匹配；需匹配版本的 QNN 库或新版 dispatch |
 | ONNX QNN HTP Android 构建 | 🔄 待解决 | 需 QNN 专用 ORT 构建（onnxruntime-qnn，受 pip/uv 镜像限制） |
+| QNN_SDK 真机验证 | 🔄 待验证 | 需用 `qnn-context-binary-generator` 生成 context binary（需 DLC + hexagon SDK），推送 `libQnnHtp.so/libQnnSystem.so/libQnnHtpV73Stub.so/libQnnHtpV73Skel.so` 后实机跑 `QNN_HTP` |
 | Android NCNN Vulkan | ⬜ 不可用 | Android NCNN 库编译时未启用 Vulkan（NCNN_VULKAN=0），Vulkan backend 报错不降级 |
 | 桌面 TFLITE_XNNPACK_FP16 | ⚠️ 条件可用 | 依赖 FP16 硬件（Intel Iris Xe 支持） |
 | MNN 桌面 | ⚠️ 默认关闭 | `HAVE_MNN_BACKEND=OFF`，需显式开启 |

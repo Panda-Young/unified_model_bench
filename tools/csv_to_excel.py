@@ -33,6 +33,56 @@ MERGE_COLS = [
     "app_name",
 ]
 
+# Standard CSV header produced by unified_bench / result_collector.
+# Used to restore the header when a CSV was appended with `tail -n +2` (bat pull
+# skips the header line) so that column-name-based features (hide/merge) still work.
+STANDARD_HEADER = [
+    "date",
+    "time",
+    "model_name",
+    "model_input_shape",
+    "input_elements",
+    "model_output_shape",
+    "output_elements",
+    "warmup_runs",
+    "repeat_runs",
+    "threads",
+    "total_run_ms",
+    "avg_run_ms",
+    "max_run_ms",
+    "max_run_idx",
+    "init_ms",
+    "max_output_diff",
+    "avg_output_diff",
+    "acceleration_vs_cpu",
+    "backend_name",
+    "device_info",
+    "arch",
+    "app_name",
+    "notes",
+]
+
+
+def restore_header_if_missing(df):
+    """If the CSV has no header row (first row was read as column names),
+    restore the standard header so column-name-based logic keeps working."""
+    if df is None or df.empty:
+        return df
+    known = {c.strip().lower() for c in STANDARD_HEADER}
+    first_col = str(df.columns[0]).strip().lower()
+    if first_col in known:
+        return df  # header already present
+
+    if len(df.columns) <= len(STANDARD_HEADER):
+        # First row (misread as header) is actually the first data row.
+        data_rows = [list(df.columns)] + df.astype(str).values.tolist()
+        df = pd.DataFrame(data_rows, columns=STANDARD_HEADER[: len(df.columns)])
+        print("Warning: CSV is missing a header row - restored standard header.")
+    else:
+        print("Warning: CSV is missing a header row and column count does not match "
+              "the standard header; hiding/merging by name will be skipped.")
+    return df
+
 
 def format_device_info(text):
     """Format device_info by splitting CPU and GPU information on separate lines."""
@@ -114,6 +164,9 @@ def csv_to_xlsx(in_csv, out_xlsx=None, hide_cols=None, sheet_name="Sheet1", enco
     if df is None:
         print(f"Error: Could not read CSV '{in_csv}' with any encoding.")
         return
+
+    # Restore header if the CSV was appended without one (bat pull uses tail -n +2).
+    df = restore_header_if_missing(df)
 
     if "device_info" in df.columns:
         df["device_info"] = df["device_info"].apply(format_device_info)

@@ -18,7 +18,8 @@ enum class BackendType { ONNX_EP = 0,
                          TFLITE_DEL = 1,
                          NCNN = 2,
                          MNN = 3,
-                         LITERT = 4 };
+                         LITERT = 4,
+                         QNN_SDK = 5 };
 
 /* ONNX Execution Providers:      0-17
  * TFLite Delegates:            100-107
@@ -85,6 +86,12 @@ enum class BackendId {
     LITERT_NPU = 403,
     LITERT_NPU_FP16 = 404,
     LITERT_LAST = 405,
+
+    /* QNN SDK (native QNN C API, context binary) */
+    QNN_SDK_CPU = 500,
+    QNN_SDK_GPU = 501,
+    QNN_SDK_HTP = 502,
+    QNN_SDK_LAST = 503,
 };
 
 inline int bid(BackendId id) { return static_cast<int>(id); }
@@ -174,6 +181,11 @@ inline bool is_litert_backend(BackendId id)
 {
     int v = bid(id);
     return v >= bid(BackendId::LITERT_CPU) && v <= bid(BackendId::LITERT_LAST);
+}
+inline bool is_qnn_sdk_backend(BackendId id)
+{
+    int v = bid(id);
+    return v >= bid(BackendId::QNN_SDK_CPU) && v <= bid(BackendId::QNN_SDK_LAST);
 }
 
 /* ---------------------------------------------------------------------------

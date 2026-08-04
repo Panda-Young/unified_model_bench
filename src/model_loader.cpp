@@ -117,6 +117,48 @@ static ModelSearchResult search_variant(const std::string &dir,
 }
 
 /* ---------------------------------------------------------------------------
+ * Search all QNN model sources.
+ * 1) model.so forms (lib{base}.so / {base}.so) — runtime-composed, the SAME
+ *    library can run on CPU/GPU/HTP.
+ * 2) context binaries ({base}.serialized.bin / {base}.bin / {base}.dlc) —
+ *    offline-compiled and backend-specific (typically HTP).
+ * model.so is returned first (priority).
+ * -------------------------------------------------------------------------*/
+static std::vector<ModelSearchResult> search_qnn_variants(const std::string &dir,
+                                                          const std::string &base)
+{
+    std::vector<ModelSearchResult> out;
+    auto add = [&](const std::string &p, const char *name) {
+        ModelSearchResult r;
+        r.found = true;
+        r.path = p;
+        r.format = ModelFormat::QNN;
+        r.variant_name = name;
+        out.push_back(r);
+    };
+
+    /* 1. model.so (priority) */
+    std::string lib_so = dir + "lib" + base + ".so";
+    if (file_exists(lib_so.c_str())) {
+        add(lib_so, "QNN model.so");
+    }
+    std::string so = build_model_path(dir, base, "so");
+    if (file_exists(so.c_str())) {
+        add(so, "QNN model.so");
+    }
+
+    /* 2. context binaries */
+    const char *exts[] = {"serialized.bin", "bin", "dlc", nullptr};
+    for (int i = 0; exts[i]; ++i) {
+        std::string p = build_model_path(dir, base, exts[i]);
+        if (file_exists(p.c_str())) {
+            add(p, "QNN context binary");
+        }
+    }
+    return out;
+}
+
+/* ---------------------------------------------------------------------------
  * Search all variants
  * -------------------------------------------------------------------------*/
 ModelBundle search_model_variants(const std::string &ref_path)
@@ -134,6 +176,22 @@ ModelBundle search_model_variants(const std::string &ref_path)
                                        "ncnn.bin", "NCNN converted", ModelFormat::NCNN);
     bundle.mnn_model = search_variant(dir, base, "mnn", "", "MNN converted", ModelFormat::MNN);
 
+    /* If the reference path itself is a QNN model, use it directly — it is
+     * not auto-derived from the other formats. */
+    if (detect_model_format(ref_path) == ModelFormat::QNN) {
+        ModelSearchResult r;
+        r.found = true;
+        r.path = ref_path;
+        r.format = ModelFormat::QNN;
+        r.variant_name = (ref_path.size() > 3 &&
+                          stricmp_(ref_path.c_str() + ref_path.size() - 3, ".so") == 0)
+                             ? "QNN model.so"
+                             : "QNN context binary";
+        bundle.qnn_models.push_back(r);
+    } else {
+        bundle.qnn_models = search_qnn_variants(dir, base);
+    }
+
     bundle.total_variants = 0;
     if (bundle.onnx_model.found) {
         ++bundle.total_variants;
@@ -147,6 +205,7 @@ ModelBundle search_model_variants(const std::string &ref_path)
     if (bundle.mnn_model.found) {
         ++bundle.total_variants;
     }
+    bundle.total_variants += (int)bundle.qnn_models.size();
 
     LOGI("Model discovery: base='%s', found %d variant(s)", base.c_str(), bundle.total_variants);
     if (bundle.onnx_model.found) {
@@ -160,6 +219,10 @@ ModelBundle search_model_variants(const std::string &ref_path)
     }
     if (bundle.mnn_model.found) {
         LOGI("  MNN:    %s", bundle.mnn_model.path.c_str());
+    }
+    for (size_t i = 0; i < bundle.qnn_models.size(); ++i) {
+        LOGI("  QNN[%zu]: %s (%s)", i, bundle.qnn_models[i].path.c_str(),
+             bundle.qnn_models[i].variant_name.c_str());
     }
 
     return bundle;
@@ -179,6 +242,9 @@ std::vector<const ModelSearchResult *> ModelBundle::all_found() const
     }
     if (mnn_model.found) {
         v.push_back(&mnn_model);
+    }
+    for (auto &q : qnn_models) {
+        v.push_back(&q);
     }
     return v;
 }
