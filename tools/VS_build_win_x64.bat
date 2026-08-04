@@ -47,15 +47,19 @@ if not defined VS_VER (
 )
 echo Detected Visual Studio %VS_VER%
 
-REM ---- Clear stale CMake cache (generator mismatch on version change) ----
-if exist "%BUILD_DIR%\CMakeCache.txt" (
-    echo Removing stale CMake cache from previous generator...
-    del /Q "%BUILD_DIR%\CMakeCache.txt" 2>nul
-    rmdir /S /Q "%BUILD_DIR%\CMakeFiles" 2>nul
+REM ---- Optional clean rebuild: "VS_build_win_x64.bat clean|rebuild" ----
+set "CLEAN_BUILD=0"
+if /i "%~1"=="clean" set "CLEAN_BUILD=1"
+if /i "%~1"=="rebuild" set "CLEAN_BUILD=1"
+if "%CLEAN_BUILD%"=="1" (
+    if exist "%BUILD_DIR%" (
+        echo [clean] Removing build dir for full rebuild...
+        rmdir /S /Q "%BUILD_DIR%"
+    )
 )
 
 echo ============================================================
-echo  Configuring (CMake)...
+echo  Configuring (CMake, incremental)...
 echo ============================================================
 cmake -S "%PROJ_ROOT%" -B "%BUILD_DIR%" ^
     -G "Visual Studio %VS_VER%" -A x64 ^
@@ -65,8 +69,20 @@ cmake -S "%PROJ_ROOT%" -B "%BUILD_DIR%" ^
     -DHAVE_MNN_BACKEND=ON ^
     -DHAVE_LITERT_BACKEND=ON
 if errorlevel 1 (
-    echo CMake configuration failed.
-    exit /b 1
+    REM Likely a generator mismatch with an existing cache -> clean and retry once
+    echo CMake configure failed; cleaning build dir and retrying...
+    rmdir /S /Q "%BUILD_DIR%"
+    cmake -S "%PROJ_ROOT%" -B "%BUILD_DIR%" ^
+        -G "Visual Studio %VS_VER%" -A x64 ^
+        -DHAVE_ONNX_BACKEND=ON ^
+        -DHAVE_TFLITE_BACKEND=ON ^
+        -DHAVE_NCNN_BACKEND=ON ^
+        -DHAVE_MNN_BACKEND=ON ^
+        -DHAVE_LITERT_BACKEND=ON
+    if errorlevel 1 (
+        echo CMake configuration failed.
+        exit /b 1
+    )
 )
 
 echo.

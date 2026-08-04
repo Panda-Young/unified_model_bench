@@ -52,12 +52,49 @@ set "QNN_SDK_ROOT=C:\Qualcomm\AIStack\QAIRT\2.48.40.260702"
 
 set "BUILD_DIR=%ROOT%\build\android-arm64"
 
-REM ---- Clear stale CMake cache (generator mismatch) ----
-if exist "%BUILD_DIR%\CMakeCache.txt" (
-    echo Removing stale CMake cache from previous generator...
-    del /Q "%BUILD_DIR%\CMakeCache.txt" 2>nul
-    rmdir /S /Q "%BUILD_DIR%\CMakeFiles" 2>nul
+REM ---- Command-line options ----
+REM   clean | rebuild      : full rebuild (delete build dir)
+REM   build-only | build   : compile only, skip device push/test
+REM   --model <path>       : use a custom model (e.g. --model "C:\...\model.onnx")
+set "CLEAN_BUILD=0"
+set "RUN_TEST=1"
+set "MODEL_ARG="
+:parse_args
+if "%~1"=="" goto :args_done
+if /i "%~1"=="clean" set "CLEAN_BUILD=1"
+if /i "%~1"=="rebuild" set "CLEAN_BUILD=1"
+if /i "%~1"=="build-only" set "RUN_TEST=0"
+if /i "%~1"=="build" set "RUN_TEST=0"
+if /i "%~1"=="--model" (
+    if not "%~2"=="" (
+        set "MODEL_ARG=%~2"
+        shift
+    ) else (
+        echo ERROR: --model requires a model file path
+        exit /b 1
+    )
 )
+shift
+goto :parse_args
+:args_done
+if "%CLEAN_BUILD%"=="1" (
+    if exist "%BUILD_DIR%" (
+        echo [clean] Removing build dir for full rebuild...
+        rmdir /S /Q "%BUILD_DIR%"
+    )
+)
+
+REM ---- Resolve model to benchmark (--model or default test_model) ----
+set "MODEL_NAME=test_model.onnx"
+if defined MODEL_ARG (
+    if not exist "%MODEL_ARG%" (
+        echo ERROR: Model file not found: %MODEL_ARG%
+        exit /b 1
+    )
+    echo Using custom model: %MODEL_ARG%
+)
+if defined MODEL_ARG for %%F in ("%MODEL_ARG%") do set "MODEL_NAME=%%~nxF"
+echo Device model name : %MODEL_NAME%
 
 REM ---- Add NDK prebuilt + VS bundled CMake/Ninja to PATH ----
 set "PATH=%ANDROID_NDK_ROOT%\prebuilt\windows-x86_64\bin;%PATH%"
@@ -81,7 +118,7 @@ if errorlevel 1 (
 )
 
 echo ============================================================
-echo  Configuring (CMake + NDK)...
+echo  Configuring (CMake + NDK, incremental)...
 echo ============================================================
 cmake -S "%ROOT%" -B "%BUILD_DIR%" -G "%CMAKE_GEN%" ^
     -DCMAKE_BUILD_TYPE=Release ^
@@ -97,13 +134,31 @@ cmake -S "%ROOT%" -B "%BUILD_DIR%" -G "%CMAKE_GEN%" ^
     -DHAVE_QNN_SDK_BACKEND=ON ^
     -DQNN_SDK_ROOT="!QNN_SDK_ROOT!"
 if errorlevel 1 (
-    echo CMake configuration failed.
-    exit /b 1
+    REM Likely a generator mismatch with an existing cache -> clean and retry once
+    echo CMake configure failed; cleaning build dir and retrying...
+    rmdir /S /Q "%BUILD_DIR%"
+    cmake -S "%ROOT%" -B "%BUILD_DIR%" -G "%CMAKE_GEN%" ^
+        -DCMAKE_BUILD_TYPE=Release ^
+        -DCMAKE_TOOLCHAIN_FILE="%ANDROID_NDK_ROOT%\build\cmake\android.toolchain.cmake" ^
+        -DANDROID_ABI=arm64-v8a ^
+        -DANDROID_PLATFORM=21 ^
+        -DANDROID_STL=c++_static ^
+        -DHAVE_ONNX_BACKEND=ON ^
+        -DHAVE_TFLITE_BACKEND=ON ^
+        -DHAVE_NCNN_BACKEND=ON ^
+        -DHAVE_MNN_BACKEND=ON ^
+        -DHAVE_LITERT_BACKEND=ON ^
+        -DHAVE_QNN_SDK_BACKEND=ON ^
+        -DQNN_SDK_ROOT="!QNN_SDK_ROOT!"
+    if errorlevel 1 (
+        echo CMake configuration failed.
+        exit /b 1
+    )
 )
 
 echo.
 echo ============================================================
-echo  Building %OUT% (CMake + Ninja, incremental build)...
+echo  Building %OUT% (CMake + %CMAKE_GEN%, incremental)...
 echo ============================================================
 cmake --build "%BUILD_DIR%" --verbose
 if errorlevel 1 (
@@ -117,7 +172,16 @@ if errorlevel 1 (
 echo.
 echo ============================================================
 echo  BUILD SUCCESS: %BUILD_DIR%\unified_bench
+ echo    (incremental: only changed files are recompiled)
+ echo    (full rebuild:  %~nx0 clean)
 echo ============================================================
+
+REM --- Build-only mode: stop before device push/test ---
+if "%RUN_TEST%"=="0" (
+    echo.
+    echo Build-only: skipping device push and benchmark.
+    goto :eof
+)
 
 REM --- Push and run ---
 adb devices | findstr "device$" >nul
@@ -130,14 +194,22 @@ echo Pushing to device...
 adb wait-for-device
 adb shell "mkdir -p /data/local/tmp/bench_test/qnn 2>/dev/null"
 adb push "%BUILD_DIR%\unified_bench" /data/local/tmp/bench_test/
-adb push "%ROOT%\test_model.onnx" /data/local/tmp/bench_test/ 2>nul
-adb push "%ROOT%\test_model.tflite" /data/local/tmp/bench_test/ 2>nul
-adb push "%ROOT%\test_model.ncnn.param" /data/local/tmp/bench_test/ 2>nul
-adb push "%ROOT%\test_model.ncnn.bin"   /data/local/tmp/bench_test/ 2>nul
-adb push "%ROOT%\test_model_fp16.ncnn.bin" /data/local/tmp/bench_test/ 2>nul
-adb push "%ROOT%\test_model.shapes" /data/local/tmp/bench_test/ 2>nul
-adb push "%ROOT%\test_model.mnn" /data/local/tmp/bench_test/ 2>nul
-adb push "%ROOT%\libtest_model.so" /data/local/tmp/bench_test/ 2>nul
+if defined MODEL_ARG (
+    echo Pushing custom model...
+    adb push "%MODEL_ARG%" /data/local/tmp/bench_test/ || (
+        echo ERROR: Failed to push model %MODEL_ARG%
+        exit /b 1
+    )
+) else (
+    adb push "%ROOT%\test_model.onnx" /data/local/tmp/bench_test/ 2>nul
+    adb push "%ROOT%\test_model.tflite" /data/local/tmp/bench_test/ 2>nul
+    adb push "%ROOT%\test_model.ncnn.param" /data/local/tmp/bench_test/ 2>nul
+    adb push "%ROOT%\test_model.ncnn.bin"   /data/local/tmp/bench_test/ 2>nul
+    adb push "%ROOT%\test_model_fp16.ncnn.bin" /data/local/tmp/bench_test/ 2>nul
+    adb push "%ROOT%\test_model.shapes" /data/local/tmp/bench_test/ 2>nul
+    adb push "%ROOT%\test_model.mnn" /data/local/tmp/bench_test/ 2>nul
+    adb push "%ROOT%\libtest_model.so" /data/local/tmp/bench_test/ 2>nul
+)
 
 REM --- Push .so files (skip if already on device) ---
 adb shell "test -f /data/local/tmp/bench_test/libonnxruntime.so" >nul 2>&1
@@ -288,7 +360,7 @@ echo ============================================================
 echo  Running benchmark ...
 echo ============================================================
 adb shell "rm -f /data/local/tmp/bench_test/summary.csv"
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% test_model.onnx --repeat 1 --warmup 0"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% %MODEL_NAME% --repeat 1"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.
