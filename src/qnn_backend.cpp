@@ -16,7 +16,7 @@
  * zero-copy I/O; QNN hands the fd to the DSP through its own channel. Otherwise
  * falls back to plain client buffers (cross-platform).
  *
- * NOTE: do NOT try to call rpcmem_* from libcdsprpc.so directly — on some
+ * NOTE: do NOT try to call rpcmem_* from libcdsprpc.so directly - on some
  * devices (SM8550) the system libcdsprpc's rpcmem_alloc crashes in the shell
  * domain (its internal remote_register_buf path is SELinux-blocked). qnn-net-run
  * --shared_buffer works because QNN allocates/registers the buffer internally.
@@ -27,7 +27,9 @@
 
 #ifdef HAVE_QNN_SDK_BACKEND
 
+#include <QNN/HTP/QnnHtpDevice.h>
 #include <QNN/HTP/QnnHtpMem.h>
+#include <QNN/HTP/QnnHtpPerfInfrastructure.h>
 #include <QNN/QnnBackend.h>
 #include <QNN/QnnCommon.h>
 #include <QNN/QnnContext.h>
@@ -70,7 +72,14 @@ static void dma_buf_sync(int fd, uint32_t flags)
 {
     struct dma_buf_sync sync = {};
     sync.flags = flags;
-    (void)ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+    if (ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync) != 0) {
+        static bool warned = false;
+        if (!warned) {
+            LOGE("QNN: dma_buf_sync(0x%X) failed on fd %d, due to %s, %d",
+                 flags, fd, strerror(errno), errno);
+            warned = true;
+        }
+    }
 }
 #endif
 
@@ -118,13 +127,91 @@ typedef qnn_wrapper_api::ModelError_t (*QnnComposeGraphsFn_t)(
 typedef qnn_wrapper_api::ModelError_t (*QnnFreeGraphInfoFn_t)(
     qnn_wrapper_api::GraphInfo_t ***, uint32_t);
 
-/* QNN backend log sink — surfaces backend-side errors (e.g. HTP graphCreate). */
+/* QNN backend log sink - surfaces backend-side errors (e.g. HTP graphCreate). */
 static void qnn_log_callback(const char *fmt, QnnLog_Level_t level,
                              uint64_t /*timestamp*/, va_list args)
 {
     fprintf(stderr, "[QNN_LOG:%d] ", (int)level);
     vfprintf(stderr, fmt ? fmt : "", args);
     fprintf(stderr, "\n");
+}
+
+/* ---------------------------------------------------------------------------
+ * IEEE 754 binary16 <-> binary32 conversion (QNN FP16 tensors).
+ * QNN 2.48 SDK ships no QnnConvert.h helper, so implement it locally with
+ * round-to-nearest-even. Pure integer/bit ops - portable across platforms.
+ * -------------------------------------------------------------------------*/
+static uint16_t float_to_half(float f)
+{
+    union {
+        float f;
+        uint32_t u;
+    } x;
+    x.f = f;
+    uint32_t u = x.u;
+    uint32_t sign = (u >> 16) & 0x8000u;
+    int32_t exp = (int32_t)((u >> 23) & 0xFFu) - 127 + 15;
+    uint32_t mant = u & 0x7FFFFFu;
+
+    if (exp >= 31) { /* overflow (or inf/nan) -> inf */
+        return (uint16_t)(sign | 0x7C00u);
+    }
+    if (exp <= 0) {
+        if (exp < -10) { /* underflow to zero */
+            return (uint16_t)sign;
+        }
+        /* subnormal: keep leading 1, shift right, round to nearest even */
+        mant |= 0x800000u;
+        uint32_t shift = (uint32_t)(14 - exp);
+        uint32_t half = mant >> shift;
+        uint32_t rem = mant & ((1u << shift) - 1u);
+        if (rem > (1u << (shift - 1)) || (rem == (1u << (shift - 1)) && (half & 1u))) {
+            ++half;
+        }
+        return (uint16_t)(sign | half);
+    }
+    /* normal: drop 13 low mantissa bits, round to nearest even */
+    uint32_t half = ((uint32_t)exp << 10) | (mant >> 13);
+    uint32_t rem = mant & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) {
+        ++half;
+        if (half == 0x7C00u) { /* rounded up to inf */
+            half = 0x7C00u;
+        }
+    }
+    return (uint16_t)(sign | half);
+}
+
+static float half_to_float(uint16_t h)
+{
+    uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+    uint32_t exp = (h >> 10) & 0x1Fu;
+    uint32_t mant = h & 0x3FFu;
+    uint32_t u;
+    if (exp == 0) {
+        if (mant == 0) {
+            u = sign; /* +/- 0 */
+        } else {
+            /* subnormal */
+            int32_t e = -1;
+            uint32_t m = mant;
+            do {
+                ++e;
+                m <<= 1;
+            } while ((m & 0x400u) == 0);
+            u = sign | ((uint32_t)(127 - 15 - e) << 23) | ((m & 0x3FFu) << 13);
+        }
+    } else if (exp == 31) {
+        u = sign | 0x7F800000u | (mant << 13); /* inf / nan */
+    } else {
+        u = sign | ((uint32_t)(exp - 15 + 127) << 23) | (mant << 13);
+    }
+    union {
+        float f;
+        uint32_t u;
+    } out;
+    out.u = u;
+    return out.f;
 }
 
 /* ---------------------------------------------------------------------------
@@ -162,6 +249,7 @@ private:
     bool SetupTensorsFromBinaryInfo();
     bool SetupTensorsFromModelSo();
     bool AllocateBuffers();
+    bool ConfigureHtpPerformance();
     void PopulateInput(int idx, const float *data, size_t n);
     bool ReadOutput(int idx, float *dst, size_t n);
 
@@ -213,14 +301,22 @@ private:
     std::vector<bool> in_is_shared_;
     std::vector<bool> out_is_shared_;
 
-    /* DMA-BUF descriptors for shared buffers (to munmap + close on cleanup) */
+    /* DMA-BUF descriptors for shared buffers: ONE combined buffer per
+     * direction (in/out), each tensor registered at its own 4K-aligned offset
+     * into the same fd. Cleaned up with munmap + close. */
     struct DmaBuf {
         int fd = -1;
         size_t size = 0;
         void *addr = nullptr;
     };
-    std::vector<DmaBuf> in_dma_;
-    std::vector<DmaBuf> out_dma_;
+    std::vector<DmaBuf> in_dma_;  /* 0 or 1 element (combined input buffer) */
+    std::vector<DmaBuf> out_dma_; /* 0 or 1 element (combined output buffer) */
+    std::vector<size_t> in_offsets_; /* byte offset of each input inside in_dma_[0] */
+    std::vector<size_t> out_offsets_;
+
+    /* HTP performance infrastructure (DCVS v3 power vote, ~ORT burst mode) */
+    uint32_t power_config_id_ = 0;
+    QnnHtpPerfInfrastructure_DestroyPowerConfigIdFn_t destroy_power_config_ = nullptr;
 
     /* Inputs from runner (float, shared across backends) */
     std::vector<float *> input_bufs_;
@@ -400,7 +496,7 @@ static void qnn_setup_tensor(Qnn_Tensor_t *dst, const Qnn_Tensor_t *src,
                       : Qnn_ScaleOffset_t{1.0f, 0});
 }
 
-/* ELF64 shared object → model.so (composeGraphs) instead of raw context binary */
+/* ELF64 shared object -> model.so (composeGraphs) instead of raw context binary */
 static bool is_elf_shared_object(const char *path)
 {
     FILE *f = fopen(path, "rb");
@@ -510,7 +606,7 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
     }
     LOGI("QNN: loaded backend %s", qnn_backend_lib(id_));
 
-    /* 2. Create log handle (best effort) — errors only, keeps output clean */
+    /* 2. Create log handle (best effort) - errors only, keeps output clean */
     if (qnn_->logCreate) {
         (void)qnn_->logCreate(qnn_log_callback, QNN_LOG_LEVEL_ERROR, &log_);
     }
@@ -666,6 +762,73 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
 }
 
 /* ---------------------------------------------------------------------------
+ * Configure HTP performance mode (DCVS v3 power vote).
+ * Equivalent to ORT QNN EP's htp_performance_mode=burst: pins the HTP to the
+ * TURBO voltage corner with the PERFORMANCE power mode and disables sleep so
+ * inference latency is both fast and stable (no DCVS ramp / wakeup jitter).
+ * Non-fatal: on failure the backend still runs at the default power profile.
+ * -------------------------------------------------------------------------*/
+bool QnnSdkBackend::ConfigureHtpPerformance()
+{
+    if (id_ != BackendId::QNN_SDK_HTP || !device_ || !qnn_->deviceGetInfrastructure) {
+        return true; /* only HTP has a DCVS power vote */
+    }
+    /* deviceGetInfrastructure writes back a pointer to the HTP-specific
+     * infrastructure (QnnHtpDevice_Infrastructure_t) through the generic
+     * QnnDevice_Infrastructure_t* alias. */
+    QnnHtpDevice_Infrastructure_t *infra = nullptr;
+    if (QNN_SUCCESS != qnn_->deviceGetInfrastructure(&infra) || !infra) {
+        LOGW("QNN: deviceGetInfrastructure failed - perf mode disabled");
+        return false;
+    }
+    if (infra->infraType != QNN_HTP_DEVICE_INFRASTRUCTURE_TYPE_PERF ||
+        !infra->perfInfra.createPowerConfigId || !infra->perfInfra.setPowerConfig ||
+        !infra->perfInfra.destroyPowerConfigId) {
+        LOGW("QNN: HTP perf infrastructure unavailable - perf mode disabled");
+        return false;
+    }
+
+    uint32_t device_id = 0; /* QNN_DEVICE_DEFAULT_DEVICE_ID */
+    uint32_t core_id = 0;   /* QNN_DEVICE_DEFAULT_CORE_ID */
+    if (QNN_SUCCESS != infra->perfInfra.createPowerConfigId(device_id, core_id, &power_config_id_)) {
+        LOGW("QNN: createPowerConfigId failed - perf mode disabled");
+        return false;
+    }
+    destroy_power_config_ = infra->perfInfra.destroyPowerConfigId;
+
+    QnnHtpPerfInfrastructure_PowerConfig_t cfg = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIG_INIT;
+    cfg.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
+    cfg.dcvsV3Config.contextId = power_config_id_;
+    cfg.dcvsV3Config.setDcvsEnable = 1;
+    cfg.dcvsV3Config.dcvsEnable = 1;
+    cfg.dcvsV3Config.powerMode = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
+    cfg.dcvsV3Config.setSleepDisable = 1;
+    cfg.dcvsV3Config.sleepDisable = 1; /* keep HTP awake: no wakeup jitter */
+    cfg.dcvsV3Config.setBusParams = 1;
+    cfg.dcvsV3Config.busVoltageCornerMin = DCVS_VOLTAGE_VCORNER_NOM;
+    cfg.dcvsV3Config.busVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_TURBO;
+    cfg.dcvsV3Config.busVoltageCornerMax = DCVS_VOLTAGE_VCORNER_TURBO;
+    cfg.dcvsV3Config.setCoreParams = 1;
+    cfg.dcvsV3Config.coreVoltageCornerMin = DCVS_VOLTAGE_VCORNER_NOM;
+    cfg.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_TURBO;
+    cfg.dcvsV3Config.coreVoltageCornerMax = DCVS_VOLTAGE_VCORNER_TURBO;
+
+    const QnnHtpPerfInfrastructure_PowerConfig_t *configs[] = {&cfg, nullptr};
+    Qnn_ErrorHandle_t rc = infra->perfInfra.setPowerConfig(power_config_id_, configs);
+    if (QNN_SUCCESS != rc) {
+        LOGE("QNN: setPowerConfig failed rc=0x%X - perf mode disabled", (unsigned)rc);
+        if (destroy_power_config_) {
+            destroy_power_config_(power_config_id_);
+        }
+        power_config_id_ = 0;
+        destroy_power_config_ = nullptr;
+        return false;
+    }
+    LOGI("QNN: HTP perf configured (DCVS_V3, TURBO, PERFORMANCE_MODE, sleep disabled)");
+    return true;
+}
+
+/* ---------------------------------------------------------------------------
  * Extract tensor metadata from binary info and build Qnn_Tensor_t list
  * -------------------------------------------------------------------------*/
 bool QnnSdkBackend::SetupTensorsFromBinaryInfo()
@@ -769,60 +932,134 @@ bool QnnSdkBackend::AllocateBuffers()
             dma_heap_warned = true;
         }
     };
-    auto alloc_one = [&](Qnn_Tensor_t &t, size_t elems, Qnn_DataType_t dt,
-                         std::vector<void *> &bufs, std::vector<Qnn_MemHandle_t> &mem,
-                         std::vector<bool> &is_shared, std::vector<DmaBuf> &dma) -> bool {
-        size_t bytes = elems * (dt == QNN_DATATYPE_FLOAT_32 ? 4u : 1u);
-        void *p = nullptr;
+
+    auto aligned_bytes = [](size_t bytes) -> size_t {
+        return (bytes + 4095u) & ~(size_t)4095u;
+    };
+    auto tensor_bytes = [](size_t elems, Qnn_DataType_t dt) -> size_t {
+        size_t item_size = 1; /* quantized 8-bit default */
+        switch (dt) {
+        case QNN_DATATYPE_FLOAT_32: {
+            item_size = 4;
+            break;
+        }
+        case QNN_DATATYPE_FLOAT_16:
+        case QNN_DATATYPE_BFLOAT_16: {
+            item_size = 2;
+            break;
+        }
+        default: {
+            break;
+        }
+        }
+        return elems * item_size;
+    };
+
+    /* Lay all tensors of one direction into ONE combined dma-buf: each tensor
+     * gets a 4K-aligned offset and its own QnnMem_register handle (fd+offset).
+     * A single dma_buf_sync then covers the whole direction per inference
+     * (1 ioctl instead of one per tensor), cutting per-run DMA overhead. */
+    auto build_layout = [&](const std::vector<size_t> &elems,
+                            const std::vector<Qnn_DataType_t> &dtypes,
+                            std::vector<size_t> &offsets,
+                            std::vector<size_t> &sizes) -> size_t {
+        offsets.assign(elems.size(), 0);
+        sizes.assign(elems.size(), 0);
+        size_t total = 0;
+        for (size_t i = 0; i < elems.size(); ++i) {
+            size_t a = aligned_bytes(tensor_bytes(elems[i], dtypes[i]));
+            sizes[i] = a;
+            offsets[i] = total;
+            total += a;
+        }
+        return total;
+    };
+    std::vector<size_t> in_sizes, out_sizes;
+    size_t in_total = build_layout(in_elems_, in_dtypes_, in_offsets_, in_sizes);
+    size_t out_total = build_layout(out_elems_, out_dtypes_, out_offsets_, out_sizes);
+
+    auto alloc_direction = [&](std::vector<Qnn_Tensor_t> &tensors,
+                               const std::vector<size_t> &elems,
+                               const std::vector<Qnn_DataType_t> &dtypes,
+                               const std::vector<size_t> &offsets,
+                               const std::vector<size_t> &sizes,
+                               size_t total_bytes,
+                               std::vector<void *> &bufs,
+                               std::vector<Qnn_MemHandle_t> &mem,
+                               std::vector<bool> &is_shared,
+                               std::vector<DmaBuf> &dma) -> bool {
+        void *base = nullptr;
+        int buf_fd = -1;
         bool shared = false;
 #if defined(__ANDROID__) || defined(__android__)
-        if (try_dma_heap) {
-            /* Allocate a DMA-BUF from the system dma-heap. This needs no
-             * libcdsprpc/fastrpc on the app side — QNN registers the fd with the
+        if (try_dma_heap && !tensors.empty()) {
+            /* One DMA-BUF from the system dma-heap. This needs no
+             * libcdsprpc/fastrpc on the app side - QNN registers the fd with the
              * DSP through its own channel. (Direct rpcmem_* calls into the system
              * libcdsprpc crash in the shell domain on SM8550.) */
-            size_t alloc_size = (bytes + 4095u) & ~(size_t)4095u;
+            size_t alloc_size = aligned_bytes(total_bytes > 0 ? total_bytes : 1);
             int dmafd = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC);
             if (dmafd >= 0) {
                 struct dma_heap_allocation_data dmabuf = {};
                 dmabuf.len = alloc_size;
                 dmabuf.fd_flags = O_RDWR | O_CLOEXEC;
                 if (ioctl(dmafd, DMA_HEAP_IOCTL_ALLOC, &dmabuf) == 0) {
-                    int fd = (int)dmabuf.fd;
-                    void *addr = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                    buf_fd = (int)dmabuf.fd;
+                    void *addr = mmap(nullptr, alloc_size, PROT_READ | PROT_WRITE,
+                                      MAP_SHARED, buf_fd, 0);
                     if (addr != MAP_FAILED) {
-                        Qnn_MemHandle_t h = nullptr;
-                        /* HTP backend requires a CUSTOM memory descriptor with a
-                         * QnnMemHtp_Descriptor_t of type QNN_HTP_MEM_SHARED_BUFFER.
-                         * Using QNN_MEM_TYPE_DMA_BUF here crashes libQnnHtp (the
-                         * backend reads the union as a custom descriptor). */
-                        QnnMemHtp_Descriptor_t htp_desc = {};
-                        htp_desc.type = QNN_HTP_MEM_SHARED_BUFFER;
-                        htp_desc.size = alloc_size;
-                        htp_desc.sharedBufferConfig.fd = fd;
-                        htp_desc.sharedBufferConfig.offset = 0;
+                        bool all_ok = true;
+                        for (size_t i = 0; i < tensors.size(); ++i) {
+                            /* HTP backend requires a CUSTOM memory descriptor with a
+                             * QnnMemHtp_Descriptor_t of type QNN_HTP_MEM_SHARED_BUFFER.
+                             * Using QNN_MEM_TYPE_DMA_BUF here crashes libQnnHtp (the
+                             * backend reads the union as a custom descriptor). */
+                            QnnMemHtp_Descriptor_t htp_desc = {};
+                            htp_desc.type = QNN_HTP_MEM_SHARED_BUFFER;
+                            htp_desc.size = (uint32_t)sizes[i];
+                            htp_desc.sharedBufferConfig.fd = buf_fd;
+                            htp_desc.sharedBufferConfig.offset = offsets[i];
 
-                        Qnn_MemDescriptor_t desc = QNN_MEM_DESCRIPTOR_INIT;
-                        desc.dataType = dt;
-                        desc.memType = QNN_MEM_TYPE_CUSTOM;
-                        desc.customInfo = &htp_desc;
-                        if (qnn_->memRegister && QNN_SUCCESS == qnn_->memRegister(context_, &desc, 1, &h)) {
+                            Qnn_MemDescriptor_t desc = QNN_MEM_DESCRIPTOR_INIT;
+                            desc.dataType = dtypes[i];
+                            desc.memType = QNN_MEM_TYPE_CUSTOM;
+                            desc.customInfo = &htp_desc;
+                            Qnn_MemHandle_t h = nullptr;
+                            if (qnn_->memRegister &&
+                                QNN_SUCCESS == qnn_->memRegister(context_, &desc, 1, &h)) {
+                                mem.push_back(h);
+                                LOGD("QNN: dma-heap slice %zu/%zu off=%zu sz=%u fd=%d (shared)",
+                                     i, tensors.size(), offsets[i], htp_desc.size, buf_fd);
+                            } else {
+                                mem.push_back(nullptr);
+                                all_ok = false;
+                            }
+                        }
+                        if (all_ok) {
                             shared = true;
-                            mem.push_back(h);
-                            dma.push_back({fd, alloc_size, addr});
-                            p = addr;
-                            /* Per-tensor detail at DBG level (floods the log on
-                             * multi-tensor models); the "buffers: x/y shared"
-                             * INFO summary below reports the outcome. */
-                            LOGD("QNN: dma-heap %zu B (aligned %zu) fd=%d memHandle=%p (shared)",
-                                 bytes, alloc_size, fd, (void *)h);
+                            base = addr;
+                            dma.push_back({buf_fd, alloc_size, addr});
+                            buf_fd = -1; /* ownership moved into dma */
                         } else {
+                            /* roll back partial registrations */
+                            std::vector<Qnn_MemHandle_t> ok;
+                            for (auto &h : mem) {
+                                if (h) {
+                                    ok.push_back(h);
+                                }
+                            }
+                            if (qnn_->memDeRegister && !ok.empty()) {
+                                qnn_->memDeRegister(ok.data(), (uint32_t)ok.size());
+                            }
+                            mem.clear();
                             munmap(addr, alloc_size);
-                            close(fd);
+                            close(buf_fd);
+                            buf_fd = -1;
                             warn_dma_heap_once("dma-heap memRegister failed");
                         }
                     } else {
-                        close(fd);
+                        close(buf_fd);
+                        buf_fd = -1;
                         warn_dma_heap_once("dma-heap mmap failed");
                     }
                 } else {
@@ -834,40 +1071,46 @@ bool QnnSdkBackend::AllocateBuffers()
             }
         } /* if (try_dma_heap) */
 #endif
-        if (!p) {
-            p = malloc(bytes > 0 ? bytes : 1);
-            mem.push_back(nullptr);
-            dma.push_back({});
+        if (!shared) {
+            for (size_t i = 0; i < tensors.size(); ++i) {
+                mem.push_back(nullptr);
+            }
+            dma.push_back({}); /* empty marker: direction is client-backed */
         }
-        bufs.push_back(p);
-        is_shared.push_back(shared);
+        for (size_t i = 0; i < tensors.size(); ++i) {
+            size_t bytes = tensor_bytes(elems[i], dtypes[i]);
+            void *p = shared ? (uint8_t *)base + offsets[i]
+                             : malloc(bytes > 0 ? bytes : 1);
+            if (!p) {
+                LOGE("QNN: buffer alloc failed at index %zu", i);
+                return false;
+            }
+            bufs.push_back(p);
+            is_shared.push_back(shared);
 
-        /* Attach buffer to tensor (QNN 2.48 direct struct access) */
-        Qnn_TensorV1_t *tv = qnn_tensor_v1(&t);
-        if (shared) {
-            tv->memType = QNN_TENSORMEMTYPE_MEMHANDLE;
-            tv->memHandle = mem.back();
-        } else {
-            tv->memType = QNN_TENSORMEMTYPE_RAW;
-            tv->clientBuf.data = p;
-            tv->clientBuf.dataSize = bytes;
+            /* Attach buffer to tensor (QNN 2.48 direct struct access) */
+            Qnn_TensorV1_t *tv = qnn_tensor_v1(&tensors[i]);
+            if (shared) {
+                tv->memType = QNN_TENSORMEMTYPE_MEMHANDLE;
+                tv->memHandle = mem[i];
+            } else {
+                tv->memType = QNN_TENSORMEMTYPE_RAW;
+                tv->clientBuf.data = p;
+                tv->clientBuf.dataSize = bytes;
+            }
         }
-        return p != nullptr;
+        return true;
     };
 
-    for (size_t i = 0; i < in_tensors_.size(); ++i) {
-        if (!alloc_one(in_tensors_[i], in_elems_[i], in_dtypes_[i],
-                       in_bufs_, in_mem_handles_, in_is_shared_, in_dma_)) {
-            LOGE("QNN: input %zu alloc failed", i);
-            return false;
-        }
+    if (!alloc_direction(in_tensors_, in_elems_, in_dtypes_, in_offsets_, in_sizes,
+                         in_total, in_bufs_, in_mem_handles_, in_is_shared_, in_dma_)) {
+        LOGE("QNN: input buffer allocation failed");
+        return false;
     }
-    for (size_t i = 0; i < out_tensors_.size(); ++i) {
-        if (!alloc_one(out_tensors_[i], out_elems_[i], out_dtypes_[i],
-                       out_bufs_, out_mem_handles_, out_is_shared_, out_dma_)) {
-            LOGE("QNN: output %zu alloc failed", i);
-            return false;
-        }
+    if (!alloc_direction(out_tensors_, out_elems_, out_dtypes_, out_offsets_, out_sizes,
+                         out_total, out_bufs_, out_mem_handles_, out_is_shared_, out_dma_)) {
+        LOGE("QNN: output buffer allocation failed");
+        return false;
     }
 
     /* Report whether zero-copy shared buffers actually engaged */
@@ -896,7 +1139,7 @@ bool QnnSdkBackend::Initialize(const char *model_path, int num_threads)
     last_error_.clear();
     (void)num_threads;
 
-    /* ELF shared object → model.so (composeGraphs), otherwise context binary */
+    /* ELF shared object -> model.so (composeGraphs), otherwise context binary */
     if (is_elf_shared_object(model_path)) {
         is_model_so_ = true;
         if (!LoadModelLibrary(model_path)) {
@@ -921,6 +1164,9 @@ bool QnnSdkBackend::Initialize(const char *model_path, int num_threads)
     }
     if (!AllocateBuffers()) {
         return false;
+    }
+    if (!ConfigureHtpPerformance()) {
+        LOGW("QNN: HTP performance mode not configured (non-fatal)");
     }
 
     init_ms_ = std::chrono::duration<double, std::milli>(
@@ -1045,6 +1291,12 @@ void QnnSdkBackend::PopulateInput(int idx, const float *data, size_t n)
             float v = data[j] / scale + (float)offset;
             q[j] = (uint8_t)(v < 0.0f ? 0 : (v > 255.0f ? 255 : (uint8_t)(v + 0.5f)));
         }
+    } else if (in_dtypes_[idx] == QNN_DATATYPE_FLOAT_16) {
+        /* Convert float -> FP16 into the 2-byte tensor buffer */
+        uint16_t *h = (uint16_t *)dst;
+        for (size_t j = 0; j < n; ++j) {
+            h[j] = float_to_half(data[j]);
+        }
     } else {
         memcpy(dst, data, n * sizeof(float));
     }
@@ -1065,6 +1317,12 @@ bool QnnSdkBackend::ReadOutput(int idx, float *dst, size_t n)
         const uint8_t *q = (const uint8_t *)src;
         for (size_t j = 0; j < n; ++j) {
             dst[j] = ((float)q[j] - (float)offset) * scale;
+        }
+    } else if (out_dtypes_[idx] == QNN_DATATYPE_FLOAT_16) {
+        /* Convert FP16 -> float from the 2-byte tensor buffer */
+        const uint16_t *h = (const uint16_t *)src;
+        for (size_t j = 0; j < n; ++j) {
+            dst[j] = half_to_float(h[j]);
         }
     } else {
         memcpy(dst, src, n * sizeof(float));
@@ -1097,10 +1355,9 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
 
     auto execute_once = [&]() -> bool {
 #if defined(__ANDROID__) || defined(__android__)
-        for (size_t i = 0; i < num_inputs_; ++i) {
-            if (in_is_shared_[i] && i < in_dma_.size() && in_dma_[i].fd >= 0) {
-                dma_buf_sync(in_dma_[i].fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE);
-            }
+        /* Combined buffer: a single sync covers every input tensor */
+        if (!in_dma_.empty() && in_dma_[0].fd >= 0) {
+            dma_buf_sync(in_dma_[0].fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE);
         }
 #endif
         for (size_t i = 0; i < num_inputs_; ++i) {
@@ -1108,10 +1365,8 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
                           input_buf_elems_[i] > 0 ? input_buf_elems_[i] : in_elems_[i]);
         }
 #if defined(__ANDROID__) || defined(__android__)
-        for (size_t i = 0; i < num_inputs_; ++i) {
-            if (in_is_shared_[i] && i < in_dma_.size() && in_dma_[i].fd >= 0) {
-                dma_buf_sync(in_dma_[i].fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE);
-            }
+        if (!in_dma_.empty() && in_dma_[0].fd >= 0) {
+            dma_buf_sync(in_dma_[0].fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE);
         }
 #endif
         Qnn_ErrorHandle_t st = qnn_->graphExecute(
@@ -1139,16 +1394,21 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        for (size_t i = 0; i < num_outputs_; ++i) {
+        /* Copy outputs only on the last iteration: intermediate snapshots are
+         * never consumed, so reading ~10 MB of outputs every run would only add
+         * CPU-side copy + DMA sync latency to each measurement. */
+        if (r == repeat - 1) {
 #if defined(__ANDROID__) || defined(__android__)
-            if (out_is_shared_[i] && i < out_dma_.size() && out_dma_[i].fd >= 0) {
-                dma_buf_sync(out_dma_[i].fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
+            if (!out_dma_.empty() && out_dma_[0].fd >= 0) {
+                dma_buf_sync(out_dma_[0].fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
             }
 #endif
-            ReadOutput((int)i, snaps[i].data(), out_elems_[i]);
+            for (size_t i = 0; i < num_outputs_; ++i) {
+                ReadOutput((int)i, snaps[i].data(), out_elems_[i]);
+            }
 #if defined(__ANDROID__) || defined(__android__)
-            if (out_is_shared_[i] && i < out_dma_.size() && out_dma_[i].fd >= 0) {
-                dma_buf_sync(out_dma_[i].fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
+            if (!out_dma_.empty() && out_dma_[0].fd >= 0) {
+                dma_buf_sync(out_dma_[0].fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
             }
 #endif
         }
@@ -1209,6 +1469,12 @@ void QnnSdkBackend::Cleanup()
         graphs_count_ = 0;
     }
     if (qnn_) {
+        /* Release the HTP power vote before tearing down the context */
+        if (power_config_id_ && destroy_power_config_) {
+            destroy_power_config_(power_config_id_);
+            power_config_id_ = 0;
+            destroy_power_config_ = nullptr;
+        }
         /* Deregister shared memory before freeing buffers */
         if (qnn_->memDeRegister) {
             std::vector<Qnn_MemHandle_t> all;
@@ -1242,10 +1508,8 @@ void QnnSdkBackend::Cleanup()
     for (size_t i = 0; i < in_bufs_.size(); ++i) {
         if (in_bufs_[i]) {
 #if defined(__ANDROID__) || defined(__android__)
-            if (in_is_shared_[i] && i < in_dma_.size() && in_dma_[i].fd >= 0) {
-                munmap(in_dma_[i].addr, in_dma_[i].size);
-                close(in_dma_[i].fd);
-            } else {
+            /* Shared-direction pointers point into in_dma_[0]; unmapped below */
+            if (in_dma_.empty() || in_dma_[0].fd < 0) {
                 free(in_bufs_[i]);
             }
 #else
@@ -1256,10 +1520,7 @@ void QnnSdkBackend::Cleanup()
     for (size_t i = 0; i < out_bufs_.size(); ++i) {
         if (out_bufs_[i]) {
 #if defined(__ANDROID__) || defined(__android__)
-            if (out_is_shared_[i] && i < out_dma_.size() && out_dma_[i].fd >= 0) {
-                munmap(out_dma_[i].addr, out_dma_[i].size);
-                close(out_dma_[i].fd);
-            } else {
+            if (out_dma_.empty() || out_dma_[0].fd < 0) {
                 free(out_bufs_[i]);
             }
 #else
@@ -1271,6 +1532,20 @@ void QnnSdkBackend::Cleanup()
     out_bufs_.clear();
     in_mem_handles_.clear();
     out_mem_handles_.clear();
+#if defined(__ANDROID__) || defined(__android__)
+    for (auto &db : in_dma_) {
+        if (db.fd >= 0) {
+            munmap(db.addr, db.size);
+            close(db.fd);
+        }
+    }
+    for (auto &db : out_dma_) {
+        if (db.fd >= 0) {
+            munmap(db.addr, db.size);
+            close(db.fd);
+        }
+    }
+#endif
     in_dma_.clear();
     out_dma_.clear();
 

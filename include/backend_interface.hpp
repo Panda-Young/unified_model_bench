@@ -37,7 +37,7 @@ enum class BackendId {
     ONNX_OPENVINO_CPU = 5,
     ONNX_OPENVINO_GPU = 6,
     ONNX_OPENVINO_GPU_FP16 = 7,
-    /* 8 was ONNX_OPENVINO_GPU_BF16 — removed, unsupported by OpenVINO */
+    /* 8 was ONNX_OPENVINO_GPU_BF16 - removed, unsupported by OpenVINO */
     ONNX_OPENVINO_NPU = 9,
     ONNX_CUDA = 10,
     ONNX_TENSORRT = 11,
@@ -151,7 +151,7 @@ public:
      * Enables name-based accuracy comparison: multi-output models can have a
      * different output ORDER across backends (e.g. QNN SDK model.so), so the
      * collector matches outputs by name instead of by position.
-     * Returns an empty list by default → position-based comparison.
+     * Returns an empty list by default -> position-based comparison.
      */
     virtual const std::vector<std::string> &GetOutputNames() const
     {
@@ -202,7 +202,7 @@ inline bool is_qnn_sdk_backend(BackendId id)
 }
 
 /* ---------------------------------------------------------------------------
- * Registry - maps BackendId → BackendConfig + factory
+ * Registry - maps BackendId -> BackendConfig + factory
  * -------------------------------------------------------------------------*/
 namespace BackendRegistry
 {

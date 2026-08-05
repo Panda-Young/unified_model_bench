@@ -345,6 +345,64 @@ dma_buf_sync(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);     // CPU 读输出后
 
 ---
 
+### 5.6 性能模式（DCVS_V3 功率投票）+ 零拷贝优化（2026-08-05）
+
+**背景**：同一模型（`tfc_tdf_..._8frame_state.onnx`）在 ORT QNN EP HTP 上 avg 9.9ms，而 QNN SDK HTP 只有 40ms 且抖动大。根因：ORT 配了 `enable_htp_fp16_precision=1` + `htp_performance_mode=burst`（锁 TURBO 高频 + 禁睡眠），而 QNN SDK 后端此前**未设置任何性能模式**（HTP 默认低频随负载波动）+ 每轮对每个 tensor 单独 dma_buf_sync + 每轮 memcpy 全部输出。本次在 `qnn_backend.cpp` 落地两项：
+
+**1) HTP 性能模式（等效 ORT burst）**——QNN 2.48 的 DCVS v3 功率投票 API：
+
+```cpp
+/* deviceGetInfrastructure 输出的是「指针」（generic QnnDevice_Infrastructure_t* 别名） */
+QnnHtpDevice_Infrastructure_t *infra = nullptr;
+qnn_->deviceGetInfrastructure(&infra);   // &infra = _QnnDevice_Infrastructure_t**
+infra->perfInfra.createPowerConfigId(0, 0, &power_config_id_);   // deviceId=0, coreId=0
+
+QnnHtpPerfInfrastructure_PowerConfig_t cfg = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIG_INIT;
+cfg.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
+cfg.dcvsV3Config.contextId = power_config_id_;
+cfg.dcvsV3Config.setDcvsEnable = 1;  cfg.dcvsV3Config.dcvsEnable = 1;
+cfg.dcvsV3Config.powerMode = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
+cfg.dcvsV3Config.setSleepDisable = 1;  cfg.dcvsV3Config.sleepDisable = 1;  /* 禁睡防抖 */
+cfg.dcvsV3Config.setBusParams = 1;
+cfg.dcvsV3Config.busVoltageCornerMin/Target/Max = NOM / TURBO / TURBO;
+cfg.dcvsV3Config.setCoreParams = 1;
+cfg.dcvsV3Config.coreVoltageCornerMin/Target/Max = NOM / TURBO / TURBO;
+infra->perfInfra.setPowerConfig(power_config_id_, (const ...*)configs);
+/* Cleanup：infra->perfInfra.destroyPowerConfigId(power_config_id_) */
+```
+
+要点：`QnnHtpPerfInfrastructure_PerfMode_t`（BURST 等）在 QNN 2.48 已移除，改用 DCVS v3 的**电压角 + powerMode**；TURBO 电压角 + PERFORMANCE_MODE + sleepDisable=1 即等效 burst 锁频（消频率波动 → 平均与峰值同时下降）。
+
+**2) 零拷贝 / 低开销优化**：
+- **dma-buf 每方向合并为 1 个 fd**：全部输入放一个 dma-buf、全部输出放一个（每个 tensor 4K 对齐 offset + 各自 `QnnMem_register`，`sharedBufferConfig.offset` 指向其区域）→ 每帧 `dma_buf_sync` 从「每 tensor 一次」降为「每方向一次」（44 输入 + 44 输出 → 2 次 ioctl），注册/分配次数也集中。
+- **输出仅最后一轮读取**：中间轮次的输出快照从未被消费，改为只在 `r==repeat-1` 读一次，省掉每帧 ~10MB 输出 memcpy + 相应 sync。
+
+**构建验证**：`cmake --build build/android-arm64`（NDK 29 / HAVE_QNN_SDK_BACKEND=ON）编译链接通过。
+
+**实测建议**：性能模式收益需在 SM8850 上复测 `QNN_SDK_HTP`（预期 avg 从 ~40ms 降至接近 ORT 的 ~10-15ms 区间，峰值显著收窄）。若仍偏慢，下一步是**转换侧**改用 `--float_bitwidth 16`（FP16，HTP 硬件加速）或补 `--input_list` 做 INT8 量化——当前 model.so 是纯 FP32（cpp 里 `dataType=FLOAT_32`、`quantizeParams=UNDEFINED`），FP32 在 HTP 上无硬件加速是慢的主因。
+
+### 5.7 FP16 模型崩溃修复（2026-08-05）
+
+**现象**：用 `qnn-onnx-converter --debug --preserve_io_layout --float_bitwidth 16` 转换的 FP16 model.so 跑 `QNN_SDK_HTP`，init 成功（22 in / 22 out，1641.7ms）但随后 **Segmentation fault**；日志同时出现 `buffers: 0/44 shared (dma-heap zero-copy), rest client buffer`。
+
+**根因**：`AllocateBuffers()` 里的 `tensor_bytes()` 把「非 FP32」一律按 1 字节/元素计算（本是为 INT8 量化设计）：
+
+```cpp
+return elems * (dt == QNN_DATATYPE_FLOAT_32 ? 4u : 1u);
+```
+
+FP16（`QNN_DATATYPE_FLOAT_16=0x0216`）应为 2 字节/元素 → 缓冲区只分到一半大小 → `QnnMem_register` 的 size 偏小（dma-heap 注册失败，退化为 client buffer）；`PopulateInput` 又按 `n*sizeof(float)` 把 4 字节 memcpy 写进 1 字节/元素的缓冲 → 堆越界 → Segfault。
+
+**修复**（`src/qnn_backend.cpp`）：
+1. **手写 IEEE 754 half 转换**（QNN 2.48 SDK 无 `QnnConvert.h`）：`float_to_half()` / `half_to_float()`，round-to-nearest-even，纯位运算跨平台。已与 numpy.float16 对照验证：仅在「精确 tie」边界差 1 ULP（numpy 此处非 RNE，本实现为标准 RNE），对模型精度无实际影响。
+2. **`tensor_bytes()` 按 dtype 计算字节数**：`FLOAT_32=4`、`FLOAT_16/BFLOAT_16=2`、其余（量化 8-bit）=1。
+3. **`PopulateInput`**：`in_dtypes_[idx]==QNN_DATATYPE_FLOAT_16` 时逐元素 `float→half` 写入 `uint16_t`（不再 4 字节 memcpy）。
+4. **`ReadOutput`**：`out_dtypes_[idx]==QNN_DATATYPE_FLOAT_16` 时逐元素 `half→float` 回填。
+
+**验证**：`cmake --build build/android-arm64` 与 `build/win-x64 --config Release` 均通过。修复后 `tensor_bytes` 尺寸正确 → dma-heap 应恢复 shared；若仍报 `0/44 shared`，需看 `dma-heap ... failed` 的 WARN 日志定位 open/alloc/mmap/register 哪一步。精度校验建议与 FP32 结果对比 max_diff（FP16 预期 ~1e-3 量级小误差）。
+
+---
+
 ## 6. 验证命令速查
 
 ```bash
