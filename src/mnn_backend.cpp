@@ -77,44 +77,54 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
     bcfg_.power = MNN::BackendConfig::Power_High;
 
     switch (id_) {
-    case BackendId::MNN_CPU:
+    case BackendId::MNN_CPU: {
         sched_.type = MNN_FORWARD_CPU;
         break;
-    case BackendId::MNN_OPENCL:
+    }
+    case BackendId::MNN_OPENCL: {
         sched_.type = MNN_FORWARD_OPENCL;
         bcfg_.precision = MNN::BackendConfig::Precision_High;
         break;
-    case BackendId::MNN_OPENCL_FP16:
+    }
+    case BackendId::MNN_OPENCL_FP16: {
         sched_.type = MNN_FORWARD_OPENCL;
         bcfg_.precision = MNN::BackendConfig::Precision_Low;
         break;
-    case BackendId::MNN_OPENCL_BF16:
+    }
+    case BackendId::MNN_OPENCL_BF16: {
         sched_.type = MNN_FORWARD_OPENCL;
         bcfg_.precision = MNN::BackendConfig::Precision_Low_BF16;
         break;
-    case BackendId::MNN_VULKAN:
+    }
+    case BackendId::MNN_VULKAN: {
         sched_.type = MNN_FORWARD_VULKAN;
         bcfg_.precision = MNN::BackendConfig::Precision_High;
         break;
-    case BackendId::MNN_VULKAN_FP16:
+    }
+    case BackendId::MNN_VULKAN_FP16: {
         sched_.type = MNN_FORWARD_VULKAN;
         bcfg_.precision = MNN::BackendConfig::Precision_Low;
         break;
-    case BackendId::MNN_VULKAN_BF16:
+    }
+    case BackendId::MNN_VULKAN_BF16: {
         sched_.type = MNN_FORWARD_VULKAN;
         bcfg_.precision = MNN::BackendConfig::Precision_Low_BF16;
         break;
-    case BackendId::MNN_OPENGL:
+    }
+    case BackendId::MNN_OPENGL: {
         sched_.type = MNN_FORWARD_OPENGL;
         bcfg_.precision = MNN::BackendConfig::Precision_High;
         break;
-    case BackendId::MNN_NN:
+    }
+    case BackendId::MNN_NN: {
         sched_.type = MNN_FORWARD_NN;
         bcfg_.precision = MNN::BackendConfig::Precision_High;
         break;
-    default:
+    }
+    default: {
         sched_.type = MNN_FORWARD_CPU;
         break;
+    }
     }
 
     /* Always set backendConfig for all modes to apply Memory_High/Power_High */

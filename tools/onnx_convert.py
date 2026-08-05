@@ -202,7 +202,13 @@ def clean_pnnx_intermediates(model_dir: str, keep_pcnn: bool):
 
 
 def verify_ncnn(onnx_path: str, ncnn_param: str, ncnn_bin: str) -> int:
-    """0=pass/skip, 2=fail"""
+    """0=pass, 2=fail.
+
+    No silent skip: a model that fails to load, fails the forward, or produces
+    shape/value-mismatched outputs is reported as FAIL (2) so broken
+    conversions are caught instead of being shipped. Only SKIP (0) when the
+    optional libs (onnxruntime / ncnn / numpy) are unavailable.
+    """
     try:
         import onnxruntime as ort
         import ncnn
@@ -236,27 +242,43 @@ def verify_ncnn(onnx_path: str, ncnn_param: str, ncnn_bin: str) -> int:
             net.opt.use_fp16_packed = False
             net.opt.use_fp16_storage = False
             net.opt.use_fp16_arithmetic = False
+
+        lr = 0
+        mr = 0
         try:
-            net.load_param(ncnn_param)
-            net.load_model(ncnn_bin)
+            lr = net.load_param(ncnn_param)
+            mr = net.load_model(ncnn_bin)
         except Exception as e:
             msg = str(e).split('\n')[0] if str(e) else str(type(e).__name__)
             print(f"\n  {label}: FAIL - model load error: {msg}")
+            return False
+        if lr != 0 or mr != 0:
+            print(f"\n  {label}: FAIL - model load error (param={lr} model={mr})")
             return False
 
         ex = net.create_extractor()
         try:
             for i in range(len(inputs_info)):
-                mat = ncnn.Mat(np.ascontiguousarray(feed[inputs_info[i][0]].squeeze(0)))
+                arr = feed[inputs_info[i][0]]
+                # pnnx strips the leading batch dim (size 1) from ONNX inputs;
+                # only drop it when shape[0] == 1. 3D state tensors such as
+                # [472,32,2] (dim0 != 1) MUST be passed as-is - squeezing them
+                # raised and silently skipped the whole verification before.
+                if len(arr.shape) >= 2 and arr.shape[0] == 1:
+                    arr = arr.reshape(arr.shape[1:])
+                mat = ncnn.Mat(np.ascontiguousarray(arr))
                 ex.input(f"in{i}", mat.clone())
             outs = []
             for i in range(len(outputs_info)):
-                _, m = ex.extract(f"out{i}")
+                ret, m = ex.extract(f"out{i}")
+                if ret != 0 or m.total() == 0:
+                    print(f"\n  {label}: FAIL - extract out{i} failed (ret={ret})")
+                    return False
                 outs.append(np.array(m))
         except Exception as e:
             msg = str(e).split('\n')[0] if str(e) else str(type(e).__name__)
-            print(f"\n  {label}: SKIP - inference error: {msg}")
-            return True
+            print(f"\n  {label}: FAIL - inference error: {msg}")
+            return False
 
         print(f"\n  === {label} ===")
         all_ok = True
@@ -265,13 +287,21 @@ def verify_ncnn(onnx_path: str, ncnn_param: str, ncnn_bin: str) -> int:
             a, b = ref.flatten(), out.flatten()
             if a.shape != b.shape:
                 print(f"  out{i}: shape mismatch {ref.shape} vs {out.shape}  FAIL")
-                all_ok = False; continue
+                all_ok = False
+                continue
+            if a.size == 0:
+                continue
             mx = float(np.abs(a - b).max())
             avg = float(np.abs(a - b).mean())
             tag = "OK" if mx < 5.0 else "***LARGE***"
             print(f"  out{i}: max={mx:.6f} avg={avg:.6f} {tag}")
-            if mx > worst: worst = mx
-            if mx >= 5.0: all_ok = False
+            if mx > worst:
+                worst = mx
+            if mx >= 5.0:
+                all_ok = False
+        if len(outs) != len(ref_outs):
+            print(f"  output count mismatch: ref={len(ref_outs)} got={len(outs)}  FAIL")
+            all_ok = False
         status = "PASS" if all_ok else "FAIL"
         print(f"  {label}: {status} (worst={worst:.6f})")
         return all_ok

@@ -13,24 +13,30 @@ enum class ModelFormat {
     TFLITE = 2,
     NCNN = 3,
     MNN = 4,
-    QNN = 5   /* QNN context binary or model (.dlc / .serialized.bin / .so) */
+    QNN = 5 /* QNN context binary or model (.dlc / .serialized.bin / .so) */
 };
 
 inline const char *model_format_name(ModelFormat fmt)
 {
     switch (fmt) {
-    case ModelFormat::ONNX:
+    case ModelFormat::ONNX: {
         return "ONNX";
-    case ModelFormat::TFLITE:
+    }
+    case ModelFormat::TFLITE: {
         return "TFLite";
-    case ModelFormat::NCNN:
+    }
+    case ModelFormat::NCNN: {
         return "NCNN";
-    case ModelFormat::MNN:
+    }
+    case ModelFormat::MNN: {
         return "MNN";
-    case ModelFormat::QNN:
+    }
+    case ModelFormat::QNN: {
         return "QNN";
-    default:
+    }
+    default: {
         return "UNKNOWN";
+    }
     }
 }
 

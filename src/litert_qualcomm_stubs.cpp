@@ -29,32 +29,39 @@
  *   qnn_backend, htp_performance_mode, optimization_level
  * -------------------------------------------------------------------------*/
 struct LiteRTQualcommOptionsInternal {
-    int  backend              = 0;  // LrtQualcommOptionsBackend
-    int  htp_performance_mode = 0;  // LrtQualcommOptionsHtpPerformanceMode
-    int  optimization_level   = 0;  // LrtQualcommOptionsOptimizationLevel
-    bool has_backend              = false;
+    int backend = 0;              // LrtQualcommOptionsBackend
+    int htp_performance_mode = 0; // LrtQualcommOptionsHtpPerformanceMode
+    int optimization_level = 0;   // LrtQualcommOptionsOptimizationLevel
+    bool has_backend = false;
     bool has_htp_performance_mode = false;
-    bool has_optimization_level   = false;
+    bool has_optimization_level = false;
 };
 
 /* ---------------------------------------------------------------------------
  * Public API
  * -------------------------------------------------------------------------*/
 
-LiteRtStatus LrtCreateQualcommOptions(LrtQualcommOptions *options) {
-    if (!options) return kLiteRtStatusErrorInvalidArgument;
+LiteRtStatus LrtCreateQualcommOptions(LrtQualcommOptions *options)
+{
+    if (!options) {
+        return kLiteRtStatusErrorInvalidArgument;
+    }
     *options = reinterpret_cast<LrtQualcommOptions>(
         new LiteRTQualcommOptionsInternal());
     return kLiteRtStatusOk;
 }
 
-void LrtDestroyQualcommOptions(LrtQualcommOptions options) {
+void LrtDestroyQualcommOptions(LrtQualcommOptions options)
+{
     delete reinterpret_cast<LiteRTQualcommOptionsInternal *>(options);
 }
 
 LiteRtStatus LrtQualcommOptionsSetBackend(
-    LrtQualcommOptions options, LrtQualcommOptionsBackend backend) {
-    if (!options) return kLiteRtStatusErrorInvalidArgument;
+    LrtQualcommOptions options, LrtQualcommOptionsBackend backend)
+{
+    if (!options) {
+        return kLiteRtStatusErrorInvalidArgument;
+    }
     auto *o = reinterpret_cast<LiteRTQualcommOptionsInternal *>(options);
     o->backend = static_cast<int>(backend);
     o->has_backend = true;
@@ -63,8 +70,11 @@ LiteRtStatus LrtQualcommOptionsSetBackend(
 
 LiteRtStatus LrtQualcommOptionsSetHtpPerformanceMode(
     LrtQualcommOptions options,
-    LrtQualcommOptionsHtpPerformanceMode mode) {
-    if (!options) return kLiteRtStatusErrorInvalidArgument;
+    LrtQualcommOptionsHtpPerformanceMode mode)
+{
+    if (!options) {
+        return kLiteRtStatusErrorInvalidArgument;
+    }
     auto *o = reinterpret_cast<LiteRTQualcommOptionsInternal *>(options);
     o->htp_performance_mode = static_cast<int>(mode);
     o->has_htp_performance_mode = true;
@@ -73,8 +83,11 @@ LiteRtStatus LrtQualcommOptionsSetHtpPerformanceMode(
 
 LiteRtStatus LrtQualcommOptionsSetOptimizationLevel(
     LrtQualcommOptions options,
-    LrtQualcommOptionsOptimizationLevel level) {
-    if (!options) return kLiteRtStatusErrorInvalidArgument;
+    LrtQualcommOptionsOptimizationLevel level)
+{
+    if (!options) {
+        return kLiteRtStatusErrorInvalidArgument;
+    }
     auto *o = reinterpret_cast<LiteRTQualcommOptionsInternal *>(options);
     o->optimization_level = static_cast<int>(level);
     o->has_optimization_level = true;
@@ -85,20 +98,25 @@ LiteRtStatus LrtGetOpaqueQualcommOptionsData(
     LrtQualcommOptions options,
     const char **identifier,
     void **payload,
-    void (**payload_deleter)(void *)) {
-    if (!options || !identifier || !payload || !payload_deleter)
+    void (**payload_deleter)(void *))
+{
+    if (!options || !identifier || !payload || !payload_deleter) {
         return kLiteRtStatusErrorInvalidArgument;
+    }
 
     auto *o = reinterpret_cast<LiteRTQualcommOptionsInternal *>(options);
 
     /* Serialize to TOML -- same format as the SDK's implementation */
     std::ostringstream toml;
-    if (o->has_backend)
+    if (o->has_backend) {
         toml << "qnn_backend = " << o->backend << "\n";
-    if (o->has_htp_performance_mode)
+    }
+    if (o->has_htp_performance_mode) {
         toml << "htp_performance_mode = " << o->htp_performance_mode << "\n";
-    if (o->has_optimization_level)
+    }
+    if (o->has_optimization_level) {
         toml << "optimization_level = " << o->optimization_level << "\n";
+    }
 
     *identifier = "qualcomm";
 

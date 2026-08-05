@@ -27,6 +27,7 @@
 
 #ifdef HAVE_QNN_SDK_BACKEND
 
+#include <QNN/HTP/QnnHtpMem.h>
 #include <QNN/QnnBackend.h>
 #include <QNN/QnnCommon.h>
 #include <QNN/QnnContext.h>
@@ -35,11 +36,10 @@
 #include <QNN/QnnInterface.h>
 #include <QNN/QnnLog.h>
 #include <QNN/QnnMem.h>
-#include <QNN/System/QnnSystemContext.h>
-#include <QNN/System/QnnSystemInterface.h>
 #include <QNN/QnnTensor.h>
 #include <QNN/QnnTypes.h>
-#include <QNN/HTP/QnnHtpMem.h>
+#include <QNN/System/QnnSystemContext.h>
+#include <QNN/System/QnnSystemInterface.h>
 
 #include <chrono>
 #include <cmath>
@@ -79,34 +79,35 @@ static void dma_buf_sync(int fd, uint32_t flags)
  * QnnModel_freeGraphsInfo and is compiled per-target at runtime, so the SAME
  * .so can drive CPU / GPU / HTP backends. Mirrors SampleApp's QnnWrapperUtils.
  * -------------------------------------------------------------------------*/
-namespace qnn_wrapper_api {
-typedef enum ModelError {
-    MODEL_NO_ERROR               = 0,
-    MODEL_TENSOR_ERROR           = 1,
-    MODEL_PARAMS_ERROR           = 2,
-    MODEL_NODES_ERROR            = 3,
-    MODEL_GRAPH_ERROR            = 4,
-    MODEL_CONTEXT_ERROR          = 5,
-    MODEL_GENERATION_ERROR       = 6,
-    MODEL_SETUP_ERROR            = 7,
-    MODEL_INVALID_ARGUMENT_ERROR = 8,
-    MODEL_FILE_ERROR             = 9,
-    MODEL_MEMORY_ALLOCATE_ERROR  = 10,
-    MODEL_UNKNOWN_ERROR          = 0x7FFFFFFF
-} ModelError_t;
-typedef struct GraphInfo {
-    Qnn_GraphHandle_t graph;
-    char *graphName;
-    Qnn_Tensor_t *inputTensors;
-    uint32_t numInputTensors;
-    Qnn_Tensor_t *outputTensors;
-    uint32_t numOutputTensors;
-} GraphInfo_t;
-typedef GraphInfo_t *GraphInfoPtr_t;
-typedef struct GraphConfigInfo {
-    char *graphName;
-    const QnnGraph_Config_t **graphConfigs;
-} GraphConfigInfo_t;
+namespace qnn_wrapper_api
+{
+    typedef enum ModelError {
+        MODEL_NO_ERROR = 0,
+        MODEL_TENSOR_ERROR = 1,
+        MODEL_PARAMS_ERROR = 2,
+        MODEL_NODES_ERROR = 3,
+        MODEL_GRAPH_ERROR = 4,
+        MODEL_CONTEXT_ERROR = 5,
+        MODEL_GENERATION_ERROR = 6,
+        MODEL_SETUP_ERROR = 7,
+        MODEL_INVALID_ARGUMENT_ERROR = 8,
+        MODEL_FILE_ERROR = 9,
+        MODEL_MEMORY_ALLOCATE_ERROR = 10,
+        MODEL_UNKNOWN_ERROR = 0x7FFFFFFF
+    } ModelError_t;
+    typedef struct GraphInfo {
+        Qnn_GraphHandle_t graph;
+        char *graphName;
+        Qnn_Tensor_t *inputTensors;
+        uint32_t numInputTensors;
+        Qnn_Tensor_t *outputTensors;
+        uint32_t numOutputTensors;
+    } GraphInfo_t;
+    typedef GraphInfo_t *GraphInfoPtr_t;
+    typedef struct GraphConfigInfo {
+        char *graphName;
+        const QnnGraph_Config_t **graphConfigs;
+    } GraphConfigInfo_t;
 } /* namespace qnn_wrapper_api */
 
 typedef qnn_wrapper_api::ModelError_t (*QnnComposeGraphsFn_t)(
@@ -165,8 +166,8 @@ private:
     bool ReadOutput(int idx, float *dst, size_t n);
 
     /* Library handles */
-    void *lib_backend_ = nullptr;  /* libQnnHtp.so / libQnnGpu.so / libQnnCpu.so */
-    void *lib_system_ = nullptr;   /* libQnnSystem.so */
+    void *lib_backend_ = nullptr; /* libQnnHtp.so / libQnnGpu.so / libQnnCpu.so */
+    void *lib_system_ = nullptr;  /* libQnnSystem.so */
 
     /* model.so support (QnnModel_composeGraphs) */
     bool is_model_so_ = false;
@@ -193,7 +194,7 @@ private:
     std::vector<Qnn_Tensor_t> out_tensors_;
     std::vector<std::vector<uint32_t>> in_dims_;
     std::vector<std::vector<uint32_t>> out_dims_;
-    std::vector<std::string> in_names_;   /* owned copies of tensor names */
+    std::vector<std::string> in_names_; /* owned copies of tensor names */
     std::vector<std::string> out_names_;
     std::vector<size_t> in_elems_;
     std::vector<size_t> out_elems_;
@@ -238,26 +239,32 @@ private:
 static const char *qnn_backend_lib(BackendId id)
 {
     switch (id) {
-    case BackendId::QNN_SDK_GPU:
+    case BackendId::QNN_SDK_GPU: {
         return "libQnnGpu.so";
-    case BackendId::QNN_SDK_CPU:
+    }
+    case BackendId::QNN_SDK_CPU: {
         return "libQnnCpu.so";
+    }
     case BackendId::QNN_SDK_HTP:
-    default:
+    default: {
         return "libQnnHtp.so";
+    }
     }
 }
 
 static const char *qnn_backend_type(BackendId id)
 {
     switch (id) {
-    case BackendId::QNN_SDK_GPU:
+    case BackendId::QNN_SDK_GPU: {
         return "gpu";
-    case BackendId::QNN_SDK_CPU:
+    }
+    case BackendId::QNN_SDK_CPU: {
         return "cpu";
+    }
     case BackendId::QNN_SDK_HTP:
-    default:
+    default: {
         return "htp";
+    }
     }
 }
 
@@ -280,34 +287,38 @@ struct QnnGraphView {
     const Qnn_Tensor_t *inputs = nullptr;
     uint32_t numOutputs = 0;
     const Qnn_Tensor_t *outputs = nullptr;
-};static QnnGraphView qnn_graph_view(const QnnSystemContext_GraphInfo_t *g)
+};
+static QnnGraphView qnn_graph_view(const QnnSystemContext_GraphInfo_t *g)
 {
     QnnGraphView v;
     if (!g) {
         return v;
     }
     switch (g->version) {
-    case QNN_SYSTEM_CONTEXT_GRAPH_INFO_VERSION_2:
+    case QNN_SYSTEM_CONTEXT_GRAPH_INFO_VERSION_2: {
         v.name = g->graphInfoV2.graphName;
         v.numInputs = g->graphInfoV2.numGraphInputs;
         v.inputs = g->graphInfoV2.graphInputs;
         v.numOutputs = g->graphInfoV2.numGraphOutputs;
         v.outputs = g->graphInfoV2.graphOutputs;
         break;
-    case QNN_SYSTEM_CONTEXT_GRAPH_INFO_VERSION_3:
+    }
+    case QNN_SYSTEM_CONTEXT_GRAPH_INFO_VERSION_3: {
         v.name = g->graphInfoV3.graphName;
         v.numInputs = g->graphInfoV3.numGraphInputs;
         v.inputs = g->graphInfoV3.graphInputs;
         v.numOutputs = g->graphInfoV3.numGraphOutputs;
         v.outputs = g->graphInfoV3.graphOutputs;
         break;
-    default: /* V1 */
+    }
+    default: { /* V1 */
         v.name = g->graphInfoV1.graphName;
         v.numInputs = g->graphInfoV1.numGraphInputs;
         v.inputs = g->graphInfoV1.graphInputs;
         v.numOutputs = g->graphInfoV1.numGraphOutputs;
         v.outputs = g->graphInfoV1.graphOutputs;
         break;
+    }
     }
     return v;
 }
@@ -321,22 +332,26 @@ static void qnn_binary_graphs(const QnnSystemContext_BinaryInfo_t *b,
         return;
     }
     switch (b->version) {
-    case QNN_SYSTEM_CONTEXT_BINARY_INFO_VERSION_1:
+    case QNN_SYSTEM_CONTEXT_BINARY_INFO_VERSION_1: {
         *graphs = b->contextBinaryInfoV1.graphs;
         *num_graphs = b->contextBinaryInfoV1.numGraphs;
         break;
-    case QNN_SYSTEM_CONTEXT_BINARY_INFO_VERSION_2:
+    }
+    case QNN_SYSTEM_CONTEXT_BINARY_INFO_VERSION_2: {
         *graphs = b->contextBinaryInfoV2.graphs;
         *num_graphs = b->contextBinaryInfoV2.numGraphs;
         break;
-    case QNN_SYSTEM_CONTEXT_BINARY_INFO_VERSION_3:
+    }
+    case QNN_SYSTEM_CONTEXT_BINARY_INFO_VERSION_3: {
         *graphs = b->contextBinaryInfoV3.graphs;
         *num_graphs = b->contextBinaryInfoV3.numGraphs;
         break;
-    default:
+    }
+    default: {
         *graphs = nullptr;
         *num_graphs = 0;
         break;
+    }
     }
 }
 
@@ -467,7 +482,7 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
         last_error_ = std::string("QNN: cannot load ") + qnn_backend_lib(id_);
         return false;
     }
-    auto get_providers = (Qnn_ErrorHandle_t(*)(const QnnInterface_t ***, uint32_t *))
+    auto get_providers = (Qnn_ErrorHandle_t (*)(const QnnInterface_t ***, uint32_t *))
         dlsym(lib_backend_, "QnnInterface_getProviders");
     if (!get_providers) {
         LOGE("QNN: QnnInterface_getProviders not found in %s", qnn_backend_lib(id_));
@@ -566,7 +581,7 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
         LOGE("QNN: dlopen(libQnnSystem.so) failed: %s", dlerror());
         return false;
     }
-    auto get_sys_providers = (Qnn_ErrorHandle_t(*)(const QnnSystemInterface_t ***, uint32_t *))
+    auto get_sys_providers = (Qnn_ErrorHandle_t (*)(const QnnSystemInterface_t ***, uint32_t *))
         dlsym(lib_system_, "QnnSystemInterface_getProviders");
     if (!get_sys_providers) {
         LOGE("QNN: QnnSystemInterface_getProviders not found");
@@ -857,10 +872,16 @@ bool QnnSdkBackend::AllocateBuffers()
 
     /* Report whether zero-copy shared buffers actually engaged */
     size_t n_shared = 0, n_total = in_is_shared_.size() + out_is_shared_.size();
-    for (bool s : in_is_shared_)
-        if (s) ++n_shared;
-    for (bool s : out_is_shared_)
-        if (s) ++n_shared;
+    for (bool s : in_is_shared_) {
+        if (s) {
+            ++n_shared;
+        }
+    }
+    for (bool s : out_is_shared_) {
+        if (s) {
+            ++n_shared;
+        }
+    }
     LOGI("QNN: buffers: %zu/%zu shared (dma-heap zero-copy), rest client buffer",
          n_shared, n_total);
     return true;
@@ -1077,8 +1098,9 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
     auto execute_once = [&]() -> bool {
 #if defined(__ANDROID__) || defined(__android__)
         for (size_t i = 0; i < num_inputs_; ++i) {
-            if (in_is_shared_[i] && i < in_dma_.size() && in_dma_[i].fd >= 0)
+            if (in_is_shared_[i] && i < in_dma_.size() && in_dma_[i].fd >= 0) {
                 dma_buf_sync(in_dma_[i].fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE);
+            }
         }
 #endif
         for (size_t i = 0; i < num_inputs_; ++i) {
@@ -1087,8 +1109,9 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
         }
 #if defined(__ANDROID__) || defined(__android__)
         for (size_t i = 0; i < num_inputs_; ++i) {
-            if (in_is_shared_[i] && i < in_dma_.size() && in_dma_[i].fd >= 0)
+            if (in_is_shared_[i] && i < in_dma_.size() && in_dma_[i].fd >= 0) {
                 dma_buf_sync(in_dma_[i].fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE);
+            }
         }
 #endif
         Qnn_ErrorHandle_t st = qnn_->graphExecute(
@@ -1118,13 +1141,15 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         for (size_t i = 0; i < num_outputs_; ++i) {
 #if defined(__ANDROID__) || defined(__android__)
-            if (out_is_shared_[i] && i < out_dma_.size() && out_dma_[i].fd >= 0)
+            if (out_is_shared_[i] && i < out_dma_.size() && out_dma_[i].fd >= 0) {
                 dma_buf_sync(out_dma_[i].fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
+            }
 #endif
             ReadOutput((int)i, snaps[i].data(), out_elems_[i]);
 #if defined(__ANDROID__) || defined(__android__)
-            if (out_is_shared_[i] && i < out_dma_.size() && out_dma_[i].fd >= 0)
+            if (out_is_shared_[i] && i < out_dma_.size() && out_dma_[i].fd >= 0) {
                 dma_buf_sync(out_dma_[i].fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
+            }
 #endif
         }
         total += ms;
@@ -1220,9 +1245,12 @@ void QnnSdkBackend::Cleanup()
             if (in_is_shared_[i] && i < in_dma_.size() && in_dma_[i].fd >= 0) {
                 munmap(in_dma_[i].addr, in_dma_[i].size);
                 close(in_dma_[i].fd);
-            } else
-#endif
+            } else {
                 free(in_bufs_[i]);
+            }
+#else
+            free(in_bufs_[i]);
+#endif
         }
     }
     for (size_t i = 0; i < out_bufs_.size(); ++i) {
@@ -1231,9 +1259,12 @@ void QnnSdkBackend::Cleanup()
             if (out_is_shared_[i] && i < out_dma_.size() && out_dma_[i].fd >= 0) {
                 munmap(out_dma_[i].addr, out_dma_[i].size);
                 close(out_dma_[i].fd);
-            } else
-#endif
+            } else {
                 free(out_bufs_[i]);
+            }
+#else
+            free(out_bufs_[i]);
+#endif
         }
     }
     in_bufs_.clear();

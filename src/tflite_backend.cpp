@@ -105,10 +105,12 @@ private:
 };
 
 static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads,
-                                     std::string *error_out)
+                                      std::string *error_out)
 {
     auto fail = [&](const char *msg) -> TfLiteDelegate * {
-        if (error_out) *error_out = msg;
+        if (error_out) {
+            *error_out = msg;
+        }
         return nullptr;
     };
 
@@ -155,22 +157,20 @@ static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads,
         }
 #endif
     }
-    case BackendId::TFLITE_NNAPI:
+    case BackendId::TFLITE_NNAPI: {
 #if defined(__ANDROID__) || defined(__android__)
-    {
         // StatefulNnApiDelegate extends TfLiteDelegate; heap-allocate so
         // the delegate outlives the interpreter. The caller (Cleanup) must
         // delete it via TfLiteDelegateFree or direct delete.
         auto *delegate = new tflite::StatefulNnApiDelegate();
         return delegate;
-    }
 #else
         return fail("NNAPI only available on Android");
 #endif
+    }
     case BackendId::TFLITE_GPU:
-    case BackendId::TFLITE_GPU_FP16:
+    case BackendId::TFLITE_GPU_FP16: {
 #if defined(__ANDROID__) || defined(__android__)
-    {
         TfLiteGpuDelegateOptionsV2 go = TfLiteGpuDelegateOptionsV2Default();
         /* Max speed: allow FP16, prefer min latency over memory savings */
         go.is_precision_loss_allowed = 1;
@@ -179,15 +179,17 @@ static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads,
         go.inference_priority2 = TFLITE_GPU_INFERENCE_PRIORITY_MIN_MEMORY_USAGE;
         go.inference_priority3 = TFLITE_GPU_INFERENCE_PRIORITY_MAX_PRECISION;
         return TfLiteGpuDelegateV2Create(&go);
-    }
 #else
         return fail("GPU delegate only available on Android");
 #endif
-    case BackendId::TFLITE_NPU:
+    }
+    case BackendId::TFLITE_NPU: {
         /* Handled inline in Initialize() with dynamic loading */
         return nullptr;
-    default:
+    }
+    default: {
         return fail("Unknown backend");
+    }
     }
 }
 
@@ -240,8 +242,9 @@ bool TFLiteBackend::Initialize(const char *model_path, int num_threads)
     if (!delegate_ && id_ != BackendId::TFLITE_CPU) {
         std::string reason = "TFLite: delegate creation failed for backend ";
         reason += std::to_string(bid(id_));
-        if (!delegate_error.empty())
+        if (!delegate_error.empty()) {
             reason += " (" + delegate_error + ")";
+        }
         LOGE("TFLite: delegate not available for backend %d, aborting", bid(id_));
         last_error_ = reason;
         return false;
@@ -413,9 +416,10 @@ bool TFLiteBackend::CopyOutputToFloat(size_t idx, float *dst, size_t n)
         return false;
     }
     switch (TfLiteTensorType(t)) {
-    case kTfLiteFloat32:
+    case kTfLiteFloat32: {
         memcpy(dst, TfLiteTensorData(t), n * sizeof(float));
         break;
+    }
     case kTfLiteFloat16: {
         const uint16_t *src = (const uint16_t *)TfLiteTensorData(t);
         /* Simple half-to-float: not fully IEEE, but OK for benchmarking */
@@ -424,9 +428,10 @@ bool TFLiteBackend::CopyOutputToFloat(size_t idx, float *dst, size_t n)
             break;
         }
     }
-    default:
+    default: {
         memset(dst, 0, n * sizeof(float));
         return false;
+    }
     }
     return true;
 }
@@ -467,10 +472,12 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
                 const float *src = input_bufs_[i];
                 for (int n = 0; n < N; n++) {
                     for (int h = 0; h < H; h++) {
-                        for (int w = 0; w < W; w++)
-                            for (int c = 0; c < C; c++)
+                        for (int w = 0; w < W; w++) {
+                            for (int c = 0; c < C; c++) {
                                 dst[n * H * W * C + h * W * C + w * C + c] =
                                     src[n * C * H * W + c * H * W + h * W + w];
+                            }
+                        }
                     }
                 }
             } else {

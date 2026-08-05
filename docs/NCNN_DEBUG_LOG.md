@@ -116,3 +116,125 @@ CPU 和 GPU 的 BF16 支持检测均在对应分支中正确使用：
 | TryBf16Trial 崩溃 | 循环内局部变量 + Mat 引用外部数据 = use-after-free，必须 pool 化 + clone |
 | 版本输出 | `ncnn_version()` 在 C API 头文件 `c_api.h` 中，需单独 include |
 | BF16 检测 | 接口已存在且正确使用，问题不在检测而在内存管理 |
+
+---
+
+## 6. 多输入模型 init 后崩溃 + 前向 -100（2026-08-05）
+
+### 6.1 现象
+
+`online_scnet_tfc_tdf.onnx`（70 输入 / 70 输出，流式语音模型）：
+- 原代码在 `init complete` 后**立即崩溃**（debug 无任何日志）。
+- 根因：`RunBenchmark::build_inputs` 与 `TryBf16Trial` 对所有输入无条件读
+  `sh[3]/sh[2]/sh[1]`，而该模型 **48/70 个输入是 3D**（如 `in1=472,32,2`）→
+  `sh[3]` 越界（UB）→ 崩溃。
+
+### 6.2 修复（已合入）
+
+新增秩无关辅助函数 `MakeMatFromShape()`，按 rank 1..4 分别构造 `ncnn::Mat`
+（不再越界）；`build_inputs` / `TryBf16Trial` 均改用它，并补充 `ex.input()`
+返回值检查 + `mats.size() != num_inputs_` 校验。x86 构建验证：**不再硬崩溃**，
+改为优雅失败（`extract -100` → `Benchmark failed` → 进程正常退出，exit=1）。
+
+### 6.3 模型有效性验证（python ncnn）
+
+用 ncnn Python 绑定（`pip install ncnn`，v1.0.20240820）直接加载：
+`load_param=0, load_model=0` → **模型文件本身有效**（结构与权重可正常加载）。
+前向失败是**输入 Mat 维度映射问题**，不是模型文件损坏。
+
+### 6.4 维度映射排查结论（重要）
+
+用 `tools/ncnn_probe.py`（race 模式）对多种映射实测，结论：
+
+| 映射 | 4D 输入 `[a,b,c,d]` | 3D 输入 `[a,b,c]` | 结果 |
+|------|---------------------|-------------------|------|
+| reversed+batch-drop | `(w=d,h=c,d=b,c=a)` | `(w=c,h=b,c=a)` | 前向到 blob 86（conv1d）失败 |
+| **direct（无 batch-drop）** | `(w=a,h=b,d=c,c=d)` | `(w=a,h=b,c=c)` | **跑通整个编码器**（blob 70~92），末段 blob 1195 失败/硬崩溃 |
+| mix（4D h/d 交换 + 3D 直序） | `(w=d,h=b,d=c,c=a)` | `(w=a,h=b,c=c)` | 编码器可跑，末段崩溃 |
+
+- `Convolution1D` 源码：`const int h = bottom_blob.h;` **把 h 当通道数**（权重
+  `num_output*kernel_w*h`），所以 3D 状态张量必须满足 **h=中间维（通道）**。
+- **结论**：ncnn 输入布局不是简单反转；`direct`/`mix` 最接近正确，但末段仍
+  失败并伴随 ncnn 内存池错误（`pool allocator destroyed too early`，错误维度
+  会破坏堆 → 硬崩溃 0xC0000005）。**当前 C++ 保持安全的反转映射**（优雅失败
+  不崩溃），等模型重新转换后再验证。
+
+### 6.5 转换脚本 Bug：`verify_ncnn` 静默跳过（已修复 2026-08-05）
+
+`tools/onnx_convert.py::verify_ncnn()` 原实现：
+- 对每个输入无条件 `arr.squeeze(0)` 去 batch；对 3D 输入（如 `[472,32,2]`，
+  dim0≠1）numpy `squeeze(0)` **抛异常** → 被 `except` 捕获 → **打印 SKIP 并
+  return True（视为通过）** → 该模型**从未被真正验证**，坏转换静默放行。
+
+**修复内容**：
+1. 仅当 `len(shape)>=2 and shape[0]==1` 时才去掉 batch 维（3D 状态张量原样传入）。
+2. 去掉"推理异常静默跳过"逻辑：load 失败 / `ex.input` 异常 / `ex.extract` 返回
+   非 0 或空输出，一律打印 `FAIL` 并 `return False` → 整体 `return 2`（转换流程
+   会删除产物并报错），**不再放行坏模型**。
+3. 输出数量不一致也判 FAIL。
+
+### 6.6 重新转换结论（2026-08-05，重要）
+
+用修复后的 `verify_ncnn` 对 `online_scnet_tfc_tdf.onnx` 重新转换：
+
+- `pnnx`（`C:\Python311\Scripts\pnnx.exe`）重新生成 `.ncnn.param/.bin`，与旧文件
+  **SHA256 完全一致**（param/bin 均 identical）→ 模型**不是陈旧**，是 pnnx 对当前
+  ONNX 的确定性输出。
+- 修复后的 verify **如实报告 `FAIL - extract out0 failed (ret=-100)`**（不再静默
+  跳过），转换流程按设计删除了产物（已从备份恢复 = 同一文件）。
+- **pnnx 生成的官方测试脚本 `*_ncnn.py` 本身就是坏的**：对全部 70 个输入无条件
+  `inN.squeeze(0)`，而 3D 输入（如 `in1=torch.rand(472,32,2)`）dim0≠1 → 直接抛
+  异常。即安装的旧版 pnnx（`squeeze(0)` 风格）**无法正确处理带非 batch 3D 输入的
+  模型**；新版 pnnx 改用 `ncnn.Mat(x.numpy(), batch_index=N)`，但本机 ncnn python
+  1.0.20240820 的 `Mat` 构造不支持 `batch_index` 参数，无法按新约定喂数。
+- **结论**：该模型在当前 pnnx + ncnn 组合下无法被正确转换/验证（首个
+  `Convolution1D` 即失败，`-100`）。要让 NCNN 后端跑通此模型，需升级 pnnx 到支持
+  `batch_index` 的版本（并升级 ncnn python/DLL 到配套版本）后重新转换验证；
+  或排查 ncnn `Convolution1D` 对 c≠1 输入的处理（该层是首个失败点，blob 86）。
+
+### 6.7 排查工具
+
+- `tools/ncnn_probe.py`：python ncnn 加载/喂数/提取中间 blob（`walk`/`race`）。
+- `tools/probe_blob86.py`：针对本模型快速定位 blob 86（conv1d_0）归属层并对比
+  `rev_bd` / `dir_nbd` / `mix` 映射，输出首个失败 blob。
+- 关键经验：ncnn 维度错误不会报错而是**静默破坏堆**，最终表现为
+  `pool allocator destroyed too early` 或随机访问违例——排查时优先用
+  python 绑定 + 中间 blob 定位首个失败层；转换脚本的验证绝不能静默跳过。
+
+### 6.8 工具链升级尝试：pnnx/ncnn 升到 batch_index 版本（2026-08-05，结论）
+
+按计划升级 pip 工具链到最新并重新转换验证，结论如下：
+
+| 项 | 旧 | 新（最新 pip） | batch_index 支持 |
+|----|----|----------------|------------------|
+| pip ncnn python | 1.0.20240820 | **1.0.20260526**（已装） | **不支持**：wheel 未编译 NCNN_BATCH，`ncnn.Mat(arr, batch_index=0)` 抛 `TypeError: incompatible constructor arguments`（构造签名里根本没有 batch_index 参数） |
+| pip pnnx | 20251119 | **20260526**（已装） | **不支持**：生成的 `*_ncnn.py` 仍是旧的 `ex.input("in0", ncnn.Mat(in0.squeeze(0).numpy()).clone())` 风格；GitHub master 才改为 `batch_index=`（说明 pip 包落后于 master） |
+| 工程 C++ DLL | 1.0.20260113 | 未升级 | 未验证（需自行编译 NCNN_BATCH） |
+
+重新转换结果（pnnx 20260526）：
+- 新 `.ncnn.param` 变为 **78 KB**（旧 77 KB，说明新版 pnnx 确实产出了不同模型），
+  `.ncnn.bin` 8507 KB。文件格式从 v2（`Layer { ... }`）变为 v1
+  （`type name nb nt bottom... top...`，`1011 1206`）。
+- 修复后的 `verify_ncnn` 验证：**仍然 `FAIL - extract out0 failed (ret=-100)`**。
+- 按 blob 遍历定位：**首个失败点与旧模型完全一致——blob 86 = `conv1d_0`**。
+- 映射对比（`tools/probe_blob86.py`）：
+  - 默认（reversed+batch-drop）喂数 → blob 86 `ret=-100`（失败）。
+  - `dir_nbd`（3D 直序 `(w=a,h=b,c=c)`）喂数 → blob 86 **通过**（`470x16`，
+    w=470 正确），但继续前向到 blob 1195 时**硬崩溃**（进程直接退出，code 1）——
+    与旧模型行为一致。
+
+**结论（重要）**：
+1. **pip ncnn / pnnx 最新版均不带 batch_index 支持**（ncnn wheel 无 NCNN_BATCH；
+   pnnx 生成代码仍为 squeeze(0) 风格）。要真正拿到 batch_index，只能：
+   - 从 GitHub 源码自行编译 ncnn（CMake 开 `NCNN_BATCH=ON`，python 绑定 + C++ DLL），
+   - 从 GitHub master 源码自行编译 pnnx。
+2. **即便拿到 batch_index 也救不了此模型**：batch_index 喂数 ≈ squeeze+反转
+   （batch=1 时等价），而该喂法在 conv1d_0 处必然失败（`h=32` 通道对、但
+   `w=2` 序列过短 → 输出宽度 0 → -100）。真正能跑通编码器的是 **3D 直序喂数**，
+   说明模型 3D 张量语义是 `[seq, ch, feat]`，与 pnnx 默认的 `[ch, seq, feat]`
+   反转约定冲突——这是模型作者定义与 ncnn 3D 约定的**根本性不匹配**，换版本无法
+   解决。
+3. **当前状态**：C++ 后端保持安全的反转映射（优雅失败 -100，不崩溃）；模型若要在
+   NCNN 上真正跑通，需对转换后的 ncnn 图做输入侧 Permute/Reshape 手术（把 3D 输入
+   布局掰成 conv1d 需要的直序），并排查 blob 1195 处崩溃（疑似后续某 4D 输入或层
+   的布局问题）。此问题已超出"升级工具链"范畴。

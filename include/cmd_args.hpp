@@ -7,12 +7,14 @@
 #include <vector>
 
 /* Input data format for --input-list files */
-enum class InputDataFormat { Auto = 0, Float32, UInt8 };
+enum class InputDataFormat { Auto = 0,
+                             Float32,
+                             UInt8 };
 
 struct BenchConfig {
     std::string model_path;
     std::string input_path;
-    std::string input_list_path;   /* --input-list: file of .bin input paths */
+    std::string input_list_path;                          /* --input-list: file of .bin input paths */
     InputDataFormat input_format = InputDataFormat::Auto; /* --input-format */
     std::string output_dir;
     std::string csv_path = "summary.csv";

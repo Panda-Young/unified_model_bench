@@ -54,8 +54,9 @@ std::string extract_base_name(const std::string &path)
     /* Handle compound extensions like .ncnn.param */
     if (ends_with_icase(fname, ".ncnn.param")) {
         fname = fname.substr(0, fname.length() - 12);
-    } else if (ends_with_icase(fname, ".ncnn.bin"))
+    } else if (ends_with_icase(fname, ".ncnn.bin")) {
         fname = fname.substr(0, fname.length() - 9);
+    }
 
     /* Strip last extension */
     auto dot = fname.find_last_of('.');

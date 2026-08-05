@@ -74,23 +74,29 @@ namespace BackendRegistry
         for (const auto &[id, entry] : g_registry) {
             bool match = false;
             switch (format) {
-            case ModelFormat::ONNX:
+            case ModelFormat::ONNX: {
                 match = is_onnx_backend(static_cast<BackendId>(id));
                 break;
-            case ModelFormat::TFLITE:
+            }
+            case ModelFormat::TFLITE: {
                 match = is_tflite_backend(static_cast<BackendId>(id)) || is_litert_backend(static_cast<BackendId>(id));
                 break;
-            case ModelFormat::NCNN:
+            }
+            case ModelFormat::NCNN: {
                 match = is_ncnn_backend(static_cast<BackendId>(id));
                 break;
-            case ModelFormat::MNN:
+            }
+            case ModelFormat::MNN: {
                 match = is_mnn_backend(static_cast<BackendId>(id));
                 break;
-            case ModelFormat::QNN:
+            }
+            case ModelFormat::QNN: {
                 match = is_qnn_sdk_backend(static_cast<BackendId>(id));
                 break;
-            default:
+            }
+            default: {
                 break;
+            }
             }
             if (match) {
                 result.push_back(entry.config);
@@ -119,12 +125,14 @@ namespace BackendRegistry
         std::lock_guard<std::mutex> lock(g_registry_mutex);
         /* Build lowercase version of the query */
         std::string lower(name);
-        for (auto &c : lower)
+        for (auto &c : lower) {
             c = (char)tolower((unsigned char)c);
+        }
         for (const auto &[id, entry] : g_registry) {
             std::string ename = entry.config.name;
-            for (auto &c : ename)
+            for (auto &c : ename) {
                 c = (char)tolower((unsigned char)c);
+            }
             if (ename == lower) {
                 return id;
             }

@@ -215,10 +215,11 @@ bool ResultCollector::ExportCsv(const char *path, const char *date,
             fprintf(f, "%.3f,%.8f,%.8f,",
                     r.init_ms, r.max_output_diff, r.avg_output_diff);
         }
-        if (r.acceleration_vs_cpu < 0)
+        if (r.acceleration_vs_cpu < 0) {
             fprintf(f, "-");
-        else
+        } else {
             fprintf(f, "%.3fx", r.acceleration_vs_cpu);
+        }
         fprintf(f, ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
                 r.backend_name.c_str(), r.device_info.c_str(),
                 r.arch.c_str(), app_name, r.notes.c_str());
@@ -286,10 +287,11 @@ bool ResultCollector::AppendCsv(const BenchmarkRecord &rec, const char *path,
         fprintf(f, "%.3f,%.8f,%.8f,",
                 rec.init_ms, rec.max_output_diff, rec.avg_output_diff);
     }
-    if (rec.acceleration_vs_cpu < 0)
+    if (rec.acceleration_vs_cpu < 0) {
         fprintf(f, "-");
-    else
+    } else {
         fprintf(f, "%.3fx", rec.acceleration_vs_cpu);
+    }
     fprintf(f, ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
             rec.backend_name.c_str(), rec.device_info.c_str(),
             rec.arch.c_str(), app_name, rec.notes.c_str());

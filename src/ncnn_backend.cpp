@@ -7,10 +7,10 @@
 
 #ifdef HAVE_NCNN_BACKEND
 
-#include <ncnn/cpu.h>
-#include <ncnn/net.h>
-#include <ncnn/gpu.h>
 #include <ncnn/c_api.h>
+#include <ncnn/cpu.h>
+#include <ncnn/gpu.h>
+#include <ncnn/net.h>
 /* ncnn/platform.h may define min/max macros. */
 #ifdef min
 #undef min
@@ -109,6 +109,50 @@ static int safe_extract(ncnn::Extractor *ex, const char *name, ncnn::Mat &out)
     }
 }
 #endif
+
+/* ---------------------------------------------------------------------------
+ * Shape -> ncnn::Mat (rank-agnostic, fixes OOB for 3D/2D/1D inputs)
+ * -------------------------------------------------------------------------*/
+/* Wrap an external flat float buffer (ONNX layout) into an ncnn::Mat.
+ * RANK-AGNOSTIC: reads only the dims that exist (never shape[3] on a 3D
+ * input), which fixes the original out-of-bounds crash on this model's 48
+ * 3D state tensors (e.g. [472,32,2]).
+ *
+ * NOTE on dim ORDER: a plain reversal (w=last, ..., c=first) is used here
+ * because it fails GRACEFULLY (extract returns -100) on this model, whereas
+ * the empirically-"correct" direct mapping (see docs/NCNN_DEBUG_LOG.md) makes
+ * the process hard-crash with an access violation deep in ncnn (heap
+ * corruption from mismatched Mat dims). The model was never truly verified at
+ * conversion time (onnx_convert.py verify_ncnn silently skips models with 3D
+ * inputs), so the .ncnn files may be stale/wrong-shaped; prefer regenerating
+ * the NCNN model from the current ONNX with a fixed verifier. */
+static ncnn::Mat MakeMatFromShape(const std::vector<int> &shape, const float *data)
+{
+    ncnn::Mat m;
+    switch (shape.size()) {
+    case 1: {
+        m = ncnn::Mat(shape[0], (void *)data);
+        break;
+    }
+    case 2: {
+        m = ncnn::Mat(shape[1], shape[0], (void *)data);
+        break;
+    }
+    case 3: {
+        m = ncnn::Mat(shape[2], shape[1], shape[0], (void *)data);
+        break;
+    }
+    case 4: {
+        m = ncnn::Mat(shape[3], shape[2], shape[1], shape[0], (void *)data);
+        break;
+    }
+    default: {
+        LOGE("NCNN: unsupported input rank %zu", shape.size());
+        break;
+    }
+    }
+    return m;
+}
 
 class NCNNBackend : public IBackend
 {
@@ -249,11 +293,13 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
  * -------------------------------------------------------------------------*/
 bool NCNNBackend::TryBf16Trial()
 {
-    if (num_inputs_ == 0 || num_outputs_ == 0)
+    if (num_inputs_ == 0 || num_outputs_ == 0) {
         return false;
+    }
 #ifdef _WIN32
-    if (!t_veh_handle)
+    if (!t_veh_handle) {
         t_veh_handle = AddVectoredExceptionHandler(1, veh_crash_handler);
+    }
 
     InterlockedExchange(&t_veh_bf16_crash, 0);
 #endif
@@ -264,10 +310,17 @@ bool NCNNBackend::TryBf16Trial()
         for (size_t i = 0; i < num_inputs_; ++i) {
             size_t n = input_elems_[i] > 0 ? input_elems_[i] : 1;
             buf_pool[i].resize(n, 0.0f);
-            int w = (int)input_shapes_[i][3], h = (int)input_shapes_[i][2], c = (int)input_shapes_[i][1];
-            ncnn::Mat m(w, h, c, buf_pool[i].data());
-            mats.push_back(m.clone());  /* clone: NCNN owns data, no dangling ptr */
-            ex.input(input_names_[i].c_str(), mats.back());
+            ncnn::Mat m = MakeMatFromShape(input_shapes_[i], buf_pool[i].data());
+            if (m.empty()) {
+                LOGW("NCNN: BF16 trial: unsupported rank for input %zu", i);
+                return false;
+            }
+            mats.push_back(m.clone()); /* clone: NCNN owns data, no dangling ptr */
+            int iret = ex.input(input_names_[i].c_str(), mats.back());
+            if (iret != 0) {
+                LOGW("NCNN: BF16 trial: input %zu failed, ret=%d", i, iret);
+                return false;
+            }
         }
         ncnn::Mat out;
         ex.extract(output_names_[0].c_str(), out);
@@ -387,7 +440,7 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
         }
         LOGI("NCNN: Vulkan enabled (gpu=%d, precision=%s)", gpu_device_,
              (id_ == BackendId::NCNN_VK_BF16) ? "BF16" : (id_ == BackendId::NCNN_VK_FP16) ? "FP16"
-                                                                                                  : "FP32");
+                                                                                          : "FP32");
 #else
         LOGE("NCNN: Vulkan backend not available - NCNN built without Vulkan support");
         last_error_ = "NCNN: Vulkan not supported in this build";
@@ -574,12 +627,18 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
      * input_bufs_ may not match the layout NCNN expects after packing. */
     auto build_inputs = [&]() -> std::vector<ncnn::Mat> {
         std::vector<ncnn::Mat> mats;
+        mats.reserve(num_inputs_);
         for (size_t i = 0; i < num_inputs_; ++i) {
-            auto &sh = input_shapes_[i];
-            /* Convert ONNX [N,C,H,W] to NCNN [w,h,c] */
-            int w = (int)sh[3], h = (int)sh[2], c = (int)sh[1];
-            ncnn::Mat tmp(w, h, c, input_bufs_[i]);
-            mats.push_back(tmp.clone());
+            /* Map ONNX dims (rank 1..4) to an ncnn::Mat with reversed dims.
+             * Do NOT hardcode [w,h,c]: this model has 3D state inputs
+             * (e.g. [472,32,2]) and reading shape[3] would be out of bounds. */
+            ncnn::Mat tmp = MakeMatFromShape(input_shapes_[i], input_bufs_[i]);
+            if (tmp.empty()) {
+                LOGE("NCNN: cannot build input %zu (rank %zu)", i, input_shapes_[i].size());
+                mats.clear();
+                break;
+            }
+            mats.push_back(tmp.clone()); /* clone: NCNN owns the copy */
         }
         return mats;
     };
@@ -588,8 +647,16 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     for (int w = 0; w < warmup; ++w) {
         ncnn::Extractor ex = net_->create_extractor();
         auto mats = build_inputs();
+        if (mats.size() != num_inputs_) {
+            LOGE("NCNN: failed to build warmup inputs");
+            return false;
+        }
         for (size_t i = 0; i < num_inputs_; ++i) {
-            ex.input(input_names_[i].c_str(), mats[i]);
+            int iret = ex.input(input_names_[i].c_str(), mats[i]);
+            if (iret != 0) {
+                LOGE("NCNN: warmup input %zu failed, ret=%d", i, iret);
+                return false;
+            }
         }
         for (size_t i = 0; i < num_outputs_; ++i) {
             ncnn::Mat out;
@@ -616,8 +683,16 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     for (int r = 0; r < repeat; ++r) {
         ncnn::Extractor ex = net_->create_extractor();
         auto mats = build_inputs();
+        if (mats.size() != num_inputs_) {
+            LOGE("NCNN: failed to build inputs at run %d", r);
+            return false;
+        }
         for (size_t i = 0; i < num_inputs_; ++i) {
-            ex.input(input_names_[i].c_str(), mats[i]);
+            int iret = ex.input(input_names_[i].c_str(), mats[i]);
+            if (iret != 0) {
+                LOGE("NCNN: input %zu failed at run %d, ret=%d", i, r, iret);
+                return false;
+            }
         }
 
         auto t0 = std::chrono::high_resolution_clock::now();

@@ -31,6 +31,24 @@ typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_D
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)(OrtSessionOptions *options, const char *device_type);
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_Nnapi)(OrtSessionOptions *options, int use_nnapi);
 
+/* ---------------------------------------------------------------------------
+ * ORT status helper: every ORT C API call returns an OrtStatus*; a non-null
+ * status means failure. Never ignore it - log the error, record it in the
+ * backend error string and return false so the caller can abort cleanly.
+ * Returns true when the call succeeded (status == nullptr).
+ * -------------------------------------------------------------------------*/
+static bool OrOk(const OrtApi *api, OrtStatus *st, const char *what, std::string &err)
+{
+    if (!st) {
+        return true;
+    }
+    const char *msg = api ? api->GetErrorMessage(st) : "unknown error";
+    LOGE("ONNX: %s failed: %s", what, msg);
+    err = std::string("ONNX: ") + what + ": " + msg;
+    api->ReleaseStatus(st);
+    return false;
+}
+
 class ONNXBackend : public IBackend
 {
 public:
@@ -96,9 +114,10 @@ private:
 bool ONNXBackend::ConfigureEP()
 {
     switch (id_) {
-    case BackendId::ONNX_CPU:
+    case BackendId::ONNX_CPU: {
         LOGI("ONNX: using default CPU EP");
         return true;
+    }
     case BackendId::ONNX_ONEDNN: {
         auto pfn = (PFN_OrtSessionOptionsAppendExecutionProvider_Dnnl)
             load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_Dnnl");
@@ -106,11 +125,7 @@ bool ONNXBackend::ConfigureEP()
             LOGE("ONNX: oneDNN EP function not found in DLL");
             return false;
         }
-        OrtStatus *st = pfn(opts_, 1);
-        if (st) {
-            LOGE("ONNX: oneDNN append failed: %s", ort_->GetErrorMessage(st));
-            last_error_ = std::string("ONNX: OpenVINO NPU: ") + ort_->GetErrorMessage(st);
-            ort_->ReleaseStatus(st);
+        if (!OrOk(ort_, pfn(opts_, 1), "oneDNN append", last_error_)) {
             return false;
         }
         LOGI("ONNX: oneDNN EP configured");
@@ -126,11 +141,8 @@ bool ONNXBackend::ConfigureEP()
             OrtDmlDeviceOptions device_opts;
             device_opts.Preference = OrtDmlPerformancePreference::HighPerformance;
             device_opts.Filter = OrtDmlDeviceFilter::Gpu;
-            st = dml_api->SessionOptionsAppendExecutionProvider_DML2(opts_, &device_opts);
-            if (st) {
-                LOGE("ONNX: DML GPU V2 append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: DML GPU: ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, dml_api->SessionOptionsAppendExecutionProvider_DML2(opts_, &device_opts),
+                      "DML GPU V2 append", last_error_)) {
                 return false;
             }
             LOGI("ONNX: DML GPU EP configured (V2, HighPerformance)");
@@ -144,16 +156,11 @@ bool ONNXBackend::ConfigureEP()
                 return false;
             }
             /* First try device_id=1 (dGPU), fallback to device_id=0 (iGPU) */
-            st = pfnDML(opts_, 1);
-            if (st) {
-                ort_->ReleaseStatus(st);
-                st = pfnDML(opts_, 0);
-                if (st) {
-                    LOGE("ONNX: DML V1 device=0 also failed: %s", ort_->GetErrorMessage(st));
-                    last_error_ = std::string("ONNX: DML GPU V1: ") + ort_->GetErrorMessage(st);
-                    ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, pfnDML(opts_, 1), "DML GPU V1 append(device=1)", last_error_)) {
+                if (!OrOk(ort_, pfnDML(opts_, 0), "DML GPU V1 append(device=0)", last_error_)) {
                     return false;
                 }
+                last_error_.clear(); /* device=0 fallback succeeded; drop the device=1 probe error */
                 LOGI("ONNX: DML GPU EP configured (V1, device=0 fallback)");
             } else {
                 LOGI("ONNX: DML GPU EP configured (V1, device=1)");
@@ -178,11 +185,8 @@ bool ONNXBackend::ConfigureEP()
         OrtDmlDeviceOptions device_opts;
         device_opts.Preference = OrtDmlPerformancePreference::HighPerformance;
         device_opts.Filter = OrtDmlDeviceFilter::Npu;
-        st = dml_api->SessionOptionsAppendExecutionProvider_DML2(opts_, &device_opts);
-        if (st) {
-            LOGE("ONNX: DML_NPU append failed: %s", ort_->GetErrorMessage(st));
-            last_error_ = std::string("ONNX: DML_NPU: ") + ort_->GetErrorMessage(st);
-            ort_->ReleaseStatus(st);
+        if (!OrOk(ort_, dml_api->SessionOptionsAppendExecutionProvider_DML2(opts_, &device_opts),
+                  "DML_NPU append", last_error_)) {
             return false;
         }
         LOGI("ONNX: DML_NPU EP configured (V2)");
@@ -197,11 +201,8 @@ bool ONNXBackend::ConfigureEP()
         if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
             const char *keys[] = {"device_type", "cache_dir"};
             const char *values[] = {"CPU", "model_cache"};
-            OrtStatus *st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 2);
-            if (st) {
-                LOGE("ONNX: OpenVINO CPU append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO CPU: ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 2),
+                      "OpenVINO CPU append", last_error_)) {
                 return false;
             }
             LOGI("ONNX: OpenVINO CPU EP configured (V2, cache)");
@@ -213,11 +214,7 @@ bool ONNXBackend::ConfigureEP()
                 LOGE("ONNX: OpenVINO EP function not found in DLL");
                 return false;
             }
-            OrtStatus *st = pfn(opts_, "CPU");
-            if (st) {
-                LOGE("ONNX: OpenVINO CPU append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO CPU (V1): ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, pfn(opts_, "CPU"), "OpenVINO CPU append", last_error_)) {
                 return false;
             }
             LOGI("ONNX: OpenVINO CPU EP configured (V1)");
@@ -229,11 +226,8 @@ bool ONNXBackend::ConfigureEP()
         if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
             const char *keys[] = {"device_type", "precision", "cache_dir"};
             const char *values[] = {"GPU", "FP16", "model_cache"};
-            OrtStatus *st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3);
-            if (st) {
-                LOGE("ONNX: OpenVINO GPU_FP16 append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO GPU_FP16: ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3),
+                      "OpenVINO GPU_FP16 append", last_error_)) {
                 return false;
             }
             LOGI("ONNX: OpenVINO GPU_FP16 EP configured (V2, FP16, cache)");
@@ -244,11 +238,7 @@ bool ONNXBackend::ConfigureEP()
                 LOGE("ONNX: OpenVINO EP function not found in DLL");
                 return false;
             }
-            OrtStatus *st = pfnV1(opts_, "GPU_FP16");
-            if (st) {
-                LOGE("ONNX: OpenVINO GPU_FP16 append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO GPU_FP16 (V1): ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, pfnV1(opts_, "GPU_FP16"), "OpenVINO GPU_FP16 append", last_error_)) {
                 return false;
             }
             LOGW("ONNX: OpenVINO GPU_FP16 EP configured (V1 fallback)");
@@ -260,11 +250,8 @@ bool ONNXBackend::ConfigureEP()
         if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
             const char *keys[] = {"device_type", "precision", "cache_dir"};
             const char *values[] = {"GPU", "FP32", "model_cache"};
-            OrtStatus *st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3);
-            if (st) {
-                LOGE("ONNX: OpenVINO GPU append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO GPU: ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3),
+                      "OpenVINO GPU append", last_error_)) {
                 return false;
             }
             LOGI("ONNX: OpenVINO GPU EP configured (V2, FP32, cache)");
@@ -276,11 +263,7 @@ bool ONNXBackend::ConfigureEP()
                 LOGE("ONNX: OpenVINO EP function not found in DLL");
                 return false;
             }
-            OrtStatus *st = pfnV1(opts_, "GPU_FP32");
-            if (st) {
-                LOGE("ONNX: OpenVINO GPU append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO GPU (V1): ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, pfnV1(opts_, "GPU_FP32"), "OpenVINO GPU append", last_error_)) {
                 return false;
             }
             LOGW("ONNX: OpenVINO GPU EP configured (V1 fallback, GPU_FP32 deprecated)");
@@ -292,11 +275,8 @@ bool ONNXBackend::ConfigureEP()
         if (ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2) {
             const char *keys[] = {"device_type", "precision", "cache_dir"};
             const char *values[] = {"NPU", "FP16", "model_cache"};
-            OrtStatus *st = ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3);
-            if (st) {
-                LOGE("ONNX: OpenVINO NPU append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO NPU: ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, ort_->SessionOptionsAppendExecutionProvider_OpenVINO_V2(opts_, keys, values, 3),
+                      "OpenVINO NPU append", last_error_)) {
                 return false;
             }
             LOGI("ONNX: OpenVINO NPU EP configured (V2, FP16, cache)");
@@ -309,20 +289,15 @@ bool ONNXBackend::ConfigureEP()
                 last_error_ = "ONNX: OpenVINO EP function not found";
                 return false;
             }
-            OrtStatus *st = pfnV1(opts_, "NPU");
-            if (st) {
-                LOGE("ONNX: OpenVINO NPU append failed: %s", ort_->GetErrorMessage(st));
-                last_error_ = std::string("ONNX: OpenVINO NPU (V1): ") + ort_->GetErrorMessage(st);
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, pfnV1(opts_, "NPU"), "OpenVINO NPU append", last_error_)) {
                 return false;
             }
             LOGI("ONNX: OpenVINO NPU EP configured (V1 fallback)");
         }
         return true;
     }
-    case BackendId::ONNX_NNAPI:
+    case BackendId::ONNX_NNAPI: {
 #if defined(__ANDROID__) || defined(__android__)
-    {
         auto pfnNnapi = (PFN_OrtSessionOptionsAppendExecutionProvider_Nnapi)
             load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_Nnapi");
         if (!pfnNnapi) {
@@ -330,34 +305,32 @@ bool ONNXBackend::ConfigureEP()
             last_error_ = "ONNX: NNAPI EP function not found";
             return false;
         }
-        OrtStatus *st = pfnNnapi(opts_, 0);
-        if (st) {
-            LOGW("ONNX: NNAPI failed: %s", ort_->GetErrorMessage(st));
-            last_error_ = std::string("ONNX: NNAPI: ") + ort_->GetErrorMessage(st);
-            ort_->ReleaseStatus(st);
+        if (!OrOk(ort_, pfnNnapi(opts_, 0), "NNAPI append", last_error_)) {
             return false;
         }
         LOGI("ONNX: NNAPI EP configured");
         return true;
-    }
 #else
         LOGE("ONNX: NNAPI only on Android");
         return false;
 #endif
+    }
     case BackendId::ONNX_XNNPACK: {
 #if defined(__ANDROID__) || defined(__android__)
         /* XNNPACK uses the generic SessionOptionsAppendExecutionProvider API,
          * NOT a dedicated provider-specific function pointer.
          * Reference: onnx_test/src/session_manager.c EP_XNNPACK branch */
-        (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionsConfigAllowIntraOpSpinning, "0");
-        (void)ort_->SetIntraOpNumThreads(opts_, 1);
+        if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionsConfigAllowIntraOpSpinning, "0"),
+                  "AddSessionConfigEntry(allow_intra_op_spinning)", last_error_)) {
+            return false;
+        }
+        if (!OrOk(ort_, ort_->SetIntraOpNumThreads(opts_, 1), "SetIntraOpNumThreads(XNNPACK)", last_error_)) {
+            return false;
+        }
         const char *keys[] = {"intra_op_num_threads"};
         const char *values[] = {"4"};
-        OrtStatus *st = ort_->SessionOptionsAppendExecutionProvider(opts_, "XNNPACK",
-                                                                    keys, values, 1);
-        if (st) {
-            LOGE("ONNX: XNNPACK append failed: %s", ort_->GetErrorMessage(st));
-            ort_->ReleaseStatus(st);
+        if (!OrOk(ort_, ort_->SessionOptionsAppendExecutionProvider(opts_, "XNNPACK", keys, values, 1),
+                  "XNNPACK append", last_error_)) {
             return false;
         }
         LOGI("ONNX: XNNPACK EP configured");
@@ -438,9 +411,8 @@ bool ONNXBackend::ConfigureEP()
                 opts_, "QNN", cpu_keys, cpu_values, num_opts);
         }
 
-        if (st) {
-            LOGE("ONNX: QNN(%s) append failed: %s", backend_type, ort_->GetErrorMessage(st));
-            ort_->ReleaseStatus(st);
+        std::string qnn_what = std::string("QNN(") + backend_type + ") append";
+        if (!OrOk(ort_, st, qnn_what.c_str(), last_error_)) {
             return false;
         }
         LOGI("ONNX: QNN(%s) EP configured", backend_type);
@@ -450,8 +422,9 @@ bool ONNXBackend::ConfigureEP()
         return false;
 #endif
     }
-    default:
+    default: {
         return true; /* fallback to CPU */
+    }
     }
 }
 
@@ -468,25 +441,31 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     const char *ep_subdir = nullptr;
     (void)ep_subdir; /* only used on desktop */
     switch (id_) {
-    case BackendId::ONNX_CPU: /* use default CPU DLL path below */
+    case BackendId::ONNX_CPU: { /* use default CPU DLL path below */
         break;
+    }
     case BackendId::ONNX_DML_GPU:
-    case BackendId::ONNX_DML_NPU:
+    case BackendId::ONNX_DML_NPU: {
         ep_subdir = "dml";
         break;
-    case BackendId::ONNX_ONEDNN:
+    }
+    case BackendId::ONNX_ONEDNN: {
         ep_subdir = "onednn";
         break;
+    }
     case BackendId::ONNX_OPENVINO_CPU:
     case BackendId::ONNX_OPENVINO_GPU:
-    case BackendId::ONNX_OPENVINO_GPU_FP16:
+    case BackendId::ONNX_OPENVINO_GPU_FP16: {
         ep_subdir = "openvino";
         break;
-    case BackendId::ONNX_OPENVINO_NPU:
+    }
+    case BackendId::ONNX_OPENVINO_NPU: {
         ep_subdir = "openvino";
         break;
-    default:
+    }
+    default: {
         break;
+    }
     }
 
     lib_handle_ = nullptr;
@@ -585,27 +564,29 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     /* Map app log level to ORT logging level: DBG→VERBOSE, INFO→INFO, WARN→WARNING, ERR→ERROR, OFF→FATAL */
     OrtLoggingLevel ort_lvl;
     switch (Logger::level) {
-    case LogLevel::DBG:
+    case LogLevel::DBG: {
         ort_lvl = ORT_LOGGING_LEVEL_VERBOSE;
         break;
-    case LogLevel::INFO:
+    }
+    case LogLevel::INFO: {
         ort_lvl = ORT_LOGGING_LEVEL_INFO;
         break;
-    case LogLevel::WARN:
+    }
+    case LogLevel::WARN: {
         ort_lvl = ORT_LOGGING_LEVEL_WARNING;
         break;
-    case LogLevel::ERR:
+    }
+    case LogLevel::ERR: {
         ort_lvl = ORT_LOGGING_LEVEL_ERROR;
         break;
-    default:
+    }
+    default: {
         ort_lvl = ORT_LOGGING_LEVEL_FATAL;
         break;
     }
-    OrtStatus *st = ort_->CreateEnv(ort_lvl, "unified_bench", &env_);
-    if (st) {
-        LOGE("ONNX: CreateEnv failed");
-        ort_->ReleaseStatus(st);
-        last_error_ = "ONNX: CreateEnv failed";
+    }
+    if (!OrOk(ort_, ort_->CreateEnv(ort_lvl, "unified_bench", &env_),
+              "CreateEnv", last_error_)) {
         return false;
     }
     timing_[3] = std::chrono::duration<double, std::milli>(
@@ -613,17 +594,28 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
                      .count();
 
     auto t3 = std::chrono::high_resolution_clock::now();
-    st = ort_->CreateSessionOptions(&opts_);
-    if (st) {
-        LOGE("ONNX: CreateSessionOptions failed");
-        ort_->ReleaseStatus(st);
-        last_error_ = "ONNX: CreateSessionOptions failed";
+    if (!OrOk(ort_, ort_->CreateSessionOptions(&opts_),
+              "CreateSessionOptions", last_error_)) {
         return false;
     }
-    (void)ort_->SetIntraOpNumThreads(opts_, num_threads);
-    (void)ort_->SetSessionGraphOptimizationLevel(opts_, ORT_ENABLE_ALL);
+    if (!OrOk(ort_, ort_->SetIntraOpNumThreads(opts_, num_threads), "SetIntraOpNumThreads", last_error_)) {
+        return false;
+    }
+    if (!OrOk(ort_, ort_->SetSessionGraphOptimizationLevel(opts_, ORT_ENABLE_ALL),
+              "SetSessionGraphOptimizationLevel", last_error_)) {
+        return false;
+    }
     /* Enable CPU memory arena to reduce allocation overhead */
-    (void)ort_->EnableCpuMemArena(opts_);
+    if (!OrOk(ort_, ort_->EnableCpuMemArena(opts_), "EnableCpuMemArena", last_error_)) {
+        return false;
+    }
+    if (id_ == BackendId::ONNX_DML_GPU || id_ == BackendId::ONNX_DML_NPU) {
+        if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, "ep.dml.disable_graph_fusion", "1"),
+                  "AddSessionConfigEntry(ep.dml.disable_graph_fusion)", last_error_)) {
+            return false;
+        }
+        LOGI("ONNX: DML graph fusion disabled (per-operator kernels + CPU fallback)");
+    }
     timing_[4] = std::chrono::duration<double, std::milli>(
                      std::chrono::high_resolution_clock::now() - t3)
                      .count();
@@ -648,16 +640,27 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
 
         if (file_readable_nonzero(ep_context_path_.c_str())) {
             /* Cached context exists — use it directly, skip recompilation */
-            (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionsDisableModelCompile, "1");
+            if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionsDisableModelCompile, "1"),
+                      "AddSessionConfigEntry(disable_model_compile)", last_error_)) {
+                return false;
+            }
             model_path_for_create_ = ep_context_path_.c_str();
             ep_cache_hit = true;
             LOGI("ONNX: EP Context cache hit: %s", ep_context_path_.c_str());
         } else {
             /* First run — enable EP context creation */
-            (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextEnable, "1");
-            (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextFilePath,
-                                              ep_context_path_.c_str());
-            (void)ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextEmbedMode, "0");
+            if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextEnable, "1"),
+                      "AddSessionConfigEntry(ep_context_enable)", last_error_)) {
+                return false;
+            }
+            if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextFilePath, ep_context_path_.c_str()),
+                      "AddSessionConfigEntry(ep_context_file_path)", last_error_)) {
+                return false;
+            }
+            if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextEmbedMode, "0"),
+                      "AddSessionConfigEntry(ep_context_embed_mode)", last_error_)) {
+                return false;
+            }
             LOGI("ONNX: EP Context will be created: %s", ep_context_path_.c_str());
         }
     }
@@ -665,8 +668,9 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     auto t4 = std::chrono::high_resolution_clock::now();
     if (!ConfigureEP()) {
         LOGE("ONNX: ConfigureEP failed for backend id=%d", bid(id_));
-        if (last_error_.empty())
+        if (last_error_.empty()) {
             last_error_ = "ONNX: ConfigureEP failed";
+        }
         return false;
     }
     timing_[5] = std::chrono::duration<double, std::milli>(
@@ -674,16 +678,14 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
                      .count();
 
     auto t5 = std::chrono::high_resolution_clock::now();
+    OrtStatus *st;
 #ifdef _WIN32
     std::wstring wpath = utf8_to_wide(model_path_for_create_);
     st = ort_->CreateSession(env_, wpath.c_str(), opts_, &session_);
 #else
     st = ort_->CreateSession(env_, model_path_for_create_, opts_, &session_);
 #endif
-    if (st) {
-        LOGE("ONNX: CreateSession failed: %s", ort_->GetErrorMessage(st));
-        last_error_ = std::string("ONNX: CreateSession failed - ") + ort_->GetErrorMessage(st);
-        ort_->ReleaseStatus(st);
+    if (!OrOk(ort_, st, "CreateSession", last_error_)) {
         return false;
     }
     timing_[6] = std::chrono::duration<double, std::milli>(
@@ -715,7 +717,10 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
         return false;
     }
 
-    (void)ort_->GetAllocatorWithDefaultOptions(&alloc_);
+    if (!OrOk(ort_, ort_->GetAllocatorWithDefaultOptions(&alloc_),
+              "GetAllocatorWithDefaultOptions", last_error_)) {
+        return false;
+    }
 
     auto t6 = std::chrono::high_resolution_clock::now();
     if (!QueryIOMetadata()) {
@@ -738,16 +743,13 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
  * -------------------------------------------------------------------------*/
 bool ONNXBackend::QueryIOMetadata()
 {
-    OrtStatus *st;
     size_t n_in, n_out;
-    st = ort_->SessionGetInputCount(session_, &n_in);
-    if (st) {
-        ort_->ReleaseStatus(st);
+    if (!OrOk(ort_, ort_->SessionGetInputCount(session_, &n_in),
+              "SessionGetInputCount", last_error_)) {
         return false;
     }
-    st = ort_->SessionGetOutputCount(session_, &n_out);
-    if (st) {
-        ort_->ReleaseStatus(st);
+    if (!OrOk(ort_, ort_->SessionGetOutputCount(session_, &n_out),
+              "SessionGetOutputCount", last_error_)) {
         return false;
     }
     num_inputs_ = std::min(n_in, MAX_IO);
@@ -755,16 +757,31 @@ bool ONNXBackend::QueryIOMetadata()
 
     for (size_t i = 0; i < num_inputs_; ++i) {
         char *name = nullptr;
-        (void)ort_->SessionGetInputName(session_, i, alloc_, &name);
+        if (!OrOk(ort_, ort_->SessionGetInputName(session_, i, alloc_, &name),
+                  "SessionGetInputName", last_error_)) {
+            return false;
+        }
         input_names_.push_back(name);
         OrtTypeInfo *ti;
-        (void)ort_->SessionGetInputTypeInfo(session_, i, &ti);
+        if (!OrOk(ort_, ort_->SessionGetInputTypeInfo(session_, i, &ti),
+                  "SessionGetInputTypeInfo", last_error_)) {
+            return false;
+        }
         const OrtTensorTypeAndShapeInfo *si;
-        (void)ort_->CastTypeInfoToTensorInfo(ti, &si);
+        if (!OrOk(ort_, ort_->CastTypeInfoToTensorInfo(ti, &si),
+                  "CastTypeInfoToTensorInfo", last_error_)) {
+            return false;
+        }
         size_t nd;
-        (void)ort_->GetDimensionsCount(si, &nd);
+        if (!OrOk(ort_, ort_->GetDimensionsCount(si, &nd),
+                  "GetDimensionsCount", last_error_)) {
+            return false;
+        }
         std::vector<int64_t> dims(nd);
-        (void)ort_->GetDimensions(si, dims.data(), nd);
+        if (!OrOk(ort_, ort_->GetDimensions(si, dims.data(), nd),
+                  "GetDimensions", last_error_)) {
+            return false;
+        }
         size_t elems = 1;
         for (auto d : dims) {
             if (d > 0) {
@@ -777,17 +794,32 @@ bool ONNXBackend::QueryIOMetadata()
     }
     for (size_t i = 0; i < num_outputs_; ++i) {
         char *name = nullptr;
-        (void)ort_->SessionGetOutputName(session_, i, alloc_, &name);
+        if (!OrOk(ort_, ort_->SessionGetOutputName(session_, i, alloc_, &name),
+                  "SessionGetOutputName", last_error_)) {
+            return false;
+        }
         output_names_.push_back(name);
         output_names_str_.emplace_back(name ? name : "");
         OrtTypeInfo *ti;
-        (void)ort_->SessionGetOutputTypeInfo(session_, i, &ti);
+        if (!OrOk(ort_, ort_->SessionGetOutputTypeInfo(session_, i, &ti),
+                  "SessionGetOutputTypeInfo", last_error_)) {
+            return false;
+        }
         const OrtTensorTypeAndShapeInfo *si;
-        (void)ort_->CastTypeInfoToTensorInfo(ti, &si);
+        if (!OrOk(ort_, ort_->CastTypeInfoToTensorInfo(ti, &si),
+                  "CastTypeInfoToTensorInfo", last_error_)) {
+            return false;
+        }
         size_t nd;
-        (void)ort_->GetDimensionsCount(si, &nd);
+        if (!OrOk(ort_, ort_->GetDimensionsCount(si, &nd),
+                  "GetDimensionsCount", last_error_)) {
+            return false;
+        }
         std::vector<int64_t> dims(nd);
-        (void)ort_->GetDimensions(si, dims.data(), nd);
+        if (!OrOk(ort_, ort_->GetDimensions(si, dims.data(), nd),
+                  "GetDimensions", last_error_)) {
+            return false;
+        }
         size_t elems = 1;
         for (auto d : dims) {
             if (d > 0) {
@@ -908,9 +940,8 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
         return false;
     }
 
-    OrtStatus *st = ort_->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &mem_info_);
-    if (st) {
-        ort_->ReleaseStatus(st);
+    if (!OrOk(ort_, ort_->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &mem_info_),
+              "CreateCpuMemoryInfo", last_error_)) {
         return false;
     }
 
@@ -923,9 +954,8 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
         std::vector<OrtValue *> vals(num_inputs_, nullptr);
         for (size_t i = 0; i < num_inputs_; ++i) {
             size_t n = input_elems_[i] ? input_elems_[i] : 1;
-            st = ort_->CreateTensorWithDataAsOrtValue(mem_info_, input_bufs_[i], n * sizeof(float), input_shapes_[i].data(), input_shapes_[i].size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &vals[i]);
-            if (st) {
-                ort_->ReleaseStatus(st);
+            if (!OrOk(ort_, ort_->CreateTensorWithDataAsOrtValue(mem_info_, input_bufs_[i], n * sizeof(float), input_shapes_[i].data(), input_shapes_[i].size(), ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &vals[i]),
+                      "CreateTensorWithDataAsOrtValue", last_error_)) {
                 for (size_t j = 0; j < i; ++j) {
                     ort_->ReleaseValue(vals[j]);
                 }
@@ -942,10 +972,8 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
             return false;
         }
         std::vector<OrtValue *> out(num_outputs_, nullptr);
-        OrtStatus *warmup_st = ort_->Run(session_, nullptr, (const char *const *)input_names_.data(), in.data(), num_inputs_, (const char *const *)output_names_.data(), num_outputs_, out.data());
-        if (warmup_st) {
-            LOGE("ONNX: warmup Run failed at %d", w);
-            ort_->ReleaseStatus(warmup_st);
+        if (!OrOk(ort_, ort_->Run(session_, nullptr, (const char *const *)input_names_.data(), in.data(), num_inputs_, (const char *const *)output_names_.data(), num_outputs_, out.data()),
+                  "warmup Run", last_error_)) {
             for (auto &v : in) {
                 ort_->ReleaseValue(v);
             }
@@ -973,12 +1001,8 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
         }
         auto t0 = std::chrono::high_resolution_clock::now();
         std::vector<OrtValue *> out(num_outputs_, nullptr);
-        st = ort_->Run(session_, nullptr, (const char *const *)input_names_.data(), in.data(), num_inputs_, (const char *const *)output_names_.data(), num_outputs_, out.data());
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        if (st) {
-            LOGE("ONNX:Run failed at %d", r);
-            ort_->ReleaseStatus(st);
+        if (!OrOk(ort_, ort_->Run(session_, nullptr, (const char *const *)input_names_.data(), in.data(), num_inputs_, (const char *const *)output_names_.data(), num_outputs_, out.data()),
+                  "Run", last_error_)) {
             for (auto &v : in) {
                 ort_->ReleaseValue(v);
             }
@@ -989,11 +1013,14 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
             }
             return false;
         }
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         for (size_t i = 0; i < num_outputs_; ++i) {
             if (out[i]) {
                 float *fp = nullptr;
-                (void)ort_->GetTensorMutableData(out[i], (void **)&fp);
-                if (fp) {
+                if (OrOk(ort_, ort_->GetTensorMutableData(out[i], (void **)&fp),
+                         "GetTensorMutableData", last_error_) &&
+                    fp) {
                     memcpy(snaps[i].data(), fp, output_elems_[i] * sizeof(float));
                 }
             }

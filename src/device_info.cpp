@@ -195,12 +195,14 @@ std::string get_device_info_csv()
             p = raw.find(key);
             if (p != std::string::npos) {
                 p += key.length();
-                while (p < raw.length() && (raw[p] == ' ' || raw[p] == '\t'))
+                while (p < raw.length() && (raw[p] == ' ' || raw[p] == '\t')) {
                     ++p;
+                }
                 if (p < raw.length() && raw[p] == ':') {
                     ++p;
-                    while (p < raw.length() && (raw[p] == ' ' || raw[p] == '\t'))
+                    while (p < raw.length() && (raw[p] == ' ' || raw[p] == '\t')) {
                         ++p;
+                    }
                     auto e = raw.find('\n', p);
                     return trim(raw.substr(p, e == std::string::npos ? e : e - p));
                 }
@@ -208,8 +210,9 @@ std::string get_device_info_csv()
             return {};
         };
         std::string val = parse_key("MaxClockSpeed");
-        if (!val.empty())
+        if (!val.empty()) {
             cpu_mhz = atoi(val.c_str());
+        }
     }
 
     /* CPU cores from WMIC, fallback to GetSystemInfo */
@@ -218,8 +221,9 @@ std::string get_device_info_csv()
         /* Parse key=value pairs */
         auto parse_val = [&](const std::string &key) -> std::string {
             auto p = wmic.find(key + "=");
-            if (p == std::string::npos)
+            if (p == std::string::npos) {
                 return {};
+            }
             p += key.length() + 1;
             auto eol = wmic.find('\n', p);
             std::string v = wmic.substr(p, eol == std::string::npos ? eol : eol - p);
@@ -227,10 +231,12 @@ std::string get_device_info_csv()
         };
         std::string nc = parse_val("NumberOfCores");
         std::string nl = parse_val("NumberOfLogicalProcessors");
-        if (!nc.empty())
+        if (!nc.empty()) {
             cpu_cores = nc;
-        if (cpu_cores.empty() && !nl.empty())
+        }
+        if (cpu_cores.empty() && !nl.empty()) {
             cpu_cores = nl;
+        }
     }
     if (cpu_cores.empty()) {
         SYSTEM_INFO si;
@@ -252,8 +258,9 @@ std::string get_device_info_csv()
             size_t eol = raw.find('\n', i);
             std::string line = raw.substr(i, eol == std::string::npos ? eol : eol - i);
             /* Remove trailing \r */
-            if (!line.empty() && line.back() == '\r')
+            if (!line.empty() && line.back() == '\r') {
                 line.pop_back();
+            }
             if (line.empty()) {
                 /* Blank line = end of a block */
                 if (!cur_block.empty()) {
@@ -271,12 +278,14 @@ std::string get_device_info_csv()
                         if (p != std::string::npos) {
                             p += key.length();
                             /* Skip whitespace to colon */
-                            while (p < cur_block.length() && (cur_block[p] == ' ' || cur_block[p] == '\t'))
+                            while (p < cur_block.length() && (cur_block[p] == ' ' || cur_block[p] == '\t')) {
                                 ++p;
+                            }
                             if (p < cur_block.length() && cur_block[p] == ':') {
                                 ++p; /* skip colon */
-                                while (p < cur_block.length() && (cur_block[p] == ' ' || cur_block[p] == '\t'))
+                                while (p < cur_block.length() && (cur_block[p] == ' ' || cur_block[p] == '\t')) {
                                     ++p;
+                                }
                                 auto e = cur_block.find('\n', p);
                                 return trim(cur_block.substr(p, e == std::string::npos ? e : e - p));
                             }
@@ -288,12 +297,14 @@ std::string get_device_info_csv()
                     if (!name.empty()) {
                         /* Lowercase check for "Microsoft Remote Display Adapter" */
                         std::string lower = name;
-                        for (auto &ch : lower)
+                        for (auto &ch : lower) {
                             ch = (char)tolower((unsigned char)ch);
+                        }
                         if (!(lower.find("remote") != std::string::npos &&
                               lower.find("display") != std::string::npos)) {
-                            if (!gpu_list.empty())
+                            if (!gpu_list.empty()) {
                                 gpu_list += "; ";
+                            }
                             gpu_list += name;
                             if (!ram.empty()) {
                                 char *end = nullptr;
@@ -307,12 +318,14 @@ std::string get_device_info_csv()
                     cur_block.clear();
                 }
             } else {
-                if (!cur_block.empty())
+                if (!cur_block.empty()) {
                     cur_block += '\n';
+                }
                 cur_block += line;
             }
-            if (eol == std::string::npos)
+            if (eol == std::string::npos) {
                 break;
+            }
             i = eol + 1;
         }
         /* Last block */
@@ -327,12 +340,14 @@ std::string get_device_info_csv()
                 p = cur_block.find(key);
                 if (p != std::string::npos) {
                     p += key.length();
-                    while (p < cur_block.length() && (cur_block[p] == ' ' || cur_block[p] == '\t'))
+                    while (p < cur_block.length() && (cur_block[p] == ' ' || cur_block[p] == '\t')) {
                         ++p;
+                    }
                     if (p < cur_block.length() && cur_block[p] == ':') {
                         ++p;
-                        while (p < cur_block.length() && (cur_block[p] == ' ' || cur_block[p] == '\t'))
+                        while (p < cur_block.length() && (cur_block[p] == ' ' || cur_block[p] == '\t')) {
                             ++p;
+                        }
                         auto e = cur_block.find('\n', p);
                         return trim(cur_block.substr(p, e == std::string::npos ? e : e - p));
                     }
@@ -343,12 +358,14 @@ std::string get_device_info_csv()
             std::string ram = get_val("AdapterRAM");
             if (!name.empty()) {
                 std::string lower = name;
-                for (auto &ch : lower)
+                for (auto &ch : lower) {
                     ch = (char)tolower((unsigned char)ch);
+                }
                 if (!(lower.find("remote") != std::string::npos &&
                       lower.find("display") != std::string::npos)) {
-                    if (!gpu_list.empty())
+                    if (!gpu_list.empty()) {
                         gpu_list += "; ";
+                    }
                     gpu_list += name;
                     if (!ram.empty()) {
                         char *end = nullptr;
@@ -378,16 +395,19 @@ std::string get_device_info_csv()
         } else {
             /* Case-insensitive search for GHz frequency marker */
             std::string lower_s = s;
-            for (auto &ch : lower_s)
+            for (auto &ch : lower_s) {
                 ch = (char)tolower((unsigned char)ch);
+            }
             auto ghz_pos = lower_s.find("ghz");
             if (ghz_pos != std::string::npos) {
                 /* Find the start of the frequency token */
                 auto start = ghz_pos;
-                while (start > 0 && s[start] != ' ' && s[start] != '\t')
+                while (start > 0 && s[start] != ' ' && s[start] != '\t') {
                     --start;
-                if (start > 0 && (s[start - 1] == ' ' || s[start - 1] == '\t'))
+                }
+                if (start > 0 && (s[start - 1] == ' ' || s[start - 1] == '\t')) {
                     --start; /* include the space before frequency */
+                }
                 freq = trim(s.substr(start));
                 s = trim(s.substr(0, start));
             }
@@ -396,23 +416,29 @@ std::string get_device_info_csv()
         std::string best;
         size_t pos = 0;
         while (pos < s.length()) {
-            while (pos < s.length() && (s[pos] == ' ' || s[pos] == '\t'))
+            while (pos < s.length() && (s[pos] == ' ' || s[pos] == '\t')) {
                 ++pos;
-            if (pos >= s.length())
+            }
+            if (pos >= s.length()) {
                 break;
+            }
             size_t end = pos;
-            while (end < s.length() && s[end] != ' ' && s[end] != '\t')
+            while (end < s.length() && s[end] != ' ' && s[end] != '\t') {
                 ++end;
+            }
             std::string tok = s.substr(pos, end - pos);
             bool has_digit = false, has_alpha_or_dash = false;
             for (auto ch : tok) {
-                if (isdigit((unsigned char)ch))
+                if (isdigit((unsigned char)ch)) {
                     has_digit = true;
-                if (isalpha((unsigned char)ch) || ch == '-')
+                }
+                if (isalpha((unsigned char)ch) || ch == '-') {
                     has_alpha_or_dash = true;
+                }
             }
-            if (has_digit && has_alpha_or_dash)
+            if (has_digit && has_alpha_or_dash) {
                 best = tok;
+            }
             pos = end;
         }
         if (!best.empty()) {

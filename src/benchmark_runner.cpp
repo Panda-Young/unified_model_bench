@@ -135,8 +135,7 @@ static std::vector<std::string> resolve_input_list_paths(
     }
     for (auto &t : tokens) {
         /* Absolute path (unix or windows) or already resolvable */
-        bool is_abs = !t.empty() && (t[0] == '/' || t[0] == '\\'
-                                     || (t.size() > 1 && t[1] == ':'));
+        bool is_abs = !t.empty() && (t[0] == '/' || t[0] == '\\' || (t.size() > 1 && t[1] == ':'));
         std::string full = is_abs ? t : base_dir + t;
         /* If relative to CWD failed, fall back to raw token */
         if (!is_abs) {
@@ -180,18 +179,22 @@ static std::string csv_safe(const std::string &s)
     out.reserve(s.size());
     for (char c : s) {
         switch (c) {
-        case '\n':
+        case '\n': {
             out += ' ';
             break;
-        case '\r':
+        }
+        case '\r': {
             out += ' ';
             break;
-        case '"':
+        }
+        case '"': {
             out += "'";
             break;
-        default:
+        }
+        default: {
             out += c;
             break;
+        }
         }
     }
     return out;
@@ -466,8 +469,9 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
     bool any_ok = false;
     for (auto &bcfg : backends) {
         if (TestBackend(bcfg, variant.path, fmt, ref_fmt,
-                        shared, ncnn_shapes))
+                        shared, ncnn_shapes)) {
             any_ok = true;
+        }
     }
     return any_ok;
 }
@@ -482,15 +486,17 @@ static void RecordFailure(ResultCollector &collector, const BackendConfig &bcfg,
                           const char *date, const char *time,
                           const char *reason)
 {
-    if (!cfg.enable_csv)
+    if (!cfg.enable_csv) {
         return;
+    }
     BenchmarkRecord rec;
     auto last_slash = model_path.find_last_of("/\\");
     rec.model_name = (last_slash != std::string::npos) ? model_path.substr(last_slash + 1) : model_path;
     if (fmt == ModelFormat::NCNN) {
         auto pos = rec.model_name.rfind(".ncnn.param");
-        if (pos != std::string::npos)
+        if (pos != std::string::npos) {
             rec.model_name.replace(pos, 12, ".ncnn.bin");
+        }
     }
     rec.warmup_runs = cfg.warmup_runs;
     rec.repeat_runs = cfg.repeat;
@@ -529,8 +535,9 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     if (!backend->Initialize(model_path.c_str(), cfg_.num_threads)) {
         LOGW("Init failed: %s", bcfg.name.c_str());
         const char *reason = backend->GetLastError();
-        if (!reason || !*reason)
+        if (!reason || !*reason) {
             reason = "Initialization failed";
+        }
         RecordFailure(collector_, bcfg, model_path, fmt, cfg_,
                       device_info_, arch_, app_name_str(),
                       batch_date_.c_str(), batch_time_.c_str(),

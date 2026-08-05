@@ -91,22 +91,26 @@ public:
         const char *lv_str = "?";
         const char *color = "";
         switch (lv) {
-        case LogLevel::ERR:
+        case LogLevel::ERR: {
             lv_str = "ERROR";
             color = "\033[1;31m";
             break;
-        case LogLevel::WARN:
+        }
+        case LogLevel::WARN: {
             lv_str = "WARN";
             color = "\033[1;33m";
             break;
-        case LogLevel::INFO:
+        }
+        case LogLevel::INFO: {
             lv_str = "INFO";
             color = "\033[1;32m";
             break;
-        case LogLevel::DBG:
+        }
+        case LogLevel::DBG: {
             lv_str = "DEBUG";
             color = "\033[1;36m";
             break;
+        }
         default:
             break;
         }

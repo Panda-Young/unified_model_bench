@@ -55,7 +55,8 @@ bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
         if (strcmp(argv[i], "--model") == 0 && i + 1 < argc) {
             cfg.model_path = argv[++i];
         } else if (strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
-            cfg.input_path = argv[++i];        } else if (strcmp(argv[i], "--input-list") == 0 && i + 1 < argc) {
+            cfg.input_path = argv[++i];
+        } else if (strcmp(argv[i], "--input-list") == 0 && i + 1 < argc) {
             cfg.input_list_path = argv[++i];
         } else if (strcmp(argv[i], "--input-format") == 0 && i + 1 < argc) {
             const char *f = argv[++i];
@@ -68,7 +69,8 @@ bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
             } else {
                 LOGW("Unknown --input-format '%s', using auto", f);
                 cfg.input_format = InputDataFormat::Auto;
-            }        } else if (strcmp(argv[i], "--repeat") == 0 && i + 1 < argc) {
+            }
+        } else if (strcmp(argv[i], "--repeat") == 0 && i + 1 < argc) {
             cfg.repeat = atoi(argv[++i]);
             if (cfg.repeat < 1) {
                 cfg.repeat = 1;
@@ -114,24 +116,29 @@ bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
                 LOGW("Unknown --log-level '%s', using info", lv);
                 cfg.log_level = 2;
             }
-            if (cfg.log_level < 0)
+            if (cfg.log_level < 0) {
                 cfg.log_level = 0;
-            if (cfg.log_level > 4)
+            }
+            if (cfg.log_level > 4) {
                 cfg.log_level = 4;
+            }
         } else if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
             has_backend_filter = true;
             const char *list = argv[++i];
             const char *p = list;
             while (*p) {
                 /* Skip leading spaces */
-                while (*p == ' ')
+                while (*p == ' ') {
                     ++p;
-                if (!*p)
+                }
+                if (!*p) {
                     break;
+                }
                 /* Find end of this token (comma or end) */
                 const char *end = p;
-                while (*end && *end != ',')
+                while (*end && *end != ',') {
                     ++end;
+                }
                 /* Extract token */
                 std::string token(p, end - p);
                 if (!token.empty()) {
@@ -149,14 +156,17 @@ bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
             const char *p = list;
             while (*p) {
                 /* Skip leading spaces */
-                while (*p == ' ')
+                while (*p == ' ') {
                     ++p;
-                if (!*p)
+                }
+                if (!*p) {
                     break;
+                }
                 /* Find end of this token (comma or end) */
                 const char *end = p;
-                while (*end && *end != ',')
+                while (*end && *end != ',') {
                     ++end;
+                }
                 /* Extract token */
                 std::string token(p, end - p);
                 if (!token.empty()) {

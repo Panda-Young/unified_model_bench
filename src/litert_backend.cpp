@@ -33,11 +33,11 @@
 #include "litert/c/litert_layout.h"
 #include "litert/c/litert_model.h"
 #include "litert/c/litert_model_types.h"
+#include "litert/c/litert_opaque_options.h"
 #include "litert/c/litert_options.h"
 #include "litert/c/litert_tensor_buffer.h"
 #include "litert/c/litert_tensor_buffer_requirements.h"
 #include "litert/c/litert_tensor_buffer_types.h"
-#include "litert/c/litert_opaque_options.h"
 #include "litert/c/options/litert_qualcomm_options.h"
 
 /* ---------------------------------------------------------------------------
@@ -46,42 +46,60 @@
 static const char *LiteRtStatusStr(LiteRtStatus st)
 {
     switch (st) {
-    case kLiteRtStatusOk:
+    case kLiteRtStatusOk: {
         return "Ok";
-    case kLiteRtStatusErrorInvalidArgument:
+    }
+    case kLiteRtStatusErrorInvalidArgument: {
         return "InvalidArgument";
-    case kLiteRtStatusErrorMemoryAllocationFailure:
+    }
+    case kLiteRtStatusErrorMemoryAllocationFailure: {
         return "MemoryAllocationFailure";
-    case kLiteRtStatusErrorRuntimeFailure:
+    }
+    case kLiteRtStatusErrorRuntimeFailure: {
         return "RuntimeFailure";
-    case kLiteRtStatusErrorMissingInputTensor:
+    }
+    case kLiteRtStatusErrorMissingInputTensor: {
         return "MissingInputTensor";
-    case kLiteRtStatusErrorUnsupported:
+    }
+    case kLiteRtStatusErrorUnsupported: {
         return "Unsupported";
-    case kLiteRtStatusErrorNotFound:
+    }
+    case kLiteRtStatusErrorNotFound: {
         return "NotFound";
-    case kLiteRtStatusErrorTimeoutExpired:
+    }
+    case kLiteRtStatusErrorTimeoutExpired: {
         return "TimeoutExpired";
-    case kLiteRtStatusErrorWrongVersion:
+    }
+    case kLiteRtStatusErrorWrongVersion: {
         return "WrongVersion";
-    case kLiteRtStatusErrorUnknown:
+    }
+    case kLiteRtStatusErrorUnknown: {
         return "Unknown";
-    case kLiteRtStatusErrorAlreadyExists:
+    }
+    case kLiteRtStatusErrorAlreadyExists: {
         return "AlreadyExists";
-    case kLiteRtStatusErrorFileIO:
+    }
+    case kLiteRtStatusErrorFileIO: {
         return "FileIO";
-    case kLiteRtStatusErrorInvalidFlatbuffer:
+    }
+    case kLiteRtStatusErrorInvalidFlatbuffer: {
         return "InvalidFlatbuffer";
-    case kLiteRtStatusErrorDynamicLoading:
+    }
+    case kLiteRtStatusErrorDynamicLoading: {
         return "DynamicLoading";
-    case kLiteRtStatusErrorSerialization:
+    }
+    case kLiteRtStatusErrorSerialization: {
         return "Serialization";
-    case kLiteRtStatusErrorCompilation:
+    }
+    case kLiteRtStatusErrorCompilation: {
         return "Compilation";
-    case kLiteRtStatusErrorIndexOOB:
+    }
+    case kLiteRtStatusErrorIndexOOB: {
         return "IndexOutOfBounds";
-    default:
+    }
+    default: {
         return "UnknownStatus";
+    }
     }
 }
 
@@ -281,8 +299,9 @@ bool LiteRTBackend::Initialize(const char *model_path, int num_threads)
 
     /* 4. Query IO metadata */
     if (!QueryIOMetadata()) {
-        if (last_error_.empty())
+        if (last_error_.empty()) {
             last_error_ = "LiteRT: QueryIOMetadata failed";
+        }
         return false;
     }
 
@@ -346,7 +365,8 @@ bool LiteRTBackend::Initialize(const char *model_path, int num_threads)
             LrtDestroyQualcommOptions(qnn_opts);
         } else {
             LOGW("LiteRT: LrtCreateQualcommOptions failed (%d), "
-                 "proceeding without QNN options", (int)st_qnn);
+                 "proceeding without QNN options",
+                 (int)st_qnn);
         }
     }
 #endif
@@ -490,8 +510,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
     /* Helper: clean up N first buffers (on partial failure) */
     auto cleanup_bufs = [](std::vector<LiteRtTensorBuffer> &bufs, size_t n) {
         for (size_t j = 0; j < n; ++j) {
-            if (bufs[j])
+            if (bufs[j]) {
                 LiteRtDestroyTensorBuffer(bufs[j]);
+            }
         }
     };
 
@@ -518,8 +539,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
                                        LITERT_HOST_MEMORY_BUFFER_ALIGNMENT);
 #else
             if (posix_memalign(&host_mem, LITERT_HOST_MEMORY_BUFFER_ALIGNMENT,
-                               buffer_size > 0 ? buffer_size : 1) != 0)
+                               buffer_size > 0 ? buffer_size : 1) != 0) {
                 host_mem = nullptr;
+            }
 #endif
             if (!host_mem) {
                 LOGE("LiteRT: failed to allocate %zu bytes for input %zu",
@@ -588,8 +610,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
                                        LITERT_HOST_MEMORY_BUFFER_ALIGNMENT);
 #else
             if (posix_memalign(&host_mem, LITERT_HOST_MEMORY_BUFFER_ALIGNMENT,
-                               buffer_size > 0 ? buffer_size : 1) != 0)
+                               buffer_size > 0 ? buffer_size : 1) != 0) {
                 host_mem = nullptr;
+            }
 #endif
             if (!host_mem) {
                 LOGE("LiteRT: failed to allocate %zu bytes for output %zu",
