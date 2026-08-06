@@ -16,7 +16,7 @@
 #include <vector>
 
 #if defined(__ANDROID__) || defined(__android__)
-/* NNAPI symbols loaded dynamically — avoid link-time dependency */
+/* NNAPI symbols loaded dynamically -- avoid link-time dependency */
 #endif
 
 #ifdef _WIN32
@@ -137,7 +137,7 @@ bool ONNXBackend::ConfigureEP()
         const OrtDmlApi *dml_api = nullptr;
         OrtStatus *st = ort_->GetExecutionProviderApi("DML", ort_api_ver_, (const void **)&dml_api);
         if (!st && dml_api && dml_api->SessionOptionsAppendExecutionProvider_DML2) {
-            /* V2 API available — use HighPerformance + Gpu filter */
+            /* V2 API available -- use HighPerformance + Gpu filter */
             OrtDmlDeviceOptions device_opts;
             device_opts.Preference = OrtDmlPerformancePreference::HighPerformance;
             device_opts.Filter = OrtDmlDeviceFilter::Gpu;
@@ -348,7 +348,7 @@ bool ONNXBackend::ConfigureEP()
         const char *backend_type;
 
         if (id_ == BackendId::ONNX_QNN_HTP) {
-            /* QNN EP with HTP backend — full tuning for best NPU acceleration */
+            /* QNN EP with HTP backend -- full tuning for best NPU acceleration */
             backend_type = "htp";
             const char *htp_keys[] = {
                 "backend_type",
@@ -378,7 +378,7 @@ bool ONNXBackend::ConfigureEP()
             st = ort_->SessionOptionsAppendExecutionProvider(
                 opts_, "QNN", htp_keys, htp_values, num_opts);
         } else if (id_ == BackendId::ONNX_QNN_GPU) {
-            /* QNN EP with Adreno GPU backend — FP32/FP16, no HTP-specific options */
+            /* QNN EP with Adreno GPU backend -- FP32/FP16, no HTP-specific options */
             backend_type = "gpu";
             const char *gpu_keys[] = {
                 "backend_type",
@@ -394,7 +394,7 @@ bool ONNXBackend::ConfigureEP()
             st = ort_->SessionOptionsAppendExecutionProvider(
                 opts_, "QNN", gpu_keys, gpu_values, num_opts);
         } else {
-            /* QNN EP with CPU backend — reference backend for graph validation */
+            /* QNN EP with CPU backend -- reference backend for graph validation */
             backend_type = "cpu";
             const char *cpu_keys[] = {
                 "backend_type",
@@ -534,7 +534,7 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
         return false;
     }
 
-    /* Resolve API version at runtime — not hardcoded ORT_API_VERSION.
+    /* Resolve API version at runtime -- not hardcoded ORT_API_VERSION.
      * GetVersionString() returns e.g. "1.22.0", minor version = API version. */
     const char *ort_ver_str = base->GetVersionString();
     ort_api_ver_ = ORT_API_VERSION; /* fallback for unparseable version */
@@ -561,7 +561,7 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
                      .count();
 
     auto t2 = std::chrono::high_resolution_clock::now();
-    /* Map app log level to ORT logging level: DBG→VERBOSE, INFO→INFO, WARN→WARNING, ERR→ERROR, OFF→FATAL */
+    /* Map app log level to ORT logging level: DBG->VERBOSE, INFO->INFO, WARN->WARNING, ERR->ERROR, OFF->FATAL */
     OrtLoggingLevel ort_lvl;
     switch (Logger::level) {
     case LogLevel::DBG: {
@@ -639,7 +639,7 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
         }
 
         if (file_readable_nonzero(ep_context_path_.c_str())) {
-            /* Cached context exists — use it directly, skip recompilation */
+            /* Cached context exists -- use it directly, skip recompilation */
             if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionsDisableModelCompile, "1"),
                       "AddSessionConfigEntry(disable_model_compile)", last_error_)) {
                 return false;
@@ -648,7 +648,7 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
             ep_cache_hit = true;
             LOGI("ONNX: EP Context cache hit: %s", ep_context_path_.c_str());
         } else {
-            /* First run — enable EP context creation */
+            /* First run -- enable EP context creation */
             if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, kOrtSessionOptionEpContextEnable, "1"),
                       "AddSessionConfigEntry(ep_context_enable)", last_error_)) {
                 return false;
@@ -1015,6 +1015,7 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        LOGD("ONNX: run %d took %.3f ms", r, ms);
         for (size_t i = 0; i < num_outputs_; ++i) {
             if (out[i]) {
                 float *fp = nullptr;

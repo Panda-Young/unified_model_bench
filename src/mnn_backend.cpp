@@ -360,7 +360,7 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
                 continue;
             }
             /* GPU input: use pre-allocated host tensor with copyFromHostTensor
-             * for automatic FP32→FP16 conversion */
+             * for automatic FP32->FP16 conversion */
             if (i < gpu_in_tensors.size() && gpu_in_tensors[i]) {
                 t->copyFromHostTensor(gpu_in_tensors[i]);
                 continue;
@@ -402,7 +402,7 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
             }
             if (i < gpu_out_tensors.size() && gpu_out_tensors[i]) {
                 /* GPU: use pre-allocated float host tensor for automatic
-                 * FP16→FP32 conversion */
+                 * FP16->FP32 conversion */
                 t->copyToHostTensor(gpu_out_tensors[i]);
                 float *hp = gpu_out_tensors[i]->host<float>();
                 if (hp) {
@@ -420,6 +420,7 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        LOGD("MNN: run %d took %.3f ms", r, ms);
 
         total += ms;
         if (ms > maxv) {

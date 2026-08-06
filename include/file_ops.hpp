@@ -13,7 +13,7 @@ void *load_function(void *lib, const char *name);
 void release_library(void *lib);
 
 /* ---------------------------------------------------------------------------
- * Path conversion (Windows wide-char ↔ UTF-8)
+ * Path conversion (Windows wide-char <-> UTF-8)
  * -------------------------------------------------------------------------*/
 std::string wide_to_utf8(const wchar_t *wstr);
 std::wstring utf8_to_wide(const char *str);

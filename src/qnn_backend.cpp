@@ -1016,7 +1016,15 @@ bool QnnSdkBackend::AllocateBuffers()
                              * backend reads the union as a custom descriptor). */
                             QnnMemHtp_Descriptor_t htp_desc = {};
                             htp_desc.type = QNN_HTP_MEM_SHARED_BUFFER;
-                            htp_desc.size = (uint32_t)sizes[i];
+                            /* QnnHtpMem.h: for QNN_HTP_MEM_SHARED_BUFFER the size
+                             * field must be the TOTAL size of the whole shared
+                             * buffer (all tensors in this direction), NOT the
+                             * per-tensor size. Passing the per-tensor size makes
+                             * QnnDsp reject every register ("fd ... already mapped
+                             * with mismatched size" / "calculated buffer size ... is
+                             * more than the actual buffer size") and the whole
+                             * direction silently falls back to client buffers. */
+                            htp_desc.size = (uint32_t)alloc_size;
                             htp_desc.sharedBufferConfig.fd = buf_fd;
                             htp_desc.sharedBufferConfig.offset = offsets[i];
 
@@ -1028,8 +1036,6 @@ bool QnnSdkBackend::AllocateBuffers()
                             if (qnn_->memRegister &&
                                 QNN_SUCCESS == qnn_->memRegister(context_, &desc, 1, &h)) {
                                 mem.push_back(h);
-                                LOGD("QNN: dma-heap slice %zu/%zu off=%zu sz=%u fd=%d (shared)",
-                                     i, tensors.size(), offsets[i], htp_desc.size, buf_fd);
                             } else {
                                 mem.push_back(nullptr);
                                 all_ok = false;
@@ -1394,6 +1400,7 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        LOGD("QNN: run %d took %.3f ms", r, ms);
         /* Copy outputs only on the last iteration: intermediate snapshots are
          * never consumed, so reading ~10 MB of outputs every run would only add
          * CPU-side copy + DMA sync latency to each measurement. */

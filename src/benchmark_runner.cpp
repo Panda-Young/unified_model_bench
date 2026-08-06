@@ -171,7 +171,7 @@ static const char *app_name_str()
 }
 
 /* ---------------------------------------------------------------------------
- * Sanitize a string for CSV export — replace characters that break CSV.
+ * Sanitize a string for CSV export -- replace characters that break CSV.
  * -------------------------------------------------------------------------*/
 static std::string csv_safe(const std::string &s)
 {
@@ -266,7 +266,7 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
 
     /* QNN: a model.so (lib{base}.so) is runtime-composed and runs on ALL QNN
      * SDK backends (CPU/GPU/HTP); a context binary (.serialized.bin/.bin/.dlc)
-     * is offline-compiled and backend-specific — default to HTP only. */
+     * is offline-compiled and backend-specific -- default to HTP only. */
     if (fmt == ModelFormat::QNN) {
         bool is_model_so = (variant.path.size() > 3 &&
                             stricmp_(variant.path.c_str() + variant.path.size() - 3,
@@ -316,7 +316,7 @@ bool BenchmarkRunner::TestVariant(const ModelSearchResult &variant,
         backends = std::move(filtered);
     }
 
-    /* Filter by --no-backend (blacklist) — applied after the whitelist */
+    /* Filter by --no-backend (blacklist) -- applied after the whitelist */
     if (!cfg_.no_backend_ids.empty()) {
         std::vector<BackendConfig> kept;
         for (auto &b : backends) {

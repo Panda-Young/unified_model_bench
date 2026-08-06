@@ -119,9 +119,9 @@ static ModelSearchResult search_variant(const std::string &dir,
 
 /* ---------------------------------------------------------------------------
  * Search all QNN model sources.
- * 1) model.so forms (lib{base}.so / {base}.so) — runtime-composed, the SAME
+ * 1) model.so forms (lib{base}.so / {base}.so) -- runtime-composed, the SAME
  *    library can run on CPU/GPU/HTP.
- * 2) context binaries ({base}.serialized.bin / {base}.bin / {base}.dlc) —
+ * 2) context binaries ({base}.serialized.bin / {base}.bin / {base}.dlc) --
  *    offline-compiled and backend-specific (typically HTP).
  * model.so is returned first (priority).
  * -------------------------------------------------------------------------*/
@@ -177,7 +177,7 @@ ModelBundle search_model_variants(const std::string &ref_path)
                                        "ncnn.bin", "NCNN converted", ModelFormat::NCNN);
     bundle.mnn_model = search_variant(dir, base, "mnn", "", "MNN converted", ModelFormat::MNN);
 
-    /* If the reference path itself is a QNN model, use it directly — it is
+    /* If the reference path itself is a QNN model, use it directly -- it is
      * not auto-derived from the other formats. */
     if (detect_model_format(ref_path) == ModelFormat::QNN) {
         ModelSearchResult r;

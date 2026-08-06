@@ -383,7 +383,7 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
 
     /* For Vulkan_FP16: prefer FP16-converted model.
      * The FP16 model has weights already quantized, giving smaller and
-     * more accurate results than runtime FP32→FP16 conversion.
+      * more accurate results than runtime FP32->FP16 conversion.
      * .param is shared with FP32 (identical structure), only .bin differs. */
     if (id_ == BackendId::NCNN_VK_FP16) {
         std::string fp16_bin = base + "_fp16.ncnn.bin";
@@ -729,6 +729,7 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        LOGD("NCNN: run %d took %.3f ms", r, ms);
 
         total += ms;
         if (ms > maxv) {

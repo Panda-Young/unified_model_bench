@@ -30,7 +30,7 @@
 #endif
 
 /* ---------------------------------------------------------------------------
- * TFLite error reporter callback — captures TFLite's internal error messages
+ * TFLite error reporter callback -- captures TFLite's internal error messages
  * into a thread-local buffer so Initialize() can read them.
  * -------------------------------------------------------------------------*/
 #ifdef _MSC_VER
@@ -504,6 +504,7 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        LOGD("TFLite: run %d took %.3f ms", r, ms);
 
         for (size_t i = 0; i < num_outputs_; ++i) {
             CopyOutputToFloat(i, snaps[i].data(), output_elems_[i]);

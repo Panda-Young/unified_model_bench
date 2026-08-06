@@ -701,6 +701,7 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
                                                  num_outputs_, out_bufs.data());
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        LOGD("LiteRT: run %d took %.3f ms", r, ms);
 
         if (st != kLiteRtStatusOk) {
             LOGE("LiteRT: run failed at repeat %d", r);

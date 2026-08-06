@@ -401,6 +401,31 @@ FP16（`QNN_DATATYPE_FLOAT_16=0x0216`）应为 2 字节/元素 → 缓冲区只�
 
 **验证**：`cmake --build build/android-arm64` 与 `build/win-x64 --config Release` 均通过。修复后 `tensor_bytes` 尺寸正确 → dma-heap 应恢复 shared；若仍报 `0/44 shared`，需看 `dma-heap ... failed` 的 WARN 日志定位 open/alloc/mmap/register 哪一步。精度校验建议与 FP32 结果对比 max_diff（FP16 预期 ~1e-3 量级小误差）。
 
+### 5.8 dma-heap 共享缓冲全部注册失败（`0/140 shared`，2026-08-06 修复）
+
+**现象**：`online_scnet_tfc_tdf`（70 in / 70 out）跑 `QNN_SDK_HTP`，日志刷屏大量 `[QNN_LOG:1] QnnDsp <E>` 错误后 `buffers: 0/140 shared`（全部回退 client buffer）：
+
+```
+QnnDsp <E> fd 27 already mapped with mismatched size: registered 36864, got 122880
+QnnDsp <E> calculated buffer size: 159748 is more than the actual buffer size: 32768!
+QnnDsp <E> Failed to register memHandles ... Current PD has ~38.02 MB in use
+QnnDsp <E> qnnMemCreateHandle failed / Failed to register mem with error 0x1f40
+```
+
+**根因**（`src/qnn_backend.cpp` AllocateBuffers）：合并 dma-buf 方案里，每个 tensor 各调用一次 `QnnMem_register`（同一 fd、不同 offset），但 `QnnMemHtp_Descriptor_t.size` 填的是**单个 tensor 的大小**。查 `QnnHtpMem.h` 官方注释：`QNN_HTP_MEM_SHARED_BUFFER` 的 `size` 字段必须是**整个共享 buffer 的总大小**（该 fd 覆盖的全部字节），同一 fd 不同 offset 多次注册会返回不同 handle（官方支持的设计）。填 per-tensor size 导致 QnnDsp 侧：
+- 同一 fd 每次注册 size 不同 → `fd ... already mapped with mismatched size`；
+- 校验 `offset + tensor 需要大小 <= size` 失败 → `calculated buffer size ... is more than the actual buffer size`；
+- 全部注册失败 → 方向回退 client buffer（init 变慢 ~10s+，每帧多 ~5MB 拷贝）。
+
+**修复**：注册时 `htp_desc.size = (uint32_t)alloc_size`（整个方向合并 buffer 的 4K 对齐总大小），`offset` 仍为各 tensor 偏移；`tensor_bytes`/`sizes[]` 只用于 layout 与 CPU 侧缓冲，不再直接作为注册 size。`dma_buf_sync` 仍按方向对单个 fd 一次 ioctl，逻辑不变。
+
+**验证**：`cmake --build build/android-arm64` 与 `build/win-x64 --config Release` 均通过，代码全 ASCII。**实测（SM8850，online_scnet_tfc_tdf 70in/70out，2026-08-06）**：
+- 修复后 `buffers: 140/140 shared`，`QnnDsp <E>` 刷屏完全消失；
+- serialized.bin init 208.7ms（修复前带错误时 ~460ms+，错误风暴时 10-15s）；
+- model.so avg 15.17→11.45ms（零拷贝生效）；serialized.bin avg 14.07→14.34ms（repeat=1 单次噪声）；
+- `max_diff=0.000000`：共享缓冲下输入/输出读写、offset 布局正确。
+**结论性经验**：QNN HTP 共享缓冲注册，`size` 必须填整个 buffer 大小（含 offset 尾部），不是该 tensor 的大小（2026-08-06）。
+
 ---
 
 ## 6. 验证命令速查

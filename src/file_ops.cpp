@@ -28,7 +28,7 @@ void *load_library(const char *path)
 #ifdef _WIN32
     std::wstring wpath = utf8_to_wide(path);
 
-    /* Resolve to absolute path first — LOAD_WITH_ALTERED_SEARCH_PATH has
+    /* Resolve to absolute path first -- LOAD_WITH_ALTERED_SEARCH_PATH has
      * undefined behavior with relative paths (MSDN). */
     wchar_t abs_path[MAX_PATH];
     DWORD len = GetFullPathNameW(wpath.c_str(), MAX_PATH, abs_path, nullptr);
