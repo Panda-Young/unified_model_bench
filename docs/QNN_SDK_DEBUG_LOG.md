@@ -347,6 +347,8 @@ dma_buf_sync(fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);     // CPU 读输出后
 
 ### 5.6 性能模式（DCVS_V3 功率投票）+ 零拷贝优化（2026-08-05）
 
+> **勘误（2026-08-06）**：本节当时的 DCVS_V3 配置（`dcvsEnable=1`、电压角 NOM→TURBO、`sleepDisable=1`）**不能持续锁频**——开着 DCVS 动态调压，系统电源管理会在 ~200ms 后把 HTP 降到低频档（实测 6ms↔16ms 阶梯波动，详见 5.9）。等效 ORT burst 的正确配置见 5.9。
+
 **背景**：同一模型（`tfc_tdf_..._8frame_state.onnx`）在 ORT QNN EP HTP 上 avg 9.9ms，而 QNN SDK HTP 只有 40ms 且抖动大。根因：ORT 配了 `enable_htp_fp16_precision=1` + `htp_performance_mode=burst`（锁 TURBO 高频 + 禁睡眠），而 QNN SDK 后端此前**未设置任何性能模式**（HTP 默认低频随负载波动）+ 每轮对每个 tensor 单独 dma_buf_sync + 每轮 memcpy 全部输出。本次在 `qnn_backend.cpp` 落地两项：
 
 **1) HTP 性能模式（等效 ORT burst）**——QNN 2.48 的 DCVS v3 功率投票 API：
@@ -426,6 +428,157 @@ QnnDsp <E> qnnMemCreateHandle failed / Failed to register mem with error 0x1f40
 - `max_diff=0.000000`：共享缓冲下输入/输出读写、offset 布局正确。
 **结论性经验**：QNN HTP 共享缓冲注册，`size` 必须填整个 buffer 大小（含 offset 尾部），不是该 tensor 的大小（2026-08-06）。
 
+### 5.9 HTP 持续快档：学 ORT burst = 关闭 DCVS + 锁定最大电压角（2026-08-06）
+
+**现象**：`--repeat 1000` 逐帧日志显示——ONNX_QNN_HTP（ORT）**996/1000 帧 <8ms（全程稳定 6.55ms）**；QNN SDK model.so 仅开头 ~35 帧 <8ms（≈200ms），之后 900+ 帧全在 16ms 慢档；serialized 0 帧快。CPU 后端 45→63ms 为热节流（正常）。
+
+**根因（学 ORT 源码 `qnn_htp_power_config_manager.cc` + `qnn_backend_manager.cc`）**：
+- ORT burst 的 DCVS_V3 配置：`dcvsEnable = 0`（**关闭 DCVS 动态调压**）+ bus/core 电压角 Min/Target/Max 全部 = `DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER`（0xA0，最高角）+ `setSleepLatency=1, sleepLatency=40us`（kSleepMinLatency）+ powerMode=PERFORMANCE_MODE。
+- ORT 在 `OnRunStart()` 调 `SetHtpPowerConfigs`，但 `AddHtpPerformanceMode` 有去重（模式不变不重复设置）——**所以 ORT 实际只在首次 Run 设置一次**。它能持续快档不是因为反复投票，而是**关闭 DCVS + 锁定最大电压角 = 硬件锁频，系统（perfd/DCVS 仲裁）无法再调低**。
+- 我们此前 5.6 的配置开 `dcvsEnable=1` 且电压角只到 TURBO → DCVS 仍可动态调压，系统电源管理约 200ms 后把 HTP 降回低频 → 阶梯波动。
+
+**修复**（`src/qnn_backend.cpp` `ConfigureHtpPerformance()`，与 ORT burst 逐字段对齐）：
+
+```cpp
+cfg.dcvsV3Config.setDcvsEnable = 1;
+cfg.dcvsV3Config.dcvsEnable = 0; /* kDcvsDisable: hardware-lock the corners */
+cfg.dcvsV3Config.powerMode = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
+cfg.dcvsV3Config.setSleepLatency = 1;
+cfg.dcvsV3Config.sleepLatency = 40; /* kSleepMinLatency (us) */
+cfg.dcvsV3Config.setBusParams = 1;
+cfg.dcvsV3Config.busVoltageCornerMin/Target/Max = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+cfg.dcvsV3Config.setCoreParams = 1;
+cfg.dcvsV3Config.coreVoltageCornerMin/Target/Max = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+```
+
+**验证**：`cmake --build build/android-arm64` 与 `build/win-x64 --config Release` 均通过，ASCII 干净。复测预期：QNN SDK 全程 ~6ms（与 ORT 持平）、无 16ms 慢档、avg 从 15.8ms 降至 ~6.5ms。**结论性经验**：要让 HTP 持续稳定在快档，必须**关闭 DCVS（`dcvsEnable=0`）并锁最高电压角**，一次性投票即持久；开着 DCVS 的“目标档位”投票会被系统覆盖（2026-08-06）。
+
+### 5.10 稀有 ~100ms 尖峰 = HTP 睡眠唤醒，`sleepDisable=1` 对照实验证实（2026-08-06）
+
+**现象**：5.9 锁频后（`sleepLatency=40us` 与 ORT 一致），`--repeat 1000` 的 model.so 段仍偶发 ~100ms 单帧尖峰（run 796=119.9ms、run 806=100.7ms），serialized 段无；0.2% 占比，与基线 11.5ms 相差 ~10 倍。
+
+**对照实验（用户指定）**：把睡眠策略从 `setSleepLatency=1/sleepLatency=40` 改为 `setSleepDisable=1/sleepDisable=1`（强制 HTP 保持唤醒），**保留** DCVS off + MAX 角锁频。仅改 `ConfigureHtpPerformance()` 的 sleep 两行 + 注释 + LOGI 文案。
+
+**实测（SM8850，tfc_tdf_epoch_127，`--repeat 1000` 双变体）**：
+
+| 指标 | 旧版 sleepLatency=40us | 新版 sleepDisable=1 |
+|---|---|---|
+| model.so avg | 11.35 ms | 11.53 ms |
+| model.so max | **119.9 ms（run796）** | **22.1 ms（run497）** |
+| serialized avg | 11.66 ms | 11.56 ms |
+| serialized max | **100.7 ms（run806）** | **19.9 ms（run268）** |
+| fast(<8ms) | 57/1000（so 段开头） | 0/1000 |
+| p99 | — | 13.6 / 14.5 ms |
+
+**结论**：
+1. **~100ms 尖峰确实来自 HTP 睡眠/唤醒**（`sleepLatency=40us` 允许空闲即睡，唤醒要重新拉起 HTP 管线）。`sleepDisable=1` 后 max 从 119.9/100.7ms → 22.1/19.9ms，长尾完全消除，p99 收紧到 13.6/14.5ms。
+2. **avg 几乎不变**（11.53/11.56 vs 11.35/11.66）：尖峰仅 0.2%，对均值无影响，收益全在**尾延迟稳定性**（实时场景关键）。
+3. 剩余 10/2000 帧 15~22ms（约 1.5~2x 基线）为**温和抖动**，非睡眠唤醒（无 100ms 级），属 CPU 抢占/调度或 HTP 队列竞争的系统噪声，可接受。
+4. 仍达不到 ORT 6.5ms：图本身编译质量（epContext finalization 模式 3）是瓶颈，与睡眠策略无关（见 5.9 结论）。
+
+**最终取舍**：保留 `sleepDisable=1`（强制唤醒）。代价是 HTP 常驻供电、功耗略高，但对基准/实时工具而言尾延迟稳定性优先。**结论性经验**：HTP 偶发百毫秒级单帧尖峰先怀疑睡眠唤醒——`sleepDisable=1` 可消除，且不影响均值与峰值档位（2026-08-06）。
+
+### 5.11 5000 次长跑验证 + 重大发现：model.so 启动瞬态 4.83ms（2026-08-06）
+
+**现象**：保留 `sleepDisable=1`，`--repeat 5000` 双变体长跑。此前"图是瓶颈 ~11.9ms"的结论需要**纠正**——model.so 在**进程启动后前 ~42 帧稳定跑在 4.83ms（比 ORT 6.5ms 还快！）**，之后在 4.8ms↔10~11ms 之间抖动约 24 帧，第 66 帧起永久沉降到 11.5ms。
+
+**实测数据（SM8850，tfc_tdf_epoch_127，repeat=5000）**：
+
+| 指标 | model.so | serialized.bin |
+|---|---|---|
+| avg | 11.560 ms | 11.670 ms |
+| min | **4.819 ms** | 9.169 ms |
+| max | 18.889 ms | 14.876 ms |
+| p50 / p90 / p99 | 11.657 / 12.697 / 13.709 | 11.673 / 12.711 / 13.660 |
+| fast(<8ms) | **55/5000，全部在 run0-65** | 0/5000 |
+
+**model.so 前 70 帧逐帧（ms）**：
+```
+r0-41: 稳定 ~4.83（4.825~4.943，零抖动）
+r42-46: 10.0 / 10.1 / 10.3 / 9.5 / 11.1
+r47-49: 4.89 / 4.85 / 5.72
+r50: 9.29
+r51-57: 6.5 / 4.83 / 4.82 / 4.88 / 4.83 / 4.84 / 4.89
+r58-62: 9.9 / 9.9 / 9.8 / 9.9 / 11.5
+r63-65: 4.85 / 4.83 / 5.49
+r66+: 8.3 → 8.9 → 9.6 → 10.6 → 永久 ~11.5
+```
+
+**关键证据**：
+1. **投票在 run0 之前已下发**（日志 line 71 `HTP perf configured` < line 87 `run 0`），但启动瞬态依然存在 → 4.83ms 启动态**高于** DCVS-off MAX 角（0xA0）稳态，或投票物理落地有 ~200ms 延迟。
+2. serialized 段紧跟 model.so 段（同进程，HTP 已沉降），**0 帧快** → 快档是"冷启动/启动时钟"行为，**与 ORT 前置无关**（5.9 把快帧归因 ORT 余温是错的，run 11 standalone 0 快帧是因为设备已热/进程启动间隔长，瞬态已过）。
+3. 抖动模式（4.8↔10~11 来回 3 次、每次快窗变短）像**时钟/仲裁协商**：固件逐步把频率降到锁定角，非单调热节流。
+
+**结论修正**：
+- `sleepDisable=1` 在 5000 次下依然**零 100ms 尖峰**（max 18.9/14.9ms，p99 13.7ms）——尾延迟彻底解决，保留。
+- **11.5ms 稳态是时钟/固件钳制，不是图计算上限**。model.so 物理可跑 4.83ms（< ORT 6.5ms）→ 追 ORT 甚至反超**有头空间**。
+- 下一步实验方向（追 4.83ms 稳态）：
+  1. **稳态周期重发投票/每帧 kick**：在 `RunBenchmark` 里周期性 `setPowerConfig`，看能否把 4.83ms 拉回来（验证是否是投票落地延迟）；
+  2. `qnn-net-run --perf_profile burst --shared_buffer` 跑 5000 次，看 Qualcomm 官方工具能否保持快档（能 → 图没问题，是我们投票没到位；不能 → 固件行为，仅记录）；
+  3. 读 HTP 实际时钟（debugfs/HTP profiling）确认快/慢态是否纯频率差异。
+
+### 5.12 生成更好的 .bin（离线准备，O=3 / P 点 / soc_id，2026-08-06）
+
+**目标**：把 `model.so` 离线编译成上下文二进制（serialized context binary），加载/推理快于运行时在线 prepare，并可用 O=3 优化 + P 点 + 指定 SoC 进一步加速。依据 HTP 官方文档《HTP Optimization (Auto)》与《QNN HTP Backend Extensions》。
+
+**核心结论（文档要点）**：
+- 优化级别 `O`：有效值 **2**（默认）和 **3**。O=3 通常更优，且**指定匹配目标的 `soc_id` 时会启用额外算法进一步提速**（但可能在某些图上更差、二进制更大、加载更慢，需实测）。`O=3` 对应 `QNN_HTP_GRAPH_OPTIMIZATION_TYPE_FINALIZE_OPTIMIZATION_FLAG = 3`。
+- **P 点**（仅 O=3 生效，`finalize_config: {"P": n}`）：编译器内部配置空间的不同点，调整**延迟 vs DRAM 带宽**等权衡。合法值 `0~23`，**排除 7,9,10,11,12,14,18**。不同网络最佳 P 不同，需逐一扫描实测；同一 P 下输出与无 P 位精确一致。**一次只能指定一个 P**。
+- 目标配置：SM8850 → `soc_id = 87`（`QNN_SOC_MODEL_SM8850=87`，见 `include/QNN/QnnTypes.h`）、`dsp_arch = "v81"`（设备加载 libQnnHtpV81* 系列）。
+- 其它图级选项：`vtcm_mb`（默认 4，可设更大；0 = 设备最大需配合 soc）、`hvx_threads`（默认 4）、`num_cores`（多核编译，SM8850 双 NSP，潜在最大收益项）、`dlbc`（带宽压缩）、`advanced_activation_fusion`（FP 模型默认开）、`monolithic_lstm`。
+
+**标准流程（x86 主机离线准备，文档推荐）**：
+```bash
+# 1) ONNX → 主机可加载的 model.so（需要 Python 3.10 或 3.12，见下方踩坑）
+python <SDK>/bin/x86_64-windows-msvc/qnn-onnx-converter \
+  --input_model tfc_tdf_epoch_127_val_loss_0_05071_causal_8frame_state.onnx \
+  --output_model tfc_tdf_host.so --target x86_64-windows-msvc
+
+# 2) 编写 HTP 后端配置 tools/htp_context_sm8850.json（O=3 + soc_id=87 + v81，可加 finalize_config P 点）
+# 3) 生成 context binary（离线准备）
+<SDK>/bin/x86_64-windows-msvc/qnn-context-binary-generator.exe \
+  --backend <SDK>/lib/x86_64-windows-msvc/QnnHtp.dll \
+  --model tfc_tdf_host.so \
+  --binary_file tfc_tdf_o3.serialized.bin \
+  --profiling_level basic \
+  --config_file tools/htp_context_sm8850.json
+
+# 4) 性能估算（不跑真机，先看 Simulated cycles + Bandwidth stats）
+<SDK>/bin/x86_64-windows-msvc/qnn-profile-viewer.exe \
+  --input_log output/qnn-profiling-data.log \
+  --reader <SDK>/lib/x86_64-windows-msvc/QnnHtpProfilingReader.dll
+
+# 5) P 点扫描：改 htp_context_sm8850.json 里 finalize_config {"P": n}，重复 3-4，对比 Simulated cycles
+```
+
+**配置文件（已入库 tools/config/，全部实测可用）**：
+- `tools/config/backend_ext_sm8850.json`：**设备端生成器实际要传的配置**（`backend_extensions` 包装：`shared_library_path=./libQnnHtpNetRunExtensions.so` + `config_file_path=./htp_config_sm8850.json`）。
+- `tools/config/htp_config_sm8850.json`：真正的图/设备配置（`graphs[].graph_names` 必须用**图名 = 模型名**、`O:3`、`vtcm_mb`、`hvx_threads`、`advanced_activation_fusion`；`devices[]` 的 `soc_id:87`、`dsp_arch:"v81"`）。
+- `tools/config/htp_context_sm8850.json`：同内容的平铺版（x86 主机生成器若支持平铺可直接传；设备端会报 Unknown Key，须用包装版）。
+
+**设备端生成（实测可用，2026-08-06）**：
+```bash
+# 设备 /data/local/tmp/qnn-2.48.40 下执行（注意命令格式！）
+./qnn-context-binary-generator \
+  --model ../bench_test/libtfc_tdf_epoch_127_val_loss_0_05071_causal_8frame_state.so \
+  --backend ./libQnnHtp.so \
+  --binary_file tfc_tdf_o3_opt.serialized \
+  --config_file ./backend_ext_sm8850.json
+# 产物在 ./output/tfc_tdf_o3_opt.serialized.bin
+```
+**实测结果（O=3 + soc_id=87 + vtcm 8MB，`--repeat 1000`）**：基线（默认 O=2）p50=12.26ms；O=3 p50=12.46ms——**无明显提升**（avg 被低电量尖峰污染到 20-22ms，p50 对比有效）。与文档"O=3 不一定更优、需实测"一致；TDF 类逐元素/小卷积图对 finalize 优化不敏感，真正的性能上限是时钟（见 5.11 的 4.83ms 启动态），图优化空间有限。下一步可试 **P 点扫描** 与 **`num_cores: 2`（多核编译）**。
+
+**踩坑记录（2026-08-06 实测）**：
+1. **设备端生成器命令格式**：`--binary_file` 用**裸文件名**（不要 `output/` 前缀、不要手动加 `.bin`）；`--model` 用相对路径更稳。之前"静默失败"是命令格式问题（绝对路径 + `output/xxx.bin`），改用用户命令格式后正常。
+2. **设备端生成器只认 `backend_extensions` 包装配置**：直接传平铺 graphs/devices 会全部报 `Unknown Key = ...` 且优化不生效（仍按默认编译）；必须传 `backend_ext_sm8850.json` 包装，让 `libQnnHtpNetRunExtensions.so` 解析图配置。
+3. **图名 = 模型名**（`tfc_tdf_epoch_127_val_loss_0_05071_causal_8frame_state`），不是 ONNX 图名 `main_graph`；写错报 `getQnnGraphConfigFromInfo() unable to find graphName:xxx`。
+4. **QNN 2.48 的 `qnn-net-run` 已移除 `--save_context_binary`**（`Invalid Argument Consumption`），只有 `--retrieve_context`；`qairt-net-run` 在设备上 `Permission denied`。→ 落盘靠生成器。
+5. **Windows 主机生成器无法加载 aarch64-android 的 model.so**（`dlerror(): load library failed`，架构不匹配），必须先转出 x86 主机版 model.so（需 Python 3.10/3.12，见 6）。
+6. **SDK 转换器需要 Python 3.10 或 3.12**：`lib/python/qti/aisw/converters/common/windows-x86_64/libPyIrGraph{310,312}.pyd`；本机仅 3.11/3.7，`qnn-onnx-converter` 报 `ImportError: DLL load failed ... libPyIrGraph312`。→ 走设备端生成可完全绕过主机转换。
+7. **低电量（12% 放电）会周期性折叠 HTP 电源**：每 ~120ms 出现一次 ~100-130ms 尖峰（avg 从 11.5 → 20-22ms），且 `sleepDisable=1` 也压不住（低电量下固件强制电源管理优先）。**基准测试必须在插电状态下进行**。
+
+**结论性经验**：设备端 `qnn-context-binary-generator` + `backend_extensions` 包装配置即可完成 O=3/soc_id/P 点优化编译，无需 x86 主机与 Python。本模型 O=3 无收益（TDF 图对 finalize 优化不敏感）；进一步可试 P 点与 `num_cores: 2`；所有基准务必插电测试（2026-08-06）。
+
 ---
 
 ## 6. 验证命令速查
@@ -443,3 +596,18 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 ./qnn-net-run --backend libQnnHtp.so --model libtest_model.so \
   --input_list input_list_test_model_float32.txt --perf_profile burst --shared_buffer
 ```
+
+### 5.13 TDF 模型优化机制清单（2026-08-06，基于 ONNX 结构分析 + omen Linux 主机）
+
+**模型结构事实**（tfc_tdf_epoch_127，从 .onnx.text 解析）：735 节点 / 14 种算子；常量 361、Slice 63、Conv 62、Reshape 46、Relu 43、Concat 43、Transpose 37、ConstantOfShape/Cast/Pad 各 21、Add 7、Mul 4、ConvTranspose 3、BatchNormalization 3；141 个 initializer 全 FP32，权重 ~20MB；22 in / 22 out FP32（state 类 21 组 + 音频 input）；7 组 sub-band 重复展开结构（H.0/H.1/H.2 + tdf + ds/us）。
+
+**优化机制分层（按预期收益排序）**：
+1. **FP16 转换（最大机制）**：`qnn-onnx-converter --preserve_io_layout --input_network x.onnx --float_bitwidth 16`。权重+激活+IO 全 FP16 → 内存带宽减半 + HTP FP16 硬件加速。**ORT 6.5ms 的核心秘密就是 enable_htp_fp16_precision**；当前 QNN SDK FP32 稳态 11.5ms，FP16 后有望对标/反超 ORT（5.11 已证 FP32 冷启动 4.83ms，FP16 在锁频下应更低）。
+2. **量化 A8W8 / A16W8**：HTP 原生算力为 INT8；音频模型建议先试 **A16W8**（`--act_bitwidth 16 --weights_bitwidth 8`）保精度、再试 A8W8（`--act_bitwidth 8 --weights_bitwidth 8`）。已有校准数据：`/data/local/tmp/mss/calibration_data{,_2000}/`、`/data/local/tmp/qnn/tfc_tdf_epoch_127_cal_loss_5071.json`；配合 `--input_list` + `--use_native_input_files`。量化器可选 `--param_quantizer`（percentile/mse 等）调精度。
+3. **ONNX 预化简（转换前）**：本图冗余极多（361 个 Constant 常量折叠、7 组 sub-band 重复结构、大量 Reshape/Transpose/Slice）。先跑 `onnx-simplifier`/`onnxoptimizer`（fuse_consecutive_transposes、eliminate_nop_*、常量折叠）再转换，节点更少、转换质量更高、bin 更小。
+4. **编译期**：O=3 + P 点扫描 + `num_cores:2`（双 NSP 多核，3 路 sub-band 可并行）+ `vtcm_mb` 调大（FP16 后 TCM 占用减半）+ `dlbc`（带宽压缩，FP16 后仍带宽受限时）。
+5. **IO 优化**：`--preserve_io_layout`（已有）；若 `--float_bitwidth 16` 未把 IO 转 FP16 则显式 `--io_bitwidth 16`（22 in/22 out 的 IO 带宽占比高）。
+6. **运行时**：已做 dma-heap 零拷贝 + DCVS off/MAX corner/sleepDisable；多核需按 core 逐个 createPowerConfigId 投票；可试周期重发投票拉回 4.83ms 稳态。
+7. **验证纪律**：FP16/量化后必须对比 max_diff（FP16 预期 ~1e-3 量级）；量化还要做主观/感知听感验证；**基准必须插电**（低电量周期尖峰见 5.12）。
+
+**注意**：`--preserve_io_layout` 是一个参数（`--preserve_io_layout`），不是 `--preserve_io layout`。

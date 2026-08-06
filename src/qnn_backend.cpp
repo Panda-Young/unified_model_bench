@@ -762,10 +762,24 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
 }
 
 /* ---------------------------------------------------------------------------
- * Configure HTP performance mode (DCVS v3 power vote).
- * Equivalent to ORT QNN EP's htp_performance_mode=burst: pins the HTP to the
- * TURBO voltage corner with the PERFORMANCE power mode and disables sleep so
- * inference latency is both fast and stable (no DCVS ramp / wakeup jitter).
+ * Configure HTP performance mode (DCVS v3 power vote, ORT burst equivalent).
+ *
+ * Mirrors ONNX Runtime's QNN EP "burst" profile
+ * (qnn_htp_power_config_manager.cc, HtpPerformanceMode::kHtpBurst):
+ *   - dcvsEnable = 0: DISABLE DCVS dynamic voltage scaling so the voltage
+ *     corners below are hard-pinned by the hardware. Keeping DCVS enabled
+ *     (our earlier NOM->TURBO target vote) lets the system power manager
+ *     (perfd / DCVS arbiter) re-scale the HTP down to a low corner after
+ *     ~100-300ms, which is exactly the stair-step 6ms<->16ms seen in runs.
+ *   - bus/core voltage corners Min/Target/Max = MAX_VOLTAGE_CORNER: lock the
+ *     highest corner, so the system cannot lower it.
+ *   - sleepDisable = 1 (CONTROL experiment 2026-08-06): force the HTP awake
+ *     instead of ORT's sleepLatency=40us, to test whether the rare ~100ms
+ *     single-frame spikes (run 796/806) are HTP sleep/wakeup. If the spikes
+ *     disappear, HTP sleep was the cause; revert to sleepLatency=40us if
+ *     keeping the ORT-identical config matters more than the spikes.
+ * This is a one-shot vote at init - like ORT (which only re-applies when the
+ * mode actually changes), no per-frame refresh is needed because DCVS is off.
  * Non-fatal: on failure the backend still runs at the default power profile.
  * -------------------------------------------------------------------------*/
 bool QnnSdkBackend::ConfigureHtpPerformance()
@@ -799,19 +813,21 @@ bool QnnSdkBackend::ConfigureHtpPerformance()
     QnnHtpPerfInfrastructure_PowerConfig_t cfg = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIG_INIT;
     cfg.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_DCVS_V3;
     cfg.dcvsV3Config.contextId = power_config_id_;
+    /* ORT burst: disable DCVS dynamic scaling and pin the highest corner */
     cfg.dcvsV3Config.setDcvsEnable = 1;
-    cfg.dcvsV3Config.dcvsEnable = 1;
+    cfg.dcvsV3Config.dcvsEnable = 0; /* kDcvsDisable: hardware-lock the corners */
     cfg.dcvsV3Config.powerMode = QNN_HTP_PERF_INFRASTRUCTURE_POWERMODE_PERFORMANCE_MODE;
+    /* Control experiment: force awake (no HTP sleep/wakeup jitter) */
     cfg.dcvsV3Config.setSleepDisable = 1;
-    cfg.dcvsV3Config.sleepDisable = 1; /* keep HTP awake: no wakeup jitter */
+    cfg.dcvsV3Config.sleepDisable = 1;
     cfg.dcvsV3Config.setBusParams = 1;
-    cfg.dcvsV3Config.busVoltageCornerMin = DCVS_VOLTAGE_VCORNER_NOM;
-    cfg.dcvsV3Config.busVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_TURBO;
-    cfg.dcvsV3Config.busVoltageCornerMax = DCVS_VOLTAGE_VCORNER_TURBO;
+    cfg.dcvsV3Config.busVoltageCornerMin = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+    cfg.dcvsV3Config.busVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+    cfg.dcvsV3Config.busVoltageCornerMax = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
     cfg.dcvsV3Config.setCoreParams = 1;
-    cfg.dcvsV3Config.coreVoltageCornerMin = DCVS_VOLTAGE_VCORNER_NOM;
-    cfg.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_TURBO;
-    cfg.dcvsV3Config.coreVoltageCornerMax = DCVS_VOLTAGE_VCORNER_TURBO;
+    cfg.dcvsV3Config.coreVoltageCornerMin = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+    cfg.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
+    cfg.dcvsV3Config.coreVoltageCornerMax = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
 
     const QnnHtpPerfInfrastructure_PowerConfig_t *configs[] = {&cfg, nullptr};
     Qnn_ErrorHandle_t rc = infra->perfInfra.setPowerConfig(power_config_id_, configs);
@@ -824,7 +840,7 @@ bool QnnSdkBackend::ConfigureHtpPerformance()
         destroy_power_config_ = nullptr;
         return false;
     }
-    LOGI("QNN: HTP perf configured (DCVS_V3, TURBO, PERFORMANCE_MODE, sleep disabled)");
+    LOGI("QNN: HTP perf configured (DCVS_V3 burst: DCVS off, MAX corner, sleep disabled)");
     return true;
 }
 
