@@ -939,8 +939,15 @@ bool QnnSdkBackend::AllocateBuffers()
     /* dma-heap zero-copy is HTP-specific: the registered descriptor is a
      * QnnMemHtp_Descriptor_t, so CPU/GPU backends would always fail
      * memRegister. Skip the attempt for them to keep the log clean; the
-     * "buffers: x/y shared" summary below still reports the result. */
-    const bool try_dma_heap = (id_ == BackendId::QNN_SDK_HTP);
+     * "buffers: x/y shared" summary below still reports the result.
+     * QNN_NO_DMA_HEAP=1 forces client buffers (debug switch for isolating
+     * DMA/quantized-graph issues). */
+    bool try_dma_heap = (id_ == BackendId::QNN_SDK_HTP);
+    const char *no_dma = getenv("QNN_NO_DMA_HEAP");
+    if (no_dma && no_dma[0] == '1') {
+        try_dma_heap = false;
+        LOGW("QNN: dma-heap disabled by QNN_NO_DMA_HEAP=1 - using client buffers");
+    }
     bool dma_heap_warned = false;
     auto warn_dma_heap_once = [&](const char *msg) {
         if (!dma_heap_warned) {
@@ -961,6 +968,16 @@ bool QnnSdkBackend::AllocateBuffers()
         }
         case QNN_DATATYPE_FLOAT_16:
         case QNN_DATATYPE_BFLOAT_16: {
+            item_size = 2;
+            break;
+        }
+        case QNN_DATATYPE_UFIXED_POINT_8:
+        case QNN_DATATYPE_SFIXED_POINT_8: {
+            item_size = 1;
+            break;
+        }
+        case QNN_DATATYPE_UFIXED_POINT_16:
+        case QNN_DATATYPE_SFIXED_POINT_16: {
             item_size = 2;
             break;
         }
@@ -993,6 +1010,42 @@ bool QnnSdkBackend::AllocateBuffers()
     std::vector<size_t> in_sizes, out_sizes;
     size_t in_total = build_layout(in_elems_, in_dtypes_, in_offsets_, in_sizes);
     size_t out_total = build_layout(out_elems_, out_dtypes_, out_offsets_, out_sizes);
+
+    auto dt_name = [](Qnn_DataType_t dt) -> const char * {
+        switch (dt) {
+        case QNN_DATATYPE_FLOAT_32: {
+            return "F32";
+        }
+        case QNN_DATATYPE_FLOAT_16: {
+            return "F16";
+        }
+        case QNN_DATATYPE_UFIXED_POINT_8: {
+            return "QU8";
+        }
+        case QNN_DATATYPE_SFIXED_POINT_8: {
+            return "QS8";
+        }
+        case QNN_DATATYPE_UFIXED_POINT_16: {
+            return "QU16";
+        }
+        case QNN_DATATYPE_SFIXED_POINT_16: {
+            return "QS16";
+        }
+        default: {
+            return "OTHER";
+        }
+        }
+    };
+    for (size_t i = 0; i < in_tensors_.size(); ++i) {
+        LOGI("QNN:  in[%zu] %s elems=%zu bytes=%zu quant=%d scale=%g off=%d",
+             i, dt_name(in_dtypes_[i]), in_elems_[i], in_sizes[i],
+             in_is_quant_[i] ? 1 : 0, in_quant_[i].scale, in_quant_[i].offset);
+    }
+    for (size_t i = 0; i < out_tensors_.size(); ++i) {
+        LOGI("QNN: out[%zu] %s elems=%zu bytes=%zu quant=%d scale=%g off=%d",
+             i, dt_name(out_dtypes_[i]), out_elems_[i], out_sizes[i],
+             out_is_quant_[i] ? 1 : 0, out_quant_[i].scale, out_quant_[i].offset);
+    }
 
     auto alloc_direction = [&](std::vector<Qnn_Tensor_t> &tensors,
                                const std::vector<size_t> &elems,
@@ -1305,7 +1358,30 @@ void QnnSdkBackend::PopulateInput(int idx, const float *data, size_t n)
     if (!dst || !data) {
         return;
     }
-    if (in_is_quant_[idx]) {
+    /* Dispatch on the tensor DATA TYPE first (fixed-point dtypes must never
+     * fall through to the float memcpy path: the buffers are sized for the
+     * narrow dtype and a 4-byte copy would overrun into the guard page).
+     * Quant scale/offset come from the tensor metadata (binary info when
+     * present, otherwise the model.so GraphInfo). */
+    if (in_dtypes_[idx] == QNN_DATATYPE_UFIXED_POINT_16 ||
+        in_dtypes_[idx] == QNN_DATATYPE_SFIXED_POINT_16) {
+        /* 16-bit fixed point (A16): quantize float into int16 buffer */
+        float scale = in_quant_[idx].scale;
+        int32_t offset = in_quant_[idx].offset;
+        int16_t *q = (int16_t *)dst;
+        for (size_t j = 0; j < n; ++j) {
+            float v = data[j] / scale + (float)offset;
+            if (v < -32768.0f) {
+                q[j] = (int16_t)-32768;
+            } else if (v > 32767.0f) {
+                q[j] = (int16_t)32767;
+            } else {
+                q[j] = (int16_t)(v >= 0.0f ? (int32_t)(v + 0.5f) : (int32_t)(v - 0.5f));
+            }
+        }
+    } else if (in_dtypes_[idx] == QNN_DATATYPE_UFIXED_POINT_8 ||
+               in_dtypes_[idx] == QNN_DATATYPE_SFIXED_POINT_8) {
+        /* 8-bit fixed point (A8): quantize float into uint8 buffer */
         float scale = in_quant_[idx].scale;
         int32_t offset = in_quant_[idx].offset;
         uint8_t *q = (uint8_t *)dst;
@@ -1333,7 +1409,20 @@ bool QnnSdkBackend::ReadOutput(int idx, float *dst, size_t n)
     if (!src || !dst) {
         return false;
     }
-    if (out_is_quant_[idx]) {
+    /* Same dtype-first dispatch as PopulateInput: fixed-point dtypes must
+     * dequantize, never fall through to the 4-byte float memcpy. */
+    if (out_dtypes_[idx] == QNN_DATATYPE_UFIXED_POINT_16 ||
+        out_dtypes_[idx] == QNN_DATATYPE_SFIXED_POINT_16) {
+        /* 16-bit fixed point (A16): dequantize int16 buffer to float */
+        float scale = out_quant_[idx].scale;
+        int32_t offset = out_quant_[idx].offset;
+        const int16_t *q = (const int16_t *)src;
+        for (size_t j = 0; j < n; ++j) {
+            dst[j] = ((float)q[j] - (float)offset) * scale;
+        }
+    } else if (out_dtypes_[idx] == QNN_DATATYPE_UFIXED_POINT_8 ||
+               out_dtypes_[idx] == QNN_DATATYPE_SFIXED_POINT_8) {
+        /* 8-bit fixed point (A8): dequantize uint8 buffer to float */
         float scale = out_quant_[idx].scale;
         int32_t offset = out_quant_[idx].offset;
         const uint8_t *q = (const uint8_t *)src;

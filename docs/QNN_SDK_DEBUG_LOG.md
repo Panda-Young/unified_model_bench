@@ -603,11 +603,56 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 
 **优化机制分层（按预期收益排序）**：
 1. **FP16 转换（最大机制）**：`qnn-onnx-converter --preserve_io_layout --input_network x.onnx --float_bitwidth 16`。权重+激活+IO 全 FP16 → 内存带宽减半 + HTP FP16 硬件加速。**ORT 6.5ms 的核心秘密就是 enable_htp_fp16_precision**；当前 QNN SDK FP32 稳态 11.5ms，FP16 后有望对标/反超 ORT（5.11 已证 FP32 冷启动 4.83ms，FP16 在锁频下应更低）。
-2. **量化 A8W8 / A16W8**：HTP 原生算力为 INT8；音频模型建议先试 **A16W8**（`--act_bitwidth 16 --weights_bitwidth 8`）保精度、再试 A8W8（`--act_bitwidth 8 --weights_bitwidth 8`）。已有校准数据：`/data/local/tmp/mss/calibration_data{,_2000}/`、`/data/local/tmp/qnn/tfc_tdf_epoch_127_cal_loss_5071.json`；配合 `--input_list` + `--use_native_input_files`。量化器可选 `--param_quantizer`（percentile/mse 等）调精度。
-3. **ONNX 预化简（转换前）**：本图冗余极多（361 个 Constant 常量折叠、7 组 sub-band 重复结构、大量 Reshape/Transpose/Slice）。先跑 `onnx-simplifier`/`onnxoptimizer`（fuse_consecutive_transposes、eliminate_nop_*、常量折叠）再转换，节点更少、转换质量更高、bin 更小。
+2. **量化 A8W8 / A16W8**：HTP 原生算力为 INT8；音频模型建议先试 **A16W8**（`--act_bitwidth 16 --weights_bitwidth 8`）保精度、再试 A8W8（`--act_bitwidth 8 --weights_bitwidth 8`）。已有校准数据：`/data/local/tmp/mss/calibration_data{,_2000}/`、`/data/local/tmp/qnn/tfc_tdf_epoch_127_cal_loss_5071.json`；配合 `--input_list` + `--use_native_input_files`。量化器可选 `--param_quantizer`（percentile/mse 等）调精度。**【已实测 2026-08-06：A16W8 图执行崩 DSP，方向关闭，见 5.14B】**
+3. **ONNX 预化简（转换前）**：本图冗余极多（361 个 Constant 常量折叠、7 组 sub-band 重复结构、大量 Reshape/Transpose/Slice）。先跑 `onnx-simplifier`/`onnxoptimizer`（fuse_consecutive_transposes、eliminate_nop_*、常量折叠）再转换，节点更少、转换质量更高、bin 更小。**【已实测 2026-08-06：735→351 节点但慢 16%，HTP O3 已自行优化，方向关闭，见 5.14A】**
 4. **编译期**：O=3 + P 点扫描 + `num_cores:2`（双 NSP 多核，3 路 sub-band 可并行）+ `vtcm_mb` 调大（FP16 后 TCM 占用减半）+ `dlbc`（带宽压缩，FP16 后仍带宽受限时）。
 5. **IO 优化**：`--preserve_io_layout`（已有）；若 `--float_bitwidth 16` 未把 IO 转 FP16 则显式 `--io_bitwidth 16`（22 in/22 out 的 IO 带宽占比高）。
 6. **运行时**：已做 dma-heap 零拷贝 + DCVS off/MAX corner/sleepDisable；多核需按 core 逐个 createPowerConfigId 投票；可试周期重发投票拉回 4.83ms 稳态。
 7. **验证纪律**：FP16/量化后必须对比 max_diff（FP16 预期 ~1e-3 量级）；量化还要做主观/感知听感验证；**基准必须插电**（低电量周期尖峰见 5.12）。
 
 **注意**：`--preserve_io_layout` 是一个参数（`--preserve_io_layout`），不是 `--preserve_io layout`。
+
+### 5.14 实测：onnx-simplifier 无收益 + A16W8 量化崩 DSP（2026-08-06，SM8850）
+
+**A. onnx-simplifier 预化简（方向 3 实测 = 无效，甚至更慢）**
+- 操作：omen 上 `python -m onnxsim tfc_....onnx simplified/tfc_simplified.onnx`。
+- 结果：735 → 351 节点（Constant 502→147、Reshape 46→2、Cast/Pad/ConstantOfShape 21→0），bin 大小不变（~20MB，权重为主）。
+- FP16 转换 + host 生成 `tfc_simplified_o3.bin`（11,056,704B），真机同会话 A/B：
+  - 基线 `tfc_tdf_o3_opt`：**avg=13.502 ms**
+  - 简化 `tfc_simplified_o3`：**avg=15.658 ms（慢 ~16%）**
+- DDR 统计（host generator 输出）几乎不变：read 47.6MB vs 47MB、spill/fill 29/32MB 原样。
+- **结论**：HTP 编译器 O3 在离线编译时已自行完成图融合/折叠，ONNX 层的冗余（Constant/Reshape/Pad 等）不转化为 HTP 层冗余；强行化简反而破坏 HTP 已有融合模式。**此方向关闭，后续不要再对 TDF 跑 onnx-simplifier**。
+
+**B. A16W8 量化（方向 2 实测 = 图本身崩 DSP，方向关闭）**
+- 操作：`qnn-onnx-converter --act_bitwidth 16 --weights_bitwidth 8 --input_list ...` → model.so → host/device 生成 context binary（6,074,240B）。
+- 图结构：IO 全 `QNN_DATATYPE_UFIXED_POINT_16`（scale≈1.526e-5≈2^-16, off=0）；内部 224 个 QU16 + 65 个 QU8 + 65 个 QS32（bias）。
+- 三次运行三次崩（SM8850 + QNN 2.48.40）：
+  1. context binary + 旧后端（只处理 8-bit）→ 推理中 **DSP 崩溃 → 手机 crashDump**；
+  2. context binary + 新后端 + 客户端缓冲 → **App 段错误**（CPU 侧，见 C）；
+  3. model.so + 新后端（CPU 侧缓冲已正确）→ 再次 **DSP 崩溃 → 手机 crashDump**。
+- **结论**：即使 CPU 侧输入/缓冲完全正确，A16W8 量化图在 SM8850 HTP（QNN 2.48.40）上执行即崩 DSP，属于该 SDK/该模型量化路径缺陷。**A16W8 方向关闭**（可后续升 QNN 版本再试；A8W8 未测，但音频模型 8-bit 激活精度风险高，优先级低）。
+
+**C. 根因：QNN 2.48 无法从 context binary 拿到 IO 量化编码 + 旧代码 float memcpy 越界**
+- 现象：A16W8 跑 context binary 时 `PopulateInput` 落到 `memcpy(dst,data,n*4)`，把 4 字节/elem 拷进 2 字节/elem 的缓冲 → 2 倍越界 → `__memmove_aarch64_nt` SEGV_ACCERR（scudo 保护区）。
+- 根因链：
+  1. `QnnSystemContext` 的 binary info 张量 **不携带 quantizeParams**（`encodingDefinition=QNN_DEFINITION_UNDEFINED`）→ `is_quant=false`；
+  2. 旧代码按 `is_quant` 标志分派 → 定点 dtype 落入 float memcpy 分支；
+  3. QNN 2.48 已移除 `QnnGraph_getTensors`，`graphGetProperty` 仅支持 CUSTOM，**无标准 API 可查图 IO 量化编码**；model.so 的 GraphInfo 张量实测同样 `quant=0`。
+- 修复（保留）：
+  - `PopulateInput`/`ReadOutput` 改为 **按 dtype 优先分派**（QU16/QS16→int16 量化路径、QU8/QS8→uint8、F16→half、其余→memcpy），定点 dtype 永不落入 float memcpy；
+  - 新增调试开关 `QNN_NO_DMA_HEAP=1` 强制客户端缓冲（隔离 DMA/量化问题）。
+- 遗留：若未来要正经跑量化模型，需解决量化编码来源（model.so GraphInfo 的 quantizeParams 丢失问题待查），否则 scale/offset 恒为 1/0、数值错误。
+
+**D. 其他**：手机 crashDump 模式恢复后需重新 `su 0 setenforce 0` + 确认 `ADSP_LIBRARY_PATH=/data/local/tmp/qnn-2.48.40`；设备持续有 `qsap_mpamsvc` 崩溃（缺 seccomp policy，userdebug ROM 问题，与本次无关）。
+
+### 5.15 运行时周期重发功率投票：无法拉回 4.83ms 冷启动态（2026-08-06，SM8850）
+
+- **动机**：model.so 冷启动前 ~42 帧稳定 4.83ms（快于 ORT 6.5ms），之后衰减到 ~11.5ms；5.11 假设是固件/仲裁器丢弃我们的 DCVS 投票所致。本次尝试在 RunBenchmark 中**周期重发 setPowerConfig** 看能否维持 4.83ms。
+- **实现**（**已回退 2026-08-06**）：`ConfigureHtpPerformance()` 保存 `setPowerConfig` 函数指针 + DCVS_V3 配置副本，新增 `RefreshPowerVote()` 在 `execute_once` 每 N 帧调用，周期由 `QNN_REVOTE_FRAMES=N` 控制。实验后**全部回退**（`src/qnn_backend.cpp` 恢复原状），不保留任何相关代码。
+- **实测**（model.so `libtfc_fp16_aarch64.so`，SM8850 充电 37%，1000 次，max_diff 全 0）：
+  - 无重发基线：**avg=11.617 ms**
+  - 每帧重发（N=1）：**avg=12.840 ms**（+1.2ms——每帧 fastrpc 调用开销）
+  - 每 100 帧重发：**avg=11.999 ms**（≈基线，**无收益**）
+- **per-run 日志（无重发）**：4.83ms 态**反复出现**（run 0-15、20、24-27 均 ~4.8ms），之后在 4.8↔11.5ms 间振荡并最终稳定 ~11.5-12.5ms——是**双模态时钟仲裁**，非单调衰减。
+- **结论**：**周期重发无法拉回 4.83ms**。4.83ms 是固件/仲裁器临时授予的高频窗口，不受我方 DCVS 投票控制（投票本就 MAX corner 硬件锁定）；每帧重发因 fastrpc 开销反而更差。**方向关闭**；相关代码已全部回退（见上），如需复现实验可参考本节数据与思路。
+- 说明：4.83ms 快速态在本次会话（充电、37%）中比 5.11 记录（前 42 帧一次性）出现得更频繁，可能与设备温度/负载状态有关。
