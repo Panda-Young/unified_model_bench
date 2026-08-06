@@ -617,6 +617,23 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
         LOGE("QNN: backendCreate failed");
         return false;
     }
+    LOGI("QNN: backend created (%s)", qnn_backend_lib(id_));
+
+    /* 3b. Report detailed backend version info: core + backend-specific API
+     * version and the build id string (e.g. "qaisw-v2.48.0.260626120635"). */
+    Qnn_ApiVersion_t api_ver = QNN_API_VERSION_INIT;
+    if (qnn_->backendGetApiVersion &&
+        QNN_SUCCESS == qnn_->backendGetApiVersion(&api_ver)) {
+        LOGI("QNN: backend API version: core %u.%u.%u, backend %u.%u.%u",
+             api_ver.coreApiVersion.major, api_ver.coreApiVersion.minor,
+             api_ver.coreApiVersion.patch, api_ver.backendApiVersion.major,
+             api_ver.backendApiVersion.minor, api_ver.backendApiVersion.patch);
+    }
+    const char *build_id = nullptr;
+    if (qnn_->backendGetBuildId &&
+        QNN_SUCCESS == qnn_->backendGetBuildId(&build_id) && build_id) {
+        LOGI("QNN: backend build id: %s", build_id);
+    }
 
     /* 4. Create device. HTP requires a device; CPU has no device concept and
      * GPU device creation is best-effort, so only surface a failure for HTP

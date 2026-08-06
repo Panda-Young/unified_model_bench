@@ -656,3 +656,18 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 - **per-run 日志（无重发）**：4.83ms 态**反复出现**（run 0-15、20、24-27 均 ~4.8ms），之后在 4.8↔11.5ms 间振荡并最终稳定 ~11.5-12.5ms——是**双模态时钟仲裁**，非单调衰减。
 - **结论**：**周期重发无法拉回 4.83ms**。4.83ms 是固件/仲裁器临时授予的高频窗口，不受我方 DCVS 投票控制（投票本就 MAX corner 硬件锁定）；每帧重发因 fastrpc 开销反而更差。**方向关闭**；相关代码已全部回退（见上），如需复现实验可参考本节数据与思路。
 - 说明：4.83ms 快速态在本次会话（充电、37%）中比 5.11 记录（前 42 帧一次性）出现得更频繁，可能与设备温度/负载状态有关。
+
+### 5.16 QNN 初始化时输出详细版本号（2026-08-06）
+
+- 需求：检查所有 backend 初始化是否输出版本信息；QNN SDK 补齐。
+- 现状核对：MNN（`MNN::getVersion()`）、NCNN（`ncnn_version()`）、ONNX（ORT `GetVersionString()`）已有；TFLite、LiteRT、QNN SDK 原先缺失。
+- QNN 实现（`CreateBackendDeviceContext()`，backendCreate 成功后）：
+  - `qnn_->backendGetApiVersion(&ver)` → 打印 `core x.y.z, backend x.y.z`（`Qnn_ApiVersion_t`：`coreApiVersion`/`backendApiVersion` 各为 `Qnn_Version_t{major,minor,patch}`）；
+  - `qnn_->backendGetBuildId(&id)` → 打印详细构建号字符串。
+- 实测（SM8850 设备，libQnnHtp.so）：
+  ```
+  QNN: backend created (libQnnHtp.so)
+  QNN: backend API version: core 2.37.0, backend 5.48.0
+  QNN: backend build id: v2.48.40.260702151143
+  ```
+- 说明：QNN 2.48 中这两个函数是 `QnnInterface_t` 的字段（`backendGetApiVersion`/`backendGetBuildId`），backendCreate 后调用；build id 与 `QNN_SDK_VERSION` 宏（`qaisw-v2.48.0.260626120635`）语义相同但来自运行时库自身。
