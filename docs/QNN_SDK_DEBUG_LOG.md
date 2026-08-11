@@ -671,3 +671,9 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
   QNN: backend build id: v2.48.40.260702151143
   ```
 - 说明：QNN 2.48 中这两个函数是 `QnnInterface_t` 的字段（`backendGetApiVersion`/`backendGetBuildId`），backendCreate 后调用；build id 与 `QNN_SDK_VERSION` 宏（`qaisw-v2.48.0.260626120635`）语义相同但来自运行时库自身。
+
+### 5.17 QNN IO 张量明细日志降级为 DEBUG（2026-08-11）
+
+- 现象：`AllocateBuffers()` 里逐张量打印 `in[i]/out[i] dtype/elems/bytes/quant/scale/offset`（22 in + 22 out = 44 行/次）在 INFO 级别每次初始化都刷屏。
+- 处理：per-tensor 明细从 `LOGI` 降为 `LOGD`（DBG 级），默认级别不再输出；诊断量化/FP16 图数据类型时用 `--log-level DBG` 打开。保留的汇总 INFO：`AllocateBuffers: 22 in, 22 out`、`buffers: x/y shared`、`init complete`。
+- 验证：默认级别 `in[/out[` 行数 = 0，QNN_SDK_HTP 运行正常。

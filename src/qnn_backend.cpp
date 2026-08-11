@@ -1053,13 +1053,16 @@ bool QnnSdkBackend::AllocateBuffers()
         }
         }
     };
+    /* Per-tensor IO details are DEBUG-only: 44 lines (22 in + 22 out) every
+     * init is too noisy for INFO. Enable with --log-level DBG when diagnosing
+     * quantized/FP16 graph data types. */
     for (size_t i = 0; i < in_tensors_.size(); ++i) {
-        LOGI("QNN:  in[%zu] %s elems=%zu bytes=%zu quant=%d scale=%g off=%d",
+        LOGD("QNN:  in[%zu] %s elems=%zu bytes=%zu quant=%d scale=%g off=%d",
              i, dt_name(in_dtypes_[i]), in_elems_[i], in_sizes[i],
              in_is_quant_[i] ? 1 : 0, in_quant_[i].scale, in_quant_[i].offset);
     }
     for (size_t i = 0; i < out_tensors_.size(); ++i) {
-        LOGI("QNN: out[%zu] %s elems=%zu bytes=%zu quant=%d scale=%g off=%d",
+        LOGD("QNN: out[%zu] %s elems=%zu bytes=%zu quant=%d scale=%g off=%d",
              i, dt_name(out_dtypes_[i]), out_elems_[i], out_sizes[i],
              out_is_quant_[i] ? 1 : 0, out_quant_[i].scale, out_quant_[i].offset);
     }
