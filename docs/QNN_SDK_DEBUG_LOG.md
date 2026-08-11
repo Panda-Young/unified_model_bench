@@ -677,3 +677,203 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 - 现象：`AllocateBuffers()` 里逐张量打印 `in[i]/out[i] dtype/elems/bytes/quant/scale/offset`（22 in + 22 out = 44 行/次）在 INFO 级别每次初始化都刷屏。
 - 处理：per-tensor 明细从 `LOGI` 降为 `LOGD`（DBG 级），默认级别不再输出；诊断量化/FP16 图数据类型时用 `--log-level DBG` 打开。保留的汇总 INFO：`AllocateBuffers: 22 in, 22 out`、`buffers: x/y shared`、`init complete`。
 - 验证：默认级别 `in[/out[` 行数 = 0，QNN_SDK_HTP 运行正常。
+
+### 5.18 sports 双模型深度加速：追平并反超 ORT EP QNN HTP（2026-08-11，SM8850）
+
+**现象**：`summary.csv` 中两个 sports 模型，QNN SDK HTP 相比 ORT EP QNN HTP 加速不明显甚至倒挂：
+
+| 模型 | QNN_SDK_HTP 原始 | ONNX_QNN_HTP (ORT) | 差距 |
+|---|---|---|---|
+| sports_vlog_online_small_0718 | 58.7 ms | 11.2 ms | 慢 5.2x |
+| sports_vlog_online_0129 | 86.1 ms | 30.5 ms | 慢 2.8x |
+
+两者都是 22 输入/22 输出 FP16 大 IO 图（输入 6.9M / 13.8M float）。
+
+**根因分解（新增 DBG 级每帧计时 `pop/sync/exec`，`qnn_backend.cpp RunBenchmark`）**：
+
+1. **主瓶颈（占 78%）：CPU 标量 `float_to_half()` 每帧转换**。原始 serialized.bin 输入是 FP16，每帧要把 6.9M（small）/13.8M（0129）个共享 float 输入转成 FP16 写入 tensor buffer。标量位运算循环耗时 **47.5ms/帧**（small）。
+2. **次瓶颈：context binary 默认编译（O=2、单核）**。HTP 计算（`graphExecute`）13.7ms（small）。
+3. **三瓶颈：输入转换单线程**，内存带宽未用满。
+
+**修复（3 步，全部实测，结果 diff=0 保持）**：
+
+- **a. NEON FP16 转换（`qnn_backend.cpp` PopulateInput/ReadOutput + CMakeLists）**：arm64 用 `vcvt_f16_f32` / `vcvt_f32_f16`（单指令 4 通道）替代标量位运算。CMakeLists 对 `src/qnn_backend.cpp` 单独加 `-march=armv8.2-a+fp16`（`set_source_files_properties`，不影响其它文件）。效果：pop **47.5→5.9ms**（small），61→19.5ms。
+- **b. 多线程输入转换（RunBenchmark）**：22 个输入张量互相独立，用 `std::thread` 按 `num_threads` 分块并行转换（`--threads` 控制）。效果：pop **5.9→2.5ms**（small）、13→4.3ms（0129）。
+- **c. 重新编译 context binary：O=3 + soc_id=87 + num_cores=2 + hvx_threads=8 + P=23**（`tools/config/htp_config_sports.json`，设备端 `qnn-context-binary-generator`）。效果：exec（HTP 计算）**13.7→8.3ms**（small）；后续 hvx_threads 扫描再降到 **~7.5ms**（见下）。
+
+**关键认知：ORT 为什么快？** 加载 ORT 的 `-ONNX_QNN_HTP-epContext_qnn.bin` 到 QNN SDK backend 实测：**ORT 图是 FP32 IO + HTP 内部 FP16 计算**（`enable_htp_fp16_precision=1` 只影响图内），所以 ORT 每帧输入是 memcpy（~2.9ms）而非 FP16 转换。我们的 FP16 图 exec 更快（8.3 vs 10.1ms），只需把 pop 优化到同量级即反超。
+
+**P 点扫描**（O=3+2core 基础上 `finalize_config P∈{0,6,15,20,23}`）：P 影响很小（exec 8.4~8.8ms），**P=23 略优**。`vtcm_mb=16` 超限失败（composeGraphs rc=14）、`dlbc` 格式不被接受（rc=9）——均不采用。
+
+**hvx_threads 扫描**（O=3+2core+P=23 基础上，hvx_threads∈{2,4,6,8}，2026-08-11 实测）——**影响明显**：
+
+| hvx_threads | small_0718 avg | 0129 avg |
+|---|---|---|
+| 2 | 15.24 ms | 33.57 ms |
+| 4（默认） | 10.76 ms | 27.49 ms |
+| 6 | 9.45 ms | 26.35 ms |
+| **8** | **9.40 ms** | **25.59 ms** |
+
+结论：hvx=2 明显差（HVX 流水线喂不满）；默认 4 非最优；**hvx=8 最优**（两模型再快 12%/7%，6 与 8 接近饱和）。**结论性经验：hvx_threads 对多核大图影响显著，必须实测扫描，默认 4 不是最优**（2026-08-11）。
+
+**最终实测（repeat 100，插电，O=3 + 2core + hvx8 + P=23）**：
+
+| 模型 | QNN_SDK_HTP 优化后 | ONNX_QNN_HTP (ORT) | 提升 vs ORT |
+|---|---|---|---|
+| sports_vlog_online_small_0718 | **9.33 ms** | 11.2 ms | 更快 17% |
+| sports_vlog_online_0129 | **25.64 ms** | 30.5 ms | 更快 16% |
+
+相对原始：small 58.7→9.33（**6.3x**）、0129 86.1→25.6（**3.4x**）。两个模型均**反超 ORT**，diff=0。
+
+**结论性经验（2026-08-11）**：
+1. FP16 大 IO 图的隐藏瓶颈在 **CPU 端逐帧数据类型转换**（float→half/量化），不在 HTP 计算——先加 per-run 分解计时定位，再对症优化（NEON + 多线程）。
+2. ORT QNN EP 的 epContext 图是 **FP32 IO + HTP 内部 FP16**；要反超 ORT，用 **FP16 图 + 优化 CPU 转换**比照搬 FP32 IO 更快（exec 更短）。
+3. 编译 context binary 用 **O=3 + soc_id + num_cores=2 + hvx_threads=8 + P=23** 是当前最优组合；P 点需实测、vtcm 超限会失败、hvx_threads 影响显著需扫描（默认 4 非最优、2 明显差）。
+4. 新生成的正式 serialized.bin 已部署到设备（`sports_vlog_online_0129.serialized.bin`、`sports_vlog_online_small_0718.serialized.bin`），复现命令见 `tools/config/htp_config_sports.json`（graph_names 需改为目标模型名）。
+
+### 5.19 FAQ：soc_id / HTP 核心数 / P 点 / vtcm_mb / context binary 生成命令解析（2026-08-11）
+
+针对 5.18 的优化组合 `O=3 + soc_id + num_cores=2 + P=23` 的常见疑问解析。
+
+**Q1：soc_id 不是自动的吗？为什么要显式加？**
+
+不是自动的（至少在编译期不是），必须显式指定，原因有二：
+
+1. **QNN 的 `soc_id` 是 QNN SDK 自己的枚举，不是 Linux 的 soc_id**。以本机 SM8850 为例：
+   - 设备运行时 `/sys/devices/soc0/soc_id = 660`（Linux 内核 platform id，`ro.soc.model=SM8850`）；
+   - QNN 编译配置里的 `soc_id = 87` 是 `QNN_SOC_MODEL_SM8850=87`（定义在 SDK `include/QNN/QnnTypes.h` 的 `QNN_SOC_MODEL_*` 枚举）。
+   - 两者是**两套完全不同的编号系统**，无法靠"读设备"自动填到编译配置里。
+2. **离线编译时生成器不知道目标设备**。`qnn-context-binary-generator` 在 shell/PC 上把 `model.so` 预编译成 context binary，它不知道这个 bin 将来跑在哪台 SoC 的 HTP 上。显式写 `soc_id=87 + dsp_arch="v81"`，编译器才会启用针对该 SoC HTP 的**额外优化算法**（v81 双核调度、HVX 指令集利用等）；不指定则走通用优化，性能可能打折。
+
+> 结论：编译期 soc_id **必须手动填且要与目标设备匹配**。换设备时必须改（SM8850=87 / v81；SM8750、SM8650 等各不同，查 QnnTypes.h）。
+
+**Q2：SM8850 的 HTP 有几个核心？**
+
+**2 个 NSP（Neural Signal Processor）核心**，即 HTP 双核。依据：
+1. QNN 官方《HTP Optimization》文档明确 SM8850（hexagon-v81）为双 NSP；
+2. 实测佐证：同样 O=3，`num_cores=1` 时 HTP 计算 exec=13.7ms（small_0718），`num_cores=2` 降到 **8.3ms**，接近翻倍。
+> 编译时 `num_cores` 上限即 2，设 3+ 会失败/无效。
+
+**Q3：P=23 是什么意思？为什么等于 23？还可以等于哪些？其他模型/设备要变吗？**
+
+- **P 点含义**：`finalize_config: {"P": n}` 是 HTP 编译器 finalize 阶段的一个**内部实现权衡点**，仅 O=3 时生效，在**延迟 vs DRAM 带宽**等之间做取舍（不同 P 对应不同的张量放置/流水/调度策略）。**同一 P 下输出与不指定 P 位精确一致**（不损精度）。
+- **为什么等于 23**：无理论公式，纯粹实测。对 sports 模型扫 `P∈{0,6,15,20,23}`，exec 分别为 8.84 / 8.75 / 8.77 / 8.64 / **8.41ms**，P=23 略优故采用。
+- **合法取值**：`0~23`，排除 {7,9,10,11,12,14,18}，即共 17 个：`{0,1,2,3,4,5,6,8,13,15,16,17,19,20,21,22,23}`；一次只能指定一个。
+- **为什么排除 {7,9,10,11,12,14,18}（2026-08-11 查证）**：官方文档（《HTP Auto Optimization》`htp_auto_optimization.html`）**只给出合法值清单，没有解释排除原因**，仅注明"合法 P 值集合与每个值的行为可能随 SDK 版本变化，升级需重验"。查 `QnnHtpGraph.h`：`QnnHtpGraph_FinalizeConfig_t` 是 key-value 结构，P 点具体值不在头文件中、只在文档列出。**实测**（设备 SM8850）：填被排除的 `P=7` 生成 context binary **不报错**（rc=0），产物与 `P=0`（默认，不改变任何参数）**字节完全相同**（16806808B）→ 排除值被生成器**静默忽略、回退默认**，等价于没设。**结论**：排除值是该 SDK 版本中**未定义/未实现的编译器内部配置状态**（保留空洞，可能给未来版本或内部调试用），填了无效果而非报错；有效 P 值本质是 finalize 阶段的一组编译器内部启发式策略点，随版本可能增减。
+- **其他模型/设备**：**必须重新扫描实测**。P 是编译器内部权衡点，最优值与图结构强相关（不同网络最佳 P 不同）；不同 SoC 的 HTP 架构不同，最佳 P 也可能变。结论性做法：O=3+num_cores 基础上扫一遍候选 P（建议 0,6,15,20,23 起步），取 exec 最优者。
+
+**Q4：生成优化的 bin 的完整命令（SM8850，设备端）**
+
+前提：已有该模型转换出的 `model.so`（如 `libsports_vlog_online_small_0718.so`，由 `qnn-onnx-converter` 从 `.onnx` 以 FP16 精度生成）。
+
+① 设备端两份配置（`/data/local/tmp/qnn-2.48.40/`，`graph_names` 必须改为目标模型名）：
+
+```json
+// htp_config_sports.json
+{
+  "graphs": [
+    {
+      "graph_names": ["sports_vlog_online_small_0718"],
+      "vtcm_mb": 8, "O": 3, "hvx_threads": 8,
+      "advanced_activation_fusion": true,
+      "num_cores": 2,
+      "finalize_config": { "P": 23 }
+    }
+  ],
+  "devices": [
+    { "device_id": 0, "soc_id": 87, "dsp_arch": "v81", "pd_session": "unsigned" }
+  ]
+}
+```
+
+```json
+// backend_ext_sports.json（设备端生成器只认 backend_extensions 包装格式）
+{
+  "backend_extensions": {
+    "shared_library_path": "./libQnnHtpNetRunExtensions.so",
+    "config_file_path": "./htp_config_sports.json"
+  }
+}
+```
+
+② 生成优化 context binary：
+
+```bash
+adb shell "cd /data/local/tmp/qnn-2.48.40 && \
+  ./qnn-context-binary-generator \
+    --model ../bench_test/libsports_vlog_online_small_0718.so \
+    --backend ./libQnnHtp.so \
+    --binary_file sports_opt \
+    --config_file ./backend_ext_sports.json"
+# 产物：/data/local/tmp/qnn-2.48.40/output/sports_opt.bin
+```
+
+> 换模型：改 `graph_names` 为对应模型名 + 确保有对应 `model.so`，重跑 ②③ 即可。正式配置已入库：`tools/config/htp_config_sports.json`、`tools/config/backend_ext_sports.json`。
+
+**Q5：vtcm_mb 是什么参数？**
+
+- **定义**：VTCM = Vector Tensor Coprocessor Memory（向量张量协处理器存储器），是 HTP 的**片上紧耦合 SRAM**，紧邻 HVX/张量计算单元，访问速度远高于外部 DRAM。
+- **作用**：`vtcm_mb` 指定编译 context binary 时把多少 MB 的**权重/激活/中间张量放进这片片上 SRAM**（而非 DRAM）。命中 VTCM 的访问不走 DRAM 总线 → 大幅降低带宽压力、加快推理；对**权重较大/带宽受限**的图收益最明显。代价：VTCM 是共享片上资源，设太大会**占不满反而编译失败**或影响其它用例。
+- **取值**：`4`（QNN 默认）、`0`（用设备最大可用值，需配合 `soc_id`）、`8`（本项目 sports/tfc 配置值）。
+- **本项目实测（SM8850）**：sports/tfc 均用 **8 MB**（默认的两倍）；试过 **16 MB 直接超限失败**（`composeGraphs rc=14`）→ SM8850 VTCM 上限在 8~16 之间；对 TDF 类图（tfc）vtcm 大小对性能无影响（tfc 对编译参数整体不敏感，见 5.21）。
+- **一句话**：`vtcm_mb` = “给 HTP 在片上多留多少快速内存放权重/中间数据”，默认 4、常用 8，设太大会编译失败，最佳值需按图实测。
+
+### 5.20 model.so 为什么比 context binary 慢（2026-08-11，SM8850）
+
+**现象**：`QNN_SDK_HTP` 直接跑 `libsports_vlog_online_small_0718.so`（运行时 compose）与跑离线 `serialized.bin`（P=23 优化版），当前优化代码（NEON+多线程 pop）下实测：
+
+| 指标 | model.so | serialized.bin (P=23) | 差异 |
+|---|---|---|---|
+| init 加载 | 17836 ms | 223 ms | so 慢 ~80x |
+| exec（HTP 计算） | 13.39 ms | 8.34 ms | so 慢 60% |
+| pop（输入转换） | 2.24 ms | 2.50 ms | 相当 |
+| avg | 15.63 ms | 10.65 ms | so 慢 47% |
+
+**根因**：
+1. **编译时机**：model.so 在进程启动时才 `QnnModel_composeGraphs()` 运行时在线 compose+finalize（0129 模型达 48s）；serialized.bin 离线已编译，运行时仅反序列化。
+2. **优化参数**：model.so 在线 finalize 只能用默认（O=2、单核 `num_cores=1`、无 P 点、无 soc 预调优）→ exec 13.4ms；serialized.bin 离线可显式 O=3 + num_cores=2 + P=23 + soc_id=87 → exec 8.3ms。
+3. **pop 无差**：两条路径共用同一 `qnn_backend.cpp` 输入转换。
+
+**结论性经验**：model.so 慢的本质是把图编译推迟到运行时且用默认单核 O=2 优化。**生产/基准应使用离线编译的 `.serialized.bin`，model.so 仅作为生成 context binary 的中间产物**（2026-08-11）。
+
+### 5.21 tfc_tdf_epoch_127 极致加速：反超 ORT，图编译参数无额外收益（2026-08-11，SM8850）
+
+**背景**：沿用 5.18 的 sports 方法论对 `tfc_tdf_epoch_127_val_loss_0_05071_causal_8frame_state`（22 in/22 out，FP16，3 路 sub-band 结构）做极致优化。
+
+**实测（当前优化代码 = NEON FP16 转换 + 多线程输入转换）**：
+
+| 版本 | avg（repeat 200） | pop | exec |
+|---|---|---|---|
+| 现有 serialized.bin（7-02） | **4.46 ms** | 1.31 | 3.13 |
+| O=3 + num_cores=2 + hvx8 | 4.53 ms | 1.21 | 3.18 |
+| O=3 + 2core + hvx8 + P={6,15,23} | 4.52~4.65 ms | ~1.2 | ~3.2 |
+| ONNX_QNN_HTP（ORT） | 4.94 ms | — | — |
+
+**关键结论**：
+1. **主要收益来自优化代码**（NEON+多线程 pop）：历史 serialized 稳态 ~11.5ms → **4.46ms（2.6x）**，`max_diff=0`。
+2. **图编译参数对 tfc 完全无收益**：O3 / num_cores=2 / hvx_threads{4,6,8} / P{6,15,23} 全部实测，exec 恒定 **~3.1ms**（HTP 计算下限，时钟限制）——再次验证 5.12 "TDF 类图对 finalize 优化不敏感"。
+3. **已反超 ORT**：QNN SDK 4.46ms vs ORT EP 4.94ms，**快 ~10%**（ONNX_CPU 基线 44.4ms，accel 8.99x）。
+
+**hvx_threads 默认值确认（2026-08-11）**：QNN 官方 `htp_backend.html`——离线编译（context binary）未指定 `hvx_threads` 时默认写入 **4**；在线 prepare（model.so）未指定时用该 SoC **最大支持值**。
+
+**结论性经验**：TDF 类逐元素/小卷积图在 SM8850 上 exec 已到 HTP 计算下限（~3.1ms），追极致加速只能靠运行时路径（NEON/多线程 IO 转换，已做）；图编译参数（O/P/num_cores/hvx）无需再试。**最优 = 现有 serialized.bin + 优化代码，无需替换 bin**（2026-08-11）。
+
+### 5.22 ONNX_QNN_HTP 的 soc_model / htp_arch 运行时自动探测（2026-08-11，SM8850）
+
+**需求**：`src/onnx_backend.cpp` 中 `ONNX_QNN_HTP` 的 `soc_model`/`htp_arch` 不能写死（只适配单一设备，换机即错），也不能写 `0`（放弃 SoC 特定优化）→ **运行时自动探测设备 SoC 并填入对应值**。
+
+**实现**（`src/onnx_backend.cpp`）：
+- 新增 `detect_qnn_soc()`：读 Android 属性 `ro.soc.model`（`__system_property_get`），映射表 `{型号 → QNN soc_id, htp_arch}`（soc_id 取自 `QnnTypes.h` 的 `QNN_SOC_MODEL_*` 枚举；arch 取自 NDK 构建脚本的 hexagon 版本表）。
+- `ONNX_QNN_HTP` 配置改用探测结果；**未知 SoC 回退 `"0"/"0"`（auto，ORT 自行探测）**。
+
+**关键踩坑（htp_arch 格式）**：查 ORT 源码 `ParseHtpArchitecture()`（`qnn_execution_provider.cc`）——它**只接受数字字符串** `"68"/"69"/"73"/"75"/"81"`，**不接受 `"v81"`**！此前写死的 `"v81"` 会命中 else 分支打 `WARNING: Invalid HTP architecture` 并保持 `NONE`（等于没设）。映射表必须输出**裸数字**。
+
+**验证（SM8850 设备）**：
+```
+ONNX: detected SoC SM8850 -> QNN soc_model=87 htp_arch=81
+ONNX: QNN(htp) EP configured
+ONNX_QNN_HTP [test_model.onnx] avg=0.657 ms  diff=0.000184  accel=37.90x
+```
+三平台构建（android-arm64 / win-x64 / win-x86）均通过。
+
+**结论性经验**：ORT QNN EP 的 `htp_arch` 必须是数字字符串（`"81"`），带 `v` 前缀会被判无效并回退 NONE；`soc_model` 是 `QNN_SOC_MODEL_*` 十进制值字符串。跨设备部署应运行时探测而非写死（2026-08-11）。

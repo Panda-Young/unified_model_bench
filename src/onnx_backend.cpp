@@ -16,6 +16,7 @@
 #include <vector>
 
 #if defined(__ANDROID__) || defined(__android__)
+#include <sys/system_properties.h>
 /* NNAPI symbols loaded dynamically -- avoid link-time dependency */
 #endif
 
@@ -46,6 +47,56 @@ static bool OrOk(const OrtApi *api, OrtStatus *st, const char *what, std::string
     LOGE("ONNX: %s failed: %s", what, msg);
     err = std::string("ONNX: ") + what + ": " + msg;
     api->ReleaseStatus(st);
+    return false;
+}
+
+/* ---------------------------------------------------------------------------
+ * Detect the device SoC model + HTP architecture at runtime and map them to
+ * the QNN EP "soc_model"/"htp_arch" option values. Hard-coding these only
+ * fits one device, while leaving them "0" (auto) skips SoC-specific tuning.
+ *
+ * - soc_model: QNN_SOC_MODEL_* enum value as a decimal string (QnnTypes.h),
+ *              e.g. SM8850 -> "87".
+ * - htp_arch:  the BARE architecture number string. ONNX Runtime's
+ *              ParseHtpArchitecture() accepts ONLY "68"/"69"/"73"/"75"/"81"
+ *              (NOT "v81"), so the mapping must emit the bare number.
+ *
+ * Returns true when the SoC was recognized; false -> caller keeps "0"/"0"
+ * (auto) so ORT probes the device itself.
+ * -------------------------------------------------------------------------*/
+static bool detect_qnn_soc(std::string &soc_model, std::string &htp_arch)
+{
+#if defined(__ANDROID__) || defined(__android__)
+    char buf[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("ro.soc.model", buf) <= 0) {
+        LOGW("ONNX: cannot read ro.soc.model - QNN soc_model/htp_arch left auto");
+        return false;
+    }
+    static const struct {
+        const char *name;
+        const char *soc;
+        const char *arch;
+    } kSocMap[] = {
+        {"SM8850", "87", "81"}, {"SM8750", "69", "79"}, {"SM8650", "57", "75"},
+        {"SM7750", "86", "73"}, {"SM8550", "43", "73"}, {"SM7635", "73", "73"},
+        {"SC8380XP", "60", "73"}, {"SM8475", "42", "69"}, {"SM8450", "36", "69"},
+        {"SM7450", "41", "69"}, {"SM8350", "30", "68"}, {"SM7325", "35", "68"},
+        {"SC8280X", "37", "68"},
+    };
+    for (auto &e : kSocMap) {
+        if (stricmp_(buf, e.name) == 0) {
+            soc_model = e.soc;
+            htp_arch = e.arch;
+            LOGI("ONNX: detected SoC %s -> QNN soc_model=%s htp_arch=%s",
+                 buf, e.soc, e.arch);
+            return true;
+        }
+    }
+    LOGW("ONNX: unknown SoC '%s' - QNN soc_model/htp_arch left auto", buf);
+#else
+    (void)soc_model;
+    (void)htp_arch;
+#endif
     return false;
 }
 
@@ -350,6 +401,11 @@ bool ONNXBackend::ConfigureEP()
         if (id_ == BackendId::ONNX_QNN_HTP) {
             /* QNN EP with HTP backend -- full tuning for best NPU acceleration */
             backend_type = "htp";
+            /* Probe the device SoC/HTP arch at runtime (falls back to auto on
+             * unknown SoCs) instead of hard-coding values for one device. */
+            std::string soc_model("0");
+            std::string htp_arch("0");
+            detect_qnn_soc(soc_model, htp_arch);
             const char *htp_keys[] = {
                 "backend_type",
                 "soc_model",
@@ -363,8 +419,8 @@ bool ONNXBackend::ConfigureEP()
             };
             const char *htp_values[] = {
                 "htp", // backend_type: HTP NPU backend
-                "0",   // soc_model: 0=auto
-                "0",   // htp_arch: 0=auto
+                soc_model.c_str(), // soc_model: auto-probed (0 = unknown/auto)
+                htp_arch.c_str(),  // htp_arch: bare arch number ("81", not "v81")
                 "off", // profiling_level: off basic detailed
                 "/data/local/tmp/qnn_htp_profiling.csv",
                 "burst", // htp_performance_mode: burst balanced default high_performance ...

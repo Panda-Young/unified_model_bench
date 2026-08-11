@@ -49,9 +49,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <dlfcn.h>
+
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 #if defined(__ANDROID__) || defined(__android__)
 #include <cerrno>
@@ -325,6 +330,8 @@ private:
 
     size_t num_inputs_ = 0;
     size_t num_outputs_ = 0;
+
+    int num_threads_ = 4; /* CPU threads for input conversion */
 
     double init_ms_ = 0;
 };
@@ -1232,7 +1239,7 @@ bool QnnSdkBackend::Initialize(const char *model_path, int num_threads)
 {
     auto t0 = std::chrono::high_resolution_clock::now();
     last_error_.clear();
-    (void)num_threads;
+    num_threads_ = num_threads > 0 ? num_threads : 4;
 
     /* ELF shared object -> model.so (composeGraphs), otherwise context binary */
     if (is_elf_shared_object(model_path)) {
@@ -1410,11 +1417,25 @@ void QnnSdkBackend::PopulateInput(int idx, const float *data, size_t n)
             q[j] = (uint8_t)(v < 0.0f ? 0 : (v > 255.0f ? 255 : (uint8_t)(v + 0.5f)));
         }
     } else if (in_dtypes_[idx] == QNN_DATATYPE_FLOAT_16) {
-        /* Convert float -> FP16 into the 2-byte tensor buffer */
+        /* Convert float -> FP16 into the 2-byte tensor buffer. On arm64 this
+         * is a single NEON FCVT (4 lanes per instruction) instead of the
+         * scalar bit-twiddling fallback; these models move ~7-14M elements
+         * per inference, so the scalar loop was ~47ms of every frame. */
         uint16_t *h = (uint16_t *)dst;
+#if defined(__aarch64__)
+        size_t j = 0;
+        for (; j + 4 <= n; j += 4) {
+            float32x4_t f4 = vld1q_f32(data + j);
+            vst1_u16(h + j, vreinterpret_u16_f16(vcvt_f16_f32(f4)));
+        }
+        for (; j < n; ++j) {
+            h[j] = float_to_half(data[j]);
+        }
+#else
         for (size_t j = 0; j < n; ++j) {
             h[j] = float_to_half(data[j]);
         }
+#endif
     } else {
         memcpy(dst, data, n * sizeof(float));
     }
@@ -1450,11 +1471,23 @@ bool QnnSdkBackend::ReadOutput(int idx, float *dst, size_t n)
             dst[j] = ((float)q[j] - (float)offset) * scale;
         }
     } else if (out_dtypes_[idx] == QNN_DATATYPE_FLOAT_16) {
-        /* Convert FP16 -> float from the 2-byte tensor buffer */
+        /* Convert FP16 -> float from the 2-byte tensor buffer (NEON FCVT on
+         * arm64, scalar fallback elsewhere - see PopulateInput). */
         const uint16_t *h = (const uint16_t *)src;
+#if defined(__aarch64__)
+        size_t j = 0;
+        for (; j + 4 <= n; j += 4) {
+            float16x4_t h4 = vreinterpret_f16_u16(vld1_u16(h + j));
+            vst1q_f32(dst + j, vcvt_f32_f16(h4));
+        }
+        for (; j < n; ++j) {
+            dst[j] = half_to_float(h[j]);
+        }
+#else
         for (size_t j = 0; j < n; ++j) {
             dst[j] = half_to_float(h[j]);
         }
+#endif
     } else {
         memcpy(dst, src, n * sizeof(float));
     }
@@ -1484,17 +1517,52 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
         snaps[i].resize(out_elems_[i] > 0 ? out_elems_[i] : 1);
     }
 
-    auto execute_once = [&]() -> bool {
+    auto execute_once = [&](double &t_pop, double &t_sync, double &t_exec) -> bool {
+        auto c0 = std::chrono::high_resolution_clock::now();
 #if defined(__ANDROID__) || defined(__android__)
         /* Combined buffer: a single sync covers every input tensor */
         if (!in_dma_.empty() && in_dma_[0].fd >= 0) {
             dma_buf_sync(in_dma_[0].fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_WRITE);
         }
 #endif
-        for (size_t i = 0; i < num_inputs_; ++i) {
-            PopulateInput((int)i, input_bufs_[i],
-                          input_buf_elems_[i] > 0 ? input_buf_elems_[i] : in_elems_[i]);
+        auto c1 = std::chrono::high_resolution_clock::now();
+        /* PopulateInput: convert all inputs from shared float buffers into the
+         * tensor buffers (FP16/quantized). These 22 tensors are independent,
+         * so convert them across CPU threads - for these sports models the
+         * ~27-55MB of input conversion is the single biggest per-frame cost
+         * after the NEON fix, and threads hide most of the memory bandwidth. */
+        {
+            size_t n_in = num_inputs_;
+            size_t nthreads = (size_t)num_threads_;
+            if (nthreads < 1) {
+                nthreads = 1;
+            }
+            if (nthreads > n_in) {
+                nthreads = n_in;
+            }
+            if (nthreads <= 1 || n_in <= 1) {
+                for (size_t i = 0; i < n_in; ++i) {
+                    PopulateInput((int)i, input_bufs_[i],
+                                  input_buf_elems_[i] > 0 ? input_buf_elems_[i] : in_elems_[i]);
+                }
+            } else {
+                size_t chunk = (n_in + nthreads - 1) / nthreads;
+                std::vector<std::thread> ths;
+                ths.reserve(nthreads);
+                for (size_t t = 0; t < nthreads; ++t) {
+                    ths.emplace_back([&, t]() {
+                        for (size_t i = t * chunk; i < n_in && i < (t + 1) * chunk; ++i) {
+                            PopulateInput((int)i, input_bufs_[i],
+                                          input_buf_elems_[i] > 0 ? input_buf_elems_[i] : in_elems_[i]);
+                        }
+                    });
+                }
+                for (auto &th : ths) {
+                    th.join();
+                }
+            }
         }
+        auto c2 = std::chrono::high_resolution_clock::now();
 #if defined(__ANDROID__) || defined(__android__)
         if (!in_dma_.empty() && in_dma_[0].fd >= 0) {
             dma_buf_sync(in_dma_[0].fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_WRITE);
@@ -1505,6 +1573,14 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
             in_tensors_.data(), (uint32_t)in_tensors_.size(),
             out_tensors_.data(), (uint32_t)out_tensors_.size(),
             nullptr, nullptr);
+        auto c3 = std::chrono::high_resolution_clock::now();
+        /* Breakdown (DEBUG only): populate = CPU float->FP16 conversion of all
+         * inputs, sync = DMA-BUF cache sync + fixed call overhead, exec = the
+         * actual HTP inference. This isolates where the per-frame time goes. */
+        t_pop = std::chrono::duration<double, std::milli>(c2 - c1).count();
+        t_sync = std::chrono::duration<double, std::milli>(c1 - c0).count() +
+                 std::chrono::duration<double, std::milli>(c3 - c2).count();
+        t_exec = std::chrono::duration<double, std::milli>(c3 - c2).count();
         if (st != QNN_GRAPH_NO_ERROR) {
             LOGE("QNN: graphExecute rc=%d (0x%X)", (int)st, (unsigned)st);
         }
@@ -1512,20 +1588,27 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
     };
 
     for (int w = 0; w < warmup; ++w) {
-        if (!execute_once()) {
+        double t_pop = 0, t_sync = 0, t_exec = 0;
+        if (!execute_once(t_pop, t_sync, t_exec)) {
             LOGE("QNN: warmup execute failed");
             return false;
         }
     }
+    double acc_pop = 0, acc_sync = 0, acc_exec = 0;
     for (int r = 0; r < repeat; ++r) {
         auto t0 = std::chrono::high_resolution_clock::now();
-        if (!execute_once()) {
+        double t_pop = 0, t_sync = 0, t_exec = 0;
+        if (!execute_once(t_pop, t_sync, t_exec)) {
             LOGE("QNN: execute failed at run %d", r);
             return false;
         }
+        acc_pop += t_pop;
+        acc_sync += t_sync;
+        acc_exec += t_exec;
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        LOGD("QNN: run %d took %.3f ms", r, ms);
+        LOGD("QNN: run %d took %.3f ms (pop=%.2f sync=%.2f exec=%.2f)",
+             r, ms, t_pop, t_sync, t_exec);
         /* Copy outputs only on the last iteration: intermediate snapshots are
          * never consumed, so reading ~10 MB of outputs every run would only add
          * CPU-side copy + DMA sync latency to each measurement. */
@@ -1552,6 +1635,11 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
         if (ms < minv) {
             minv = ms;
         }
+    }
+    if (repeat > 0) {
+        LOGI("QNN: avg breakdown pop=%.2f sync=%.2f exec=%.2f ms (of avg %.2f ms)",
+             acc_pop / repeat, acc_sync / repeat, acc_exec / repeat,
+             total / repeat);
     }
 
     odata.resize(num_outputs_);

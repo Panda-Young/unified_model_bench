@@ -97,6 +97,15 @@ if(HAVE_QNN_SDK_BACKEND AND ANDROID AND HAVE_QNN_DELEGATE)
     add_definitions(-DHAVE_QNN_SDK_BACKEND)
 endif()
 
+# ---- NEON FP16 conversion (arm64) ----
+# qnn_backend.cpp uses vcvt_f16_f32 / vcvt_f32_f16 for fast FP16 I/O
+# conversion. These intrinsics need the ARMv8.2-A FP16 extension, so enable it
+# for that translation unit only (the rest of the project stays on armv8-a).
+if(ANDROID AND HAVE_QNN_SDK_BACKEND)
+    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/qnn_backend.cpp PROPERTIES
+        COMPILE_OPTIONS "-march=armv8.2-a+fp16")
+endif()
+
 # ---- Source files (glob all .cpp in src/) ----
 file(GLOB SRC_FILES "${CMAKE_SOURCE_DIR}/src/*.cpp")
 
