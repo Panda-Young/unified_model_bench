@@ -500,7 +500,11 @@ static void RecordFailure(ResultCollector &collector, const BackendConfig &bcfg,
     }
     rec.warmup_runs = cfg.warmup_runs;
     rec.repeat_runs = cfg.repeat;
-    rec.num_threads = cfg.num_threads;
+    /* QNN SDK HTP (offline context binary): the CSV "threads" column cannot
+     * report the HTP compute threads - hvx_threads is a compile-time parameter
+     * baked into the .serialized.bin and not readable at runtime. Use -1 so
+     * the CSV prints "-" instead of a misleading CPU thread count. */
+    rec.num_threads = (bcfg.id == BackendId::QNN_SDK_HTP) ? -1 : cfg.num_threads;
     rec.backend_name = bcfg.name;
     rec.device_info = device_info;
     rec.arch = arch;
@@ -639,7 +643,11 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     rec.output_elements = oe;
     rec.warmup_runs = cfg_.warmup_runs;
     rec.repeat_runs = cfg_.repeat;
-    rec.num_threads = cfg_.num_threads;
+    /* QNN SDK HTP (offline context binary): the CSV "threads" column cannot
+     * report the HTP compute threads - hvx_threads is a compile-time parameter
+     * baked into the .serialized.bin and not readable at runtime. Use -1 so
+     * the CSV prints "-" instead of a misleading CPU thread count. */
+    rec.num_threads = (bcfg.id == BackendId::QNN_SDK_HTP) ? -1 : cfg_.num_threads;
     rec.total_run_ms = total_ms;
     rec.avg_run_ms = avg_ms;
     rec.max_run_ms = max_ms;

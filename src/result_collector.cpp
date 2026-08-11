@@ -202,7 +202,13 @@ bool ResultCollector::ExportCsv(const char *path, const char *date,
         fprintf(f, "\"%s\",%zu,\"%s\",%zu,",
                 r.input_shape_str.c_str(), r.input_elements,
                 r.output_shape_str.c_str(), r.output_elements);
-        fprintf(f, "%d,%d,%d,", r.warmup_runs, r.repeat_runs, r.num_threads);
+        fprintf(f, "%d,%d,", r.warmup_runs, r.repeat_runs);
+        if (r.num_threads < 0) {
+            fputs("-", f);
+        } else {
+            fprintf(f, "%d", r.num_threads);
+        }
+        fputc(',', f);
         if (r.acceleration_vs_cpu < 0) {
             fprintf(f, "-,-,-,%d,", r.max_run_idx);
         } else {
@@ -274,7 +280,13 @@ bool ResultCollector::AppendCsv(const BenchmarkRecord &rec, const char *path,
     fprintf(f, "\"%s\",%zu,\"%s\",%zu,",
             rec.input_shape_str.c_str(), rec.input_elements,
             rec.output_shape_str.c_str(), rec.output_elements);
-    fprintf(f, "%d,%d,%d,", rec.warmup_runs, rec.repeat_runs, rec.num_threads);
+    fprintf(f, "%d,%d,", rec.warmup_runs, rec.repeat_runs);
+    if (rec.num_threads < 0) {
+        fputs("-", f);
+    } else {
+        fprintf(f, "%d", rec.num_threads);
+    }
+    fputc(',', f);
     if (rec.acceleration_vs_cpu < 0) {
         fprintf(f, "-,-,-,%d,", rec.max_run_idx);
     } else {

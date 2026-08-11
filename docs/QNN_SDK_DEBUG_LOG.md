@@ -877,3 +877,24 @@ ONNX_QNN_HTP [test_model.onnx] avg=0.657 ms  diff=0.000184  accel=37.90x
 三平台构建（android-arm64 / win-x64 / win-x86）均通过。
 
 **结论性经验**：ORT QNN EP 的 `htp_arch` 必须是数字字符串（`"81"`），带 `v` 前缀会被判无效并回退 NONE；`soc_model` 是 `QNN_SOC_MODEL_*` 十进制值字符串。跨设备部署应运行时探测而非写死（2026-08-11）。
+
+### 5.23 CSV 的 threads 列语义 + QNN_SDK_HTP 置 `-`（2026-08-11）
+
+**疑问**：`summary.csv` 的 `threads` 列对 QNN HTP context binary 是不是"对的"？
+
+**结论**：
+1. CSV `threads` 列 = `cfg.num_threads`（`--threads` 命令行，默认 4），是 **CPU 线程数**（控制输入转换等 CPU 侧并行），**与 context binary 的 `hvx_threads` 编译参数无关**。
+2. **QNN 运行时无法探测 context binary 的编译期参数**：`QnnGraph_getProperty` 只有 `QNN_GRAPH_PROPERTY_OPTION_CUSTOM`（无标准查询）；`QnnHtpGraph_CustomConfig_t`（含 `numHvxThreads`/`numCores`/`finalizeConfig`）只是**编译期设置**结构，不是运行时查询接口。`hvx_threads`/O/num_cores/P/soc 均不可在运行时可读。
+
+**处理**（`src/benchmark_runner.cpp` + `src/result_collector.cpp`）：`QNN_SDK_HTP` 的 `rec.num_threads` 置哨兵 `-1`，CSV 输出该列打印 `-`（表示"不适用/不可知"），避免被误读为 HTP 编译线程；其它后端仍记录真实 CPU 线程数。
+
+**验证**（SM8850，repeat 5）：
+
+| backend | CSV threads 列 |
+|---|---|
+| QNN_SDK_HTP（context bin） | `-` |
+| ONNX_CPU | `4` |
+
+三平台构建（android-arm64 / win-x64 / win-x86）通过。
+
+**结论性经验**：QNN HTP context binary 的编译参数（hvx_threads 等）运行时不可知，CSV `threads` 列对 `QNN_SDK_HTP` 打印 `-`；实际编译参数以 `tools/config/htp_config_sports.json` 为准（2026-08-11）。
