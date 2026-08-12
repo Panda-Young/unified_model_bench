@@ -750,7 +750,7 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 **Q2：SM8850 的 HTP 有几个核心？**
 
 **至少 2 个执行核（实测推断）——官方文档未给出 SM8850 的精确 NSP 数（2026-08-12 查证修正）**。依据：
-1. **官方文档无静态 NSP 数表**（QAIRT 2.48.40 实测查证）：`overview.html` 的 SoC 表只有 soc_id/Hexagon Arch/LPAI Arch 列、**没有 NSP 数**；`tutorial_nsp_selection.html` 只说明“平台可能暴露多个 HTP/NSP 设备、每设备含一个或多个执行核”，也不给具体数量。**唯一权威来源是运行时 `QnnDevice_getPlatformInfo()` 返回的 `hwDevices[].numCores`**（设备/运行态相关，无固定表）；本机 unsigned PD shell 下它只报 **1 核**。此前“官方文档明确双 NSP”的说法系误引，已修正。
+1. **官方文档无静态 NSP 数表**（QAIRT 2.48.40 实测查证）：`overview.html` 的 SoC 表只有 soc_id/Hexagon Arch/LPAI Arch 列、**没有 NSP 数**；`tutorial_nsp_selection.html` 只说明“平台可能暴露多个 HTP/NSP 设备、每设备含一个或多个执行核”，也不给具体数量。**唯一权威来源是运行时 `QnnDevice_getPlatformInfo()` 返回的 `hwDevices[].numCores`**（设备/运行态相关，无固定表）；本机 unsigned PD shell 下它只报 **1 核**（注意：**报 1 是 unsigned PD 暴露/授权的视图，≠ 物理只有 1 核**——离线 `num_cores:2` 实测近 2 倍加速即为物理核数 ≥2 的反证；若物理只有 1 核，编译成"2 核执行"的图不可能提速近一倍）。此前"官方文档明确双 NSP"的说法系误引，已修正。
 2. 实测佐证：同样 O=3，`num_cores=1` 时 HTP 计算 exec=13.7ms（small_0718），`num_cores=2` 降到 **8.3ms**，接近翻倍 → 说明该 HTP **编译期至少可用 2 个执行核**（“≥2”是实测推断，官方文档未写死“正好 2”）。
 > 术语说明：按 QNN 官方模型，层级是“HTP/NSP 设备（可多个）× 每设备多个执行核（numCores）”，`num_cores` 即图使用的执行核数；“双 NSP”与“单 NSP 双核”表述模糊，稳妥说法为“≥2 个执行核”。实测 `num_cores` 设 3+ 无效/失败。
 
