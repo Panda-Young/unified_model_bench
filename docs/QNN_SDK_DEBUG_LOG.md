@@ -898,3 +898,83 @@ ONNX_QNN_HTP [test_model.onnx] avg=0.657 ms  diff=0.000184  accel=37.90x
 三平台构建（android-arm64 / win-x64 / win-x86）通过。
 
 **结论性经验**：QNN HTP context binary 的编译参数（hvx_threads 等）运行时不可知，CSV `threads` 列对 `QNN_SDK_HTP` 打印 `-`；实际编译参数以 `tools/config/htp_config_sports.json` 为准（2026-08-11）。
+
+### 5.24 model.so 路径的多核设备配置——实测无效，已回退（2026-08-12）
+
+**背景**：`QNN_SDK_HTP` 直接跑 `lib*.so`（运行时 compose）默认**单核**（init 慢 ~80x、exec 慢 ~60%，见 5.20）；context binary 路径的 `num_cores:2` 是编译期烤进 bin 的，运行时无需配置。官方 `examples\QNN\SampleApp\SampleAppMultiCore` 用 `QNN_DEVICE_CONFIG_OPTION_PLATFORM_INFO` 在 `deviceCreate` 时把核拓扑告诉驱动，期望让运行时 compose 的图铺到多个 NSP 上。
+
+**尝试**（`src/qnn_backend.cpp` 曾加入 `SetupMultiCoreDeviceConfig()`）：用 `qnn_->deviceGetPlatformInfo(log_, &plat)`（创建前，QnnInterface.h L563）自动读核数 → `numCores>=2` 时构建 platform-info 设备配置（内存布局照 SampleAppMultiCore）传给 `deviceCreate`；`QNN_HTP_CORES=<n>` 可只降不升；仅作用 HTP + model.so 路径。另加 `deviceCreate` 后用 `deviceGetInfo(device_, &post)` 二次探测的诊断。
+
+**设备实测结论（2026-08-12，SM8850，`libsports_vlog_online_small_0718.so` + QNN_SDK_HTP）**：
+
+```
+创建前 deviceGetPlatformInfo: 1 device(s), deviceId=0 type=0, 1 core(s)
+创建后 deviceGetInfo:         1 device(s), deviceId=0 type=0, 1 core(s)
+QNN_SDK_HTP  avg=16.5~18.1 ms（与基线一致，无回归、无崩溃）
+```
+
+1. **创建前后都只报 1 core** → 否定了"创建后才能看到 2 核"的假设：本会话（unsigned PD / shell）运行时**只暴露 1 个 NSP**，第二个 NSP 仅能靠**离线 `num_cores:2` 编译**（烤进 context binary）使用。
+2. 因此设备级多核配置对 model.so 是"**安全但无效**"→ **代码已回退**（移除 `SetupMultiCoreDeviceConfig` 与二次探测诊断，恢复默认 `deviceCreate`），保持代码简洁。
+3. 注意 `deviceGetPlatformInfo` 返回的 info 需 `deviceFreePlatformInfo` 释放（本次已核实）。
+
+**结论性经验**：SM8850 在 unsigned PD 下 `deviceGetPlatformInfo`/`deviceGetInfo` **都只报 1 核**，运行时多核（设备级 platform-info 配置）不可行；多核（双 NSP）必须走**离线 context binary 的图级 `num_cores:2` 编译**（收益巨大，见 5.19 Q2：exec 13.7→8.3ms）；model.so 运行时路径保持单核即可，**不要指望设备级配置提速**（2026-08-12）。
+
+### 5.25 qnn-net-run 的 num_cores 验证：运行时图级多核不生效（2026-08-12，SM8850）
+
+**背景疑问**：`qnn-net-run` 有 `--num_cores` 选项吗？运行时通过 backend extension 传 `num_cores:2` 是否真生效？
+
+**结论 1（选项）**：`qnn-net-run --help` **没有 `--num_cores` 选项**。`num_cores` 是图级编译配置，通过 `--config_file`（backend extension JSON，`htp_config` 的 `graphs[].num_cores`）传入；`--device_options` 只有 `device_id/core_id`（选核，无核数）。
+
+**结论 2（实测，sports_vlog_online_small_0718，qnn-net-run + qnn-profile-viewer 解析，`--perf_profile burst`，50 次）**：
+
+| 配置 | QNN execute 平均 | RPC execute 平均 | HVX 线程 |
+|---|---|---|---|
+| 无 config（默认编译） | **99.9 ms**（复现 98.9ms） | 96.7 ms | 8 |
+| `num_cores:1`（O3+soc_id87/v81+vtcm8+hvx4） | **9.38 ms** | 8.47 ms | 4 |
+| `num_cores:2`（同上，仅核数不同） | **9.27 ms** | 8.34 ms | 4 |
+
+→ **`num_cores:1` vs `num_cores:2` 差异 ~1%（噪声内），运行时图级多核不生效/无收益**。与 5.24 一致：unsigned PD 运行时只暴露 1 个 NSP，`num_cores:2` 编译虽被接受但退化为单核执行。
+
+**附带重要发现**：
+1. **backend extension 图配置本身收益巨大**：无配置 99.9ms → 带配置（即使单核）9.3ms（~10x）。收益主要来自 `soc_id=87/dsp_arch="v81"`（v81 定向编译）+ O3 + vtcm8 + hvx4 的组合，**不是 num_cores**。
+2. **`hvx_threads` 确认生效**：无配置默认 8 → 配置 4，实际使用 4 → 图配置确实被应用（只是 num_cores 无效果）。
+3. 提示：unified_bench 的 model.so 路径目前**未传**这份 backend extension 图配置（默认编译 exec 13.7ms）；若接入 `--config_file` 同款图配置（O3/soc/vtcm/hvx），exec 有望显著下降——**值得单独验证（TODO）**。
+4. **基线 99.9ms 不作数（2026-08-12 用户确认）**：无 config 时 qnn-net-run **每次推理都在重新初始化**（client buffer/图相关状态逐次重建），99ms 是"每帧重建开销"而非真实执行耗时，与 config 后的稳态运行**不可比**，直接忽略。**唯一有效对比 = 同配置下 1c vs 2c**（稳态执行），差异 ~1% → 运行时图级多核不生效。
+
+**工具用法速记**（qnn-profile-viewer）：
+- 设备端：`bin\aarch64-android\qnn-profile-viewer` + `libQnnHtpProfilingReader.so`（均在 `/data/local/tmp/qnn-2.48.40/`），命令：`LD_LIBRARY_PATH=. ./qnn-profile-viewer --input_log out_xxx/qnn-profiling-data_0.log --reader ./libQnnHtpProfilingReader.so --output out_xxx/parsed`（注意用 `_0.log` 真实文件名，symlink 不被接受）。
+- CSV 表头在第 5 行（`Msg Timestamp,...`），**列名带前导空格**；`EXECUTE` 事件块里取 `RPC (execute) time` / `QNN (execute) time` / `Number of HVX threads used`。
+- qnn-net-run 需 `--profiling_level basic` 才生成可解析的 `qnn-profiling-data_0.log`；`--output_dir` 分开避免覆盖。
+
+**结论性经验**：运行时（model.so 或 qnn-net-run）传 `num_cores:2` **不生效**（unsigned PD 只暴露 1 NSP，编译退化为单核）；运行时性能收益来自 backend extension 图配置的 `soc_id/dsp_arch/O3/vtcm/hvx_threads`；`hvx_threads` 运行时确认可生效（默认 8，可配置）。unified_bench model.so 路径接入该图配置是下一步可验证的优化（2026-08-12）。
+
+### 5.26 unified_bench model.so 路径接入 HTP 图级配置（O3/vtcm/hvx/AAF）（2026-08-12，已实现+实测）
+
+**背景**：5.25 证明运行时 compose 吃 O3/soc/vtcm/hvx 这套图配置（num_cores 除外），qnn-net-run 带配置稳态 ~8-9ms。unified_bench 的 model.so 路径之前不传任何图配置（默认编译，exec 13.7ms）。
+
+**实现**（`src/qnn_backend.cpp`，`CreateBackendDeviceContext` 的 model.so 分支）：
+- 公共头文件**没有** backend-extensions 的 context 配置结构（qnn-net-run 的 `--config_file` 是其内部实现），所以走**公开 API**：给 `QnnModel_composeGraphs` 传 `GraphConfigInfo_t`，内含 `QnnHtpGraph_CustomConfig_t[]`。
+- 配置项（与离线 htp_config 对齐，`num_cores` 按 5.25 结论**不设**）：
+  - `QNN_HTP_GRAPH_CONFIG_OPTION_OPTIMIZATION` = `FINALIZE_OPTIMIZATION_FLAG`（O 级别）
+  - `QNN_HTP_GRAPH_CONFIG_OPTION_VTCM_SIZE`（MB）
+  - `QNN_HTP_GRAPH_CONFIG_OPTION_NUM_HVX_THREADS`
+  - `QNN_HTP_GRAPH_CONFIG_OPTION_ADVANCED_ACTIVATION_FUSION`
+- **env 可调**：`QNN_HTP_O`（默认 3）、`QNN_HTP_VTCM_MB`（默认 8）、`QNN_HTP_HVX_THREADS`（默认 8）、`QNN_HTP_AAF`（默认 1）。
+- 图名从模型路径推导（`libxxx.so` → `xxx`，去掉 `lib` 前缀与 `.so`），与 `QnnModel_composeGraphs` 的图名一致；名字不匹配则配置被忽略（安全回退默认）。
+- 仅 HTP 后端生效；GPU/CPU model.so 路径保持默认。
+- 需要新增 `#include <QNN/HTP/QnnHtpGraph.h>`。
+
+**实测（SM8850，`libsports_vlog_online_small_0718.so` + QNN_SDK_HTP，插电）**：
+
+| 配置 | exec（HTP 计算） | avg |
+|---|---|---|
+| 之前（无图配置，默认编译） | 13.7 ms | ~16 ms |
+| **O3 + vtcm8 + hvx8 + AAF（默认）** | **7.20 ms** | **9.6 ms** |
+| O3 + vtcm8 + hvx4 + AAF（env 覆盖） | 8.55 ms | 10.9 ms |
+
+- 日志确认：`QNN: HTP graph config: O3 vtcm=8MB hvx=8 aaf=1 graph=sports_vlog_online_small_0718`。
+- **model.so 运行时 exec 13.7→7.2ms（~47% 提升），已快于离线 serialized.bin 的 8.3ms**。
+- env 覆盖实测生效：`QNN_HTP_HVX_THREADS=4` → 日志 `hvx=4`、exec 8.55ms → **hvx8 运行时更优**，与离线扫描一致。
+- 三平台构建（android-arm64 / win-x64 / win-x86）通过，`check_braces` TOTAL: 0。
+
+**结论性经验**：model.so 运行时路径可通过 `composeGraphs` 的 `GraphConfigInfo_t` 直接注入 HTP 图级配置（O3/vtcm/hvx/AAF），exec 从 13.7ms 降到 7.2ms（甚至优于离线 bin）；`num_cores` 无需设（运行时单 NSP）；`hvx_threads=8` 最优。注：model.so 仍有 ~28s 的运行时 compose 初始化，**基准/生产仍推荐 serialized.bin**（init 223ms），model.so 主要用于验证/中间产物（2026-08-12）。

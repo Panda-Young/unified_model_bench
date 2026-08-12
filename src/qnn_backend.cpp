@@ -28,6 +28,7 @@
 #ifdef HAVE_QNN_SDK_BACKEND
 
 #include <QNN/HTP/QnnHtpDevice.h>
+#include <QNN/HTP/QnnHtpGraph.h>
 #include <QNN/HTP/QnnHtpMem.h>
 #include <QNN/HTP/QnnHtpPerfInfrastructure.h>
 #include <QNN/QnnBackend.h>
@@ -264,6 +265,7 @@ private:
 
     /* model.so support (QnnModel_composeGraphs) */
     bool is_model_so_ = false;
+    std::string model_path_; /* original model path (graph name derivation) */
     void *lib_model_ = nullptr;
     QnnComposeGraphsFn_t compose_graphs_ = nullptr;
     QnnFreeGraphInfoFn_t free_graphs_info_ = nullptr;
@@ -667,10 +669,90 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
         }
         LOGI("QNN: context created (model.so)");
 
+        /* HTP graph-level configs for runtime compose (mirrors the offline
+         * htp_config JSON: O-level, VTCM, HVX threads, activation fusion).
+         * num_cores is deliberately NOT set - the unsigned-PD runtime exposes
+         * a single NSP, so multi-core has no effect (docs 5.24/5.25). Env
+         * tunable for A/B: QNN_HTP_O (3), QNN_HTP_VTCM_MB (8),
+         * QNN_HTP_HVX_THREADS (8), QNN_HTP_AAF (1). GPU/CPU backends keep the
+         * default (no HTP-specific graph config). */
+        const qnn_wrapper_api::GraphConfigInfo_t *gci_arr[2] = {nullptr, nullptr};
+        const qnn_wrapper_api::GraphConfigInfo_t **gcis = nullptr;
+        uint32_t num_gcis = 0;
+        QnnHtpGraph_CustomConfig_t htp_cfg[4] = {};
+        QnnGraph_Config_t gcfg[4] = {};
+        const QnnGraph_Config_t *gcfg_ptrs[5] = {};
+        std::string graph_name;
+        qnn_wrapper_api::GraphConfigInfo_t gci = {};
+        if (id_ == BackendId::QNN_SDK_HTP) {
+            uint32_t o_level = 3;
+            uint32_t vtcm_mb = 8;
+            uint64_t hvx_threads = 8;
+            bool aaf = true;
+            const char *env = getenv("QNN_HTP_O");
+            if (env && env[0] != '\0') {
+                o_level = (uint32_t)atoi(env);
+            }
+            env = getenv("QNN_HTP_VTCM_MB");
+            if (env && env[0] != '\0') {
+                vtcm_mb = (uint32_t)atoi(env);
+            }
+            env = getenv("QNN_HTP_HVX_THREADS");
+            if (env && env[0] != '\0') {
+                hvx_threads = (uint64_t)atoi(env);
+            }
+            env = getenv("QNN_HTP_AAF");
+            if (env && env[0] != '\0') {
+                aaf = (atoi(env) != 0);
+            }
+
+            htp_cfg[0].option = QNN_HTP_GRAPH_CONFIG_OPTION_OPTIMIZATION;
+            htp_cfg[0].optimizationOption.type =
+                QNN_HTP_GRAPH_OPTIMIZATION_TYPE_FINALIZE_OPTIMIZATION_FLAG;
+            htp_cfg[0].optimizationOption.floatValue = (float)o_level;
+            htp_cfg[1].option = QNN_HTP_GRAPH_CONFIG_OPTION_VTCM_SIZE;
+            htp_cfg[1].vtcmSizeInMB = vtcm_mb;
+            htp_cfg[2].option = QNN_HTP_GRAPH_CONFIG_OPTION_NUM_HVX_THREADS;
+            htp_cfg[2].numHvxThreads = hvx_threads;
+            htp_cfg[3].option = QNN_HTP_GRAPH_CONFIG_OPTION_ADVANCED_ACTIVATION_FUSION;
+            htp_cfg[3].advancedActivationFusion = aaf;
+
+            for (uint32_t i = 0; i < 4; ++i) {
+                gcfg[i].option = QNN_GRAPH_CONFIG_OPTION_CUSTOM;
+                gcfg[i].customConfig = &htp_cfg[i];
+                gcfg_ptrs[i] = &gcfg[i];
+            }
+            gcfg_ptrs[4] = nullptr;
+
+            /* Graph name = model file stem minus "lib" prefix (matches the
+             * QnnModel_composeGraphs graph name, e.g. libfoo.so -> foo). */
+            graph_name = model_path_;
+            auto slash = graph_name.rfind('/');
+            if (slash != std::string::npos) {
+                graph_name = graph_name.substr(slash + 1);
+            }
+            if (graph_name.size() > 3 &&
+                graph_name.compare(graph_name.size() - 3, 3, ".so") == 0) {
+                graph_name = graph_name.substr(0, graph_name.size() - 3);
+            }
+            if (graph_name.size() > 3 && graph_name.compare(0, 3, "lib") == 0) {
+                graph_name = graph_name.substr(3);
+            }
+
+            gci.graphName = const_cast<char *>(graph_name.c_str());
+            gci.graphConfigs = gcfg_ptrs;
+            gci_arr[0] = &gci;
+            gcis = gci_arr;
+            num_gcis = 1;
+            LOGI("QNN: HTP graph config: O%u vtcm=%uMB hvx=%llu aaf=%d graph=%s",
+                 o_level, vtcm_mb, (unsigned long long)hvx_threads, aaf ? 1 : 0,
+                 graph_name.c_str());
+        }
+
         qnn_wrapper_api::GraphInfo_t **gi = nullptr;
         uint32_t ng = 0;
         qnn_wrapper_api::ModelError_t mrc = compose_graphs_(
-            backend_, *qnn_, context_, nullptr, 0, &gi, &ng,
+            backend_, *qnn_, context_, gcis, num_gcis, &gi, &ng,
             false, nullptr, QNN_LOG_LEVEL_INFO);
         LOGI("QNN: composeGraphs rc=%d graphs=%u", (int)mrc, ng);
         if (mrc != qnn_wrapper_api::MODEL_NO_ERROR || !gi || ng == 0) {
@@ -1240,6 +1322,7 @@ bool QnnSdkBackend::Initialize(const char *model_path, int num_threads)
     auto t0 = std::chrono::high_resolution_clock::now();
     last_error_.clear();
     num_threads_ = num_threads > 0 ? num_threads : 4;
+    model_path_ = model_path;
 
     /* ELF shared object -> model.so (composeGraphs), otherwise context binary */
     if (is_elf_shared_object(model_path)) {
