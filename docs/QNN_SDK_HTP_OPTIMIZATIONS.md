@@ -7,6 +7,30 @@
 
 ---
 
+## 0. 关键术语速查
+
+| 术语 | 全称 / 含义 | 简要说明 |
+|---|---|---|
+| **HTP** | Hexagon Tensor Processor | 高通 Hexagon DSP 上的张量加速器（NPU）。本工具 `QNN_SDK_HTP` 后端的目标硬件 |
+| **NSP** | Neural Signal Processor | HTP 内部的计算核心（含 HVX/HMX 与标量核）。`num_cores` 指用几个 NSP/执行核跑一个图 |
+| **HVX** | Hexagon Vector eXtensions | NSP 内的向量/SIMD 单元，负责卷积、逐元素等向量运算；`hvx_threads` 控制其并行线程数 |
+| **HMX** | Hexagon Matrix eXtensions | NSP 内的矩阵/MMA 单元（v75+ 架构），负责矩阵乘类算子 |
+| **VTCM** | Vector Tightly Coupled Memory | HTP 片上的高速紧耦合向量内存，访问远快于 DDR；把权重/中间激活放进 VTCM 可大幅减少 DDR 往返 |
+| **vtcm_mb** | VTCM 大小（MB） | 给图保留的 VTCM 量。**0 = `QNN_HTP_GRAPH_CONFIG_OPTION_MAX`**，表示自动取该 SoC 上限（如 SM8850→8MB）；默认 4MB，超出上限会编译失败 |
+| **AAF** | Advanced Activation Fusion，高级激活融合 | 把激活（ReLU/量化激活等）融合进前驱算子（如卷积）内部执行，中间激活无需写回 VTCM/DDR 再读回，省带宽省功耗；比 HTP 默认的“Conv+ReLU 折叠”覆盖更广 |
+| **O3** | `FINALIZE_OPTIMIZATION_FLAG` 图终优化级别 | 0~3，O3 最强：算子融合、张量布局/生命周期重排、最大化 VTCM 利用 |
+| **DCVS** | Dynamic Clock and Voltage Scaling | 动态调压调频；`dcvsEnable=0` 关闭并锁最高电压角，让 HTP 稳定在快档（避免数秒后降频的 6ms↔16ms 抖动） |
+| **RPC 控制延迟** | `rpc_control_latency`（µs） | CPU 与 HTP（DSP）之间 fastrpc 通道的控制延迟；独立 power config 项 |
+| **composeGraphs** | `QnnModel_composeGraphs` | 运行时把 model.so 编译成可执行图（model.so 路径的“在线编译”），图级配置在此注入 |
+| **context binary** | `.serialized.bin` | 离线 `qnn-context-binary-generator` 编译好的图二进制，加载快，图级优化已固化其中 |
+| **soc_model / htp_arch** | QNN SoC 模型 / HTP 架构 | 指定目标 SoC（如 SM8850→`87`）与架构（如 `81`/“v81”），启用 SoC 定向优化 |
+| **MAX_VOLTAGE_CORNER** | 最高电压角 | 把 bus/core 电压锁到硬件最高档（0xA0） |
+| **DMA-BUF** | Direct Memory Access buffer | 经 `/dev/dma_heap` 分配并注册给 QNN 的缓冲区，实现 CPU↔HTP 零拷贝 I/O |
+| **PD** | Process Domain（进程域） | 如 unsigned/signed，决定运行时能访问的 NSP/核数与权限（本工具 unsigned PD 运行时只暴露 1 核） |
+| **P 点** | `finalize_config` 的 P 参数 | O3 时生效的编译器内部权衡点（延迟 vs 带宽），随模型/设备需实测扫描 |
+
+---
+
 ## 1. 总览：两条执行路径
 
 | 路径 | 模型格式 | 优化施加点 |
