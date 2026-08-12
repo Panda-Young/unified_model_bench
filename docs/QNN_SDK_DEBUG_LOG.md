@@ -525,7 +525,7 @@ r66+: 8.3 → 8.9 → 9.6 → 10.6 → 永久 ~11.5
 - 优化级别 `O`：有效值 **2**（默认）和 **3**。O=3 通常更优，且**指定匹配目标的 `soc_id` 时会启用额外算法进一步提速**（但可能在某些图上更差、二进制更大、加载更慢，需实测）。`O=3` 对应 `QNN_HTP_GRAPH_OPTIMIZATION_TYPE_FINALIZE_OPTIMIZATION_FLAG = 3`。
 - **P 点**（仅 O=3 生效，`finalize_config: {"P": n}`）：编译器内部配置空间的不同点，调整**延迟 vs DRAM 带宽**等权衡。合法值 `0~23`，**排除 7,9,10,11,12,14,18**。不同网络最佳 P 不同，需逐一扫描实测；同一 P 下输出与无 P 位精确一致。**一次只能指定一个 P**。
 - 目标配置：SM8850 → `soc_id = 87`（`QNN_SOC_MODEL_SM8850=87`，见 `include/QNN/QnnTypes.h`）、`dsp_arch = "v81"`（设备加载 libQnnHtpV81* 系列）。
-- 其它图级选项：`vtcm_mb`（默认 4，可设更大；0 = 设备最大需配合 soc）、`hvx_threads`（默认 4）、`num_cores`（多核编译，SM8850 双 NSP，潜在最大收益项）、`dlbc`（带宽压缩）、`advanced_activation_fusion`（FP 模型默认开）、`monolithic_lstm`。
+- 其它图级选项：`vtcm_mb`（默认 4，可设更大；0 = 设备最大需配合 soc）、`hvx_threads`（默认 4）、`num_cores`（多核编译，离线实测 SM8850 用 2 核生效，潜在最大收益项）、`dlbc`（带宽压缩）、`advanced_activation_fusion`（FP 模型默认开）、`monolithic_lstm`。
 
 **标准流程（x86 主机离线准备，文档推荐）**：
 ```bash
@@ -605,7 +605,7 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 1. **FP16 转换（最大机制）**：`qnn-onnx-converter --preserve_io_layout --input_network x.onnx --float_bitwidth 16`。权重+激活+IO 全 FP16 → 内存带宽减半 + HTP FP16 硬件加速。**ORT 6.5ms 的核心秘密就是 enable_htp_fp16_precision**；当前 QNN SDK FP32 稳态 11.5ms，FP16 后有望对标/反超 ORT（5.11 已证 FP32 冷启动 4.83ms，FP16 在锁频下应更低）。
 2. **量化 A8W8 / A16W8**：HTP 原生算力为 INT8；音频模型建议先试 **A16W8**（`--act_bitwidth 16 --weights_bitwidth 8`）保精度、再试 A8W8（`--act_bitwidth 8 --weights_bitwidth 8`）。已有校准数据：`/data/local/tmp/mss/calibration_data{,_2000}/`、`/data/local/tmp/qnn/tfc_tdf_epoch_127_cal_loss_5071.json`；配合 `--input_list` + `--use_native_input_files`。量化器可选 `--param_quantizer`（percentile/mse 等）调精度。**【已实测 2026-08-06：A16W8 图执行崩 DSP，方向关闭，见 5.14B】**
 3. **ONNX 预化简（转换前）**：本图冗余极多（361 个 Constant 常量折叠、7 组 sub-band 重复结构、大量 Reshape/Transpose/Slice）。先跑 `onnx-simplifier`/`onnxoptimizer`（fuse_consecutive_transposes、eliminate_nop_*、常量折叠）再转换，节点更少、转换质量更高、bin 更小。**【已实测 2026-08-06：735→351 节点但慢 16%，HTP O3 已自行优化，方向关闭，见 5.14A】**
-4. **编译期**：O=3 + P 点扫描 + `num_cores:2`（双 NSP 多核，3 路 sub-band 可并行）+ `vtcm_mb` 调大（FP16 后 TCM 占用减半）+ `dlbc`（带宽压缩，FP16 后仍带宽受限时）。
+4. **编译期**：O=3 + P 点扫描 + `num_cores:2`（多核编译，3 路 sub-band 可并行）+ `vtcm_mb` 调大（FP16 后 TCM 占用减半）+ `dlbc`（带宽压缩，FP16 后仍带宽受限时）。
 5. **IO 优化**：`--preserve_io_layout`（已有）；若 `--float_bitwidth 16` 未把 IO 转 FP16 则显式 `--io_bitwidth 16`（22 in/22 out 的 IO 带宽占比高）。
 6. **运行时**：已做 dma-heap 零拷贝 + DCVS off/MAX corner/sleepDisable；多核需按 core 逐个 createPowerConfigId 投票；可试周期重发投票拉回 4.83ms 稳态。
 7. **验证纪律**：FP16/量化后必须对比 max_diff（FP16 预期 ~1e-3 量级）；量化还要做主观/感知听感验证；**基准必须插电**（低电量周期尖峰见 5.12）。
@@ -749,10 +749,10 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 
 **Q2：SM8850 的 HTP 有几个核心？**
 
-**2 个 NSP（Neural Signal Processor）核心**，即 HTP 双核。依据：
-1. QNN 官方《HTP Optimization》文档明确 SM8850（hexagon-v81）为双 NSP；
-2. 实测佐证：同样 O=3，`num_cores=1` 时 HTP 计算 exec=13.7ms（small_0718），`num_cores=2` 降到 **8.3ms**，接近翻倍。
-> 编译时 `num_cores` 上限即 2，设 3+ 会失败/无效。
+**至少 2 个执行核（实测推断）——官方文档未给出 SM8850 的精确 NSP 数（2026-08-12 查证修正）**。依据：
+1. **官方文档无静态 NSP 数表**（QAIRT 2.48.40 实测查证）：`overview.html` 的 SoC 表只有 soc_id/Hexagon Arch/LPAI Arch 列、**没有 NSP 数**；`tutorial_nsp_selection.html` 只说明“平台可能暴露多个 HTP/NSP 设备、每设备含一个或多个执行核”，也不给具体数量。**唯一权威来源是运行时 `QnnDevice_getPlatformInfo()` 返回的 `hwDevices[].numCores`**（设备/运行态相关，无固定表）；本机 unsigned PD shell 下它只报 **1 核**。此前“官方文档明确双 NSP”的说法系误引，已修正。
+2. 实测佐证：同样 O=3，`num_cores=1` 时 HTP 计算 exec=13.7ms（small_0718），`num_cores=2` 降到 **8.3ms**，接近翻倍 → 说明该 HTP **编译期至少可用 2 个执行核**（“≥2”是实测推断，官方文档未写死“正好 2”）。
+> 术语说明：按 QNN 官方模型，层级是“HTP/NSP 设备（可多个）× 每设备多个执行核（numCores）”，`num_cores` 即图使用的执行核数；“双 NSP”与“单 NSP 双核”表述模糊，稳妥说法为“≥2 个执行核”。实测 `num_cores` 设 3+ 无效/失败。
 
 **Q3：P=23 是什么意思？为什么等于 23？还可以等于哪些？其他模型/设备要变吗？**
 
@@ -917,7 +917,7 @@ QNN_SDK_HTP  avg=16.5~18.1 ms（与基线一致，无回归、无崩溃）
 2. 因此设备级多核配置对 model.so 是"**安全但无效**"→ **代码已回退**（移除 `SetupMultiCoreDeviceConfig` 与二次探测诊断，恢复默认 `deviceCreate`），保持代码简洁。
 3. 注意 `deviceGetPlatformInfo` 返回的 info 需 `deviceFreePlatformInfo` 释放（本次已核实）。
 
-**结论性经验**：SM8850 在 unsigned PD 下 `deviceGetPlatformInfo`/`deviceGetInfo` **都只报 1 核**，运行时多核（设备级 platform-info 配置）不可行；多核（双 NSP）必须走**离线 context binary 的图级 `num_cores:2` 编译**（收益巨大，见 5.19 Q2：exec 13.7→8.3ms）；model.so 运行时路径保持单核即可，**不要指望设备级配置提速**（2026-08-12）。
+**结论性经验**：SM8850 在 unsigned PD 下 `deviceGetPlatformInfo`/`deviceGetInfo` **都只报 1 核**，运行时多核（设备级 platform-info 配置）不可行；多核（≥2 核）必须走**离线 context binary 的图级 `num_cores:2` 编译**（收益巨大，见 5.19 Q2：exec 13.7→8.3ms）；model.so 运行时路径保持单核即可，**不要指望设备级配置提速**（2026-08-12）。
 
 ### 5.25 qnn-net-run 的 num_cores 验证：运行时图级多核不生效（2026-08-12，SM8850）
 
