@@ -659,13 +659,48 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
         }
     }
 
+    /* 4b. Context priority (env QNN_HTP_CONTEXT_PRIORITY: low/normal/
+     * normal_high/high, default high) - mirrors ORT QNN EP provider option
+     * "qnn_context_priority". Applied to both the model.so (contextCreate) and
+     * context-binary (contextCreateFromBinary) paths. If a backend rejects the
+     * config, retry without it (defensive; keeps the tuned context-binary path
+     * working). Single-session benchmark has no scheduling contention, so this
+     * mainly ensures parity with ORT rather than changing throughput. */
+    QnnContext_Config_t ctx_cfg = {};
+    const QnnContext_Config_t *ctx_configs[2] = {nullptr, nullptr};
+    bool use_ctx_priority = true;
+    {
+        const char *prio_env = getenv("QNN_HTP_CONTEXT_PRIORITY");
+        std::string prio_str = prio_env ? prio_env : "high";
+        Qnn_Priority_t qp = QNN_PRIORITY_HIGH;
+        if (stricmp_(prio_str.c_str(), "low") == 0) {
+            qp = QNN_PRIORITY_LOW;
+        } else if (stricmp_(prio_str.c_str(), "normal") == 0) {
+            qp = QNN_PRIORITY_NORMAL;
+        } else if (stricmp_(prio_str.c_str(), "normal_high") == 0) {
+            qp = QNN_PRIORITY_NORMAL_HIGH;
+        } else if (stricmp_(prio_str.c_str(), "high") == 0) {
+            qp = QNN_PRIORITY_HIGH;
+        }
+        ctx_cfg.option = QNN_CONTEXT_CONFIG_OPTION_PRIORITY;
+        ctx_cfg.priority = qp;
+        ctx_configs[0] = &ctx_cfg;
+        LOGI("QNN: context priority=%u (env QNN_HTP_CONTEXT_PRIORITY=%s)", (unsigned)qp,
+             prio_str.c_str());
+    }
+
     /* 5. model.so: create an empty context and compose the graph via
      * QnnModel_composeGraphs (works for any backend). */
     if (is_model_so_) {
-        if (!qnn_->contextCreate ||
-            QNN_CONTEXT_NO_ERROR != qnn_->contextCreate(backend_, device_, nullptr, &context_)) {
-            LOGE("QNN: contextCreate failed (model.so)");
-            return false;
+        Qnn_ErrorHandle_t ccr = qnn_->contextCreate(backend_, device_, ctx_configs, &context_);
+        if (QNN_CONTEXT_NO_ERROR != ccr) {
+            if (use_ctx_priority &&
+                QNN_CONTEXT_NO_ERROR == qnn_->contextCreate(backend_, device_, nullptr, &context_)) {
+                LOGW("QNN: contextCreate (model.so) rejected priority cfg - retried without it");
+            } else {
+                LOGE("QNN: contextCreate failed (model.so)");
+                return false;
+            }
         }
         LOGI("QNN: context created (model.so)");
 
@@ -810,14 +845,23 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
     }
 
     /* 6. Restore context from binary */
-    if (!qnn_->contextCreateFromBinary ||
-        QNN_CONTEXT_NO_ERROR != qnn_->contextCreateFromBinary(
-                                    backend_, device_, nullptr,
-                                    binary_.data(), (Qnn_ContextBinarySize_t)binary_.size(),
-                                    &context_, nullptr)) {
-        LOGE("QNN: contextCreateFromBinary failed");
-        last_error_ = "QNN: contextCreateFromBinary failed";
-        return false;
+    Qnn_ErrorHandle_t ccr = QNN_CONTEXT_NO_ERROR;
+    if (qnn_->contextCreateFromBinary) {
+        ccr = qnn_->contextCreateFromBinary(
+            backend_, device_, ctx_configs,
+            binary_.data(), (Qnn_ContextBinarySize_t)binary_.size(), &context_, nullptr);
+    }
+    if (QNN_CONTEXT_NO_ERROR != ccr) {
+        if (use_ctx_priority && qnn_->contextCreateFromBinary &&
+            QNN_CONTEXT_NO_ERROR == qnn_->contextCreateFromBinary(
+                backend_, device_, nullptr,
+                binary_.data(), (Qnn_ContextBinarySize_t)binary_.size(), &context_, nullptr)) {
+            LOGW("QNN: contextCreateFromBinary rejected priority cfg - retried without it");
+        } else {
+            LOGE("QNN: contextCreateFromBinary failed");
+            last_error_ = "QNN: contextCreateFromBinary failed";
+            return false;
+        }
     }
     LOGI("QNN: context restored from binary");
 
@@ -935,7 +979,20 @@ bool QnnSdkBackend::ConfigureHtpPerformance()
     cfg.dcvsV3Config.coreVoltageCornerTarget = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
     cfg.dcvsV3Config.coreVoltageCornerMax = DCVS_VOLTAGE_VCORNER_MAX_VOLTAGE_CORNER;
 
-    const QnnHtpPerfInfrastructure_PowerConfig_t *configs[] = {&cfg, nullptr};
+    /* RPC control latency (microseconds) - a separate power config option
+     * (mirrors ORT QNN EP provider option "rpc_control_latency"), voted
+     * together with the DCVS config in the same setPowerConfig call. Env
+     * QNN_HTP_RPC_LATENCY, default 100us. */
+    QnnHtpPerfInfrastructure_PowerConfig_t rpc_cfg = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIG_INIT;
+    uint32_t rpc_latency_us = 100;
+    const char *rpc_env = getenv("QNN_HTP_RPC_LATENCY");
+    if (rpc_env && rpc_env[0] != '\0') {
+        rpc_latency_us = (uint32_t)atoi(rpc_env);
+    }
+    rpc_cfg.option = QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_RPC_CONTROL_LATENCY;
+    rpc_cfg.rpcControlLatencyConfig = rpc_latency_us;
+
+    const QnnHtpPerfInfrastructure_PowerConfig_t *configs[] = {&cfg, &rpc_cfg, nullptr};
     Qnn_ErrorHandle_t rc = infra->perfInfra.setPowerConfig(power_config_id_, configs);
     if (QNN_SUCCESS != rc) {
         LOGE("QNN: setPowerConfig failed rc=0x%X - perf mode disabled", (unsigned)rc);
@@ -946,7 +1003,8 @@ bool QnnSdkBackend::ConfigureHtpPerformance()
         destroy_power_config_ = nullptr;
         return false;
     }
-    LOGI("QNN: HTP perf configured (DCVS_V3 burst: DCVS off, MAX corner, sleep disabled)");
+    LOGI("QNN: HTP perf configured (DCVS_V3 burst: DCVS off, MAX corner, sleep disabled, "
+         "rpc_latency=%uus)", rpc_latency_us);
     return true;
 }
 

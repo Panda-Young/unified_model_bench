@@ -978,3 +978,44 @@ QNN_SDK_HTP  avg=16.5~18.1 ms（与基线一致，无回归、无崩溃）
 - 三平台构建（android-arm64 / win-x64 / win-x86）通过，`check_braces` TOTAL: 0。
 
 **结论性经验**：model.so 运行时路径可通过 `composeGraphs` 的 `GraphConfigInfo_t` 直接注入 HTP 图级配置（O3/vtcm/hvx/AAF），exec 从 13.7ms 降到 7.2ms（甚至优于离线 bin）；`num_cores` 无需设（运行时单 NSP）；`hvx_threads=8` 最优。注：model.so 仍有 ~28s 的运行时 compose 初始化，**基准/生产仍推荐 serialized.bin**（init 223ms），model.so 主要用于验证/中间产物（2026-08-12）。
+
+### 5.27 ORT QNN HTP 增加 vtcm/rpc_control_latency/context_priority/disable_cpu_ep_fallback（2026-08-12，已实现+实测）
+
+**背景疑问**：ORT QNN EP 不能设 `hvx_threads`/`num_cores`，为什么还那么快？——因为这两个恰是**运行时收益最小**的参数（5.24/5.25 实测：num_cores:2 运行时无用；hvx 默认值即可，非瓶颈）。ORT 快的真正原因：`ep.context` 预编译 context binary 缓存 + `soc_model/htp_arch`（detect_qnn_soc，v81 定向）+ `htp_graph_finalization_optimization_mode=3`（O3）+ `enable_htp_fp16_precision=1`。
+
+**实现**（`src/onnx_backend.cpp`，`ConfigureEP` 的 ONNX_QNN_HTP 分支）新增 4 项：
+- `vtcm_mb="8"`（与离线 htp_config 对齐）
+- `rpc_control_latency="100"`（RPC 控制延迟，微秒）
+- `qnn_context_priority="HIGH"`
+- `session.disable_cpu_ep_fallback="1"`（**会话配置**，经 `AddSessionConfigEntry`；不支持的节点直接报错而非静默回退 CPU——符合"绝不静默降级"）
+
+**实测（SM8850，`sports_vlog_online_small_0718.onnx` + ONNX_QNN_HTP）**：
+- 新选项全部被接受（`ONNX: QNN(htp) EP configured`，无报错）；EPContext 用新选项重新生成（首次 init 49.5s），之后缓存命中。
+- **`disable_cpu_ep_fallback=1` 未导致加载失败** → 证明 sports 模型**完整跑在 QNN 上**，之前的 ORT QNN 数字不是 CPU 混跑（max_diff=0.0148 也与 CPU 基线吻合）。
+- 稳态 avg=**11.2ms**（accel 8.10x），与加选项前持平 → **vtcm/rpc_control_latency/qnn_context_priority 对 sports 模型无可见收益**（主导因素仍是 O3+soc+fp16+context 缓存）；`disable_cpu_ep_fallback` 的价值在**正确性保证**而非提速。
+- 三平台构建通过，`check_braces` TOTAL: 0。
+
+**结论性经验**：ORT QNN HTP 的快与 hvx/num_cores 无关（这两项运行时本就无收益）；新增的 vtcm/rpc_latency/context_priority 对 sports 无可见变化（保留无妨，属"对齐离线配置"），`disable_cpu_ep_fallback=1` 是有价值的正确性开关（能暴露 CPU 混跑）。若某模型加载失败，即说明它有 QNN EP 不支持的节点（2026-08-12）。
+
+### 5.28 原生 qnn_backend 移植 ORT 的 rpc_control_latency / qnn_context_priority（2026-08-12，已实现+实测）
+
+**背景**：5.27 在 ORT QNN HTP 加了 4 项优化后，用户要求把同样的优化移植到原生 QNN SDK 后端（`src/qnn_backend.cpp`），实现与 ORT 对齐。其中 `vtcm_mb=8` 在原生 model.so 路径**早已通过图级配置生效**（`QNN_HTP_VTCM_MB` 默认 8，见 5.26），本次只补 rpc_control_latency 与 context_priority；`session.disable_cpu_ep_fallback` 是 ORT 专属会话配置，原生 QNN SDK 无 CPU 回退机制（图加载失败即报错，天然"绝不静默降级"），**不适用**。
+
+**API 要点（QNN SDK 2.48.40 头文件核实）**：
+- `rpc_control_latency` **不在 DCVS V3 结构里**（`QnnHtpPerfInfrastructure_DcvsV3_t` 只有 dcvsEnable/sleep/bus/core 电压角），是**独立的 power config 项**：`QNN_HTP_PERF_INFRASTRUCTURE_POWER_CONFIGOPTION_RPC_CONTROL_LATENCY = 2`，字段 `rpcControlLatencyConfig`（微秒）。可与 DCVS_V3 配置**同一次 `setPowerConfig` 一并投票**（configs[] 数组传两个条目）。
+- context 优先级用核心 API：`QnnContext_Config_t{ option=QNN_CONTEXT_CONFIG_OPTION_PRIORITY, priority=Qnn_Priority_t }`；取值 `QNN_PRIORITY_LOW=0 / NORMAL=100 / NORMAL_HIGH=150 / HIGH=200`（QnnTypes.h）。`contextCreate`（model.so）与 `contextCreateFromBinary`（context binary）都接收该配置。
+
+**实现**（`src/qnn_backend.cpp`）：
+- `ConfigureHtpPerformance()`：新增第二条 power config，`rpcControlLatencyConfig = QNN_HTP_RPC_LATENCY`（默认 100us），与 DCVS_V3 burst 投票一起提交；日志带 `rpc_latency=%uus`。
+- `CreateBackendDeviceContext()`：新增 4b 步构建 context 优先级配置，env `QNN_HTP_CONTEXT_PRIORITY`（low/normal/normal_high/high，默认 high=200）；**两条 context 创建路径都传**该配置，若后端拒绝则**自动重试一次无配置**（防御性，保护已调优的 context binary 路径）。
+- vtcm_mb 无需改动（model.so 图配置已有 `QNN_HTP_VTCM_MB`=8）。
+
+**实测（SM8850，libsports_vlog_online_small_0718.so / .serialized.bin + QNN_SDK_HTP）**：
+- model.so 路径日志：`context priority=200 (env QNN_HTP_CONTEXT_PRIORITY=high)`、`HTP perf configured (... rpc_latency=100us)`；contextCreate **直接接受**优先级配置（无拒绝重试），`O3 vtcm=8MB hvx=8 aaf=1` 图配置不变；exec=7.26ms，avg=9.6ms，**无回归**。
+- context binary 路径日志：`contextCreateFromBinary` 同样接受优先级配置（无拒绝重试），`graphRetrieve rc=0`；exec=7.09ms，avg=8.4ms，**无回归**。
+- env 覆盖实测：改 `QNN_HTP_CONTEXT_PRIORITY=low` 日志变 `priority=0` 生效；`QNN_HTP_RPC_LATENCY=500` 日志变 `rpc_latency=500us` 生效。
+- 三平台构建（android-arm64 / win-x64 / win-x86）通过，`check_braces` TOTAL: 0。
+
+**vtcm_mb 上限结论（回答"如果 vtcm_mb 不能超过8呢"）**：SM8850 上 **8MB 已是实际可用上限**——vtcm=16MB 时 `composeGraphs` 直接 rc=14 失败（见 5.19 Q5），默认 4MB。因此原生与 ORT 都固定 vtcm_mb=8 **就是最优值**，无需也不能再调高；再高只会让图编译失败（按"绝不静默降级"原则会标记后端失败而非回退）。
+
+**结论性经验**：`rpc_control_latency` 与 `qnn_context_priority` 在原生 QNN 后端均为**非关键项**（单会话基准无调度竞争、DCVS off 模式不依赖 RPC 延迟），移植的意义是**与 ORT 完全对齐 + env 可调**，实测对 sports 无可观收益、无回归；`disable_cpu_ep_fallback` 原生无对应物。vtcm 在 SM8850 上 8MB 封顶（2026-08-12）。
