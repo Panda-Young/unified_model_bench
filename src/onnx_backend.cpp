@@ -416,6 +416,9 @@ bool ONNXBackend::ConfigureEP()
                 "htp_graph_finalization_optimization_mode",
                 "enable_htp_fp16_precision",
                 "enable_htp_shared_memory_allocator",
+                "vtcm_mb",
+                "rpc_control_latency",
+                "qnn_context_priority",
             };
             const char *htp_values[] = {
                 "htp", // backend_type: HTP NPU backend
@@ -429,10 +432,20 @@ bool ONNXBackend::ConfigureEP()
                 "0",     // enable_htp_shared_memory_allocator: 0 1 (1 requires rpcmem attr2,
                          //   only present in system libcdsprpc via HIDL without attr2 -> cache-hit
                          //   fails; 0 keeps epContext cache reuse working)
+                "8",     // vtcm_mb: VTCM size in MB (matches offline htp_config)
+                "100",   // rpc_control_latency: RPC control latency in microseconds
+                "HIGH",  // qnn_context_priority: LOW NORMAL NORMAL_HIGH HIGH
             };
             int num_opts = sizeof(htp_keys) / sizeof(htp_keys[0]);
             st = ort_->SessionOptionsAppendExecutionProvider(
                 opts_, "QNN", htp_keys, htp_values, num_opts);
+            /* Do not silently fall back unsupported nodes to CPU - surface a
+             * load failure instead, so QNN EP results are never mixed with
+             * CPU execution ("never silently degrade" rule). */
+            if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, "session.disable_cpu_ep_fallback", "1"),
+                      "AddSessionConfigEntry(disable_cpu_ep_fallback)", last_error_)) {
+                return false;
+            }
         } else if (id_ == BackendId::ONNX_QNN_GPU) {
             /* QNN EP with Adreno GPU backend -- FP32/FP16, no HTP-specific options */
             backend_type = "gpu";
