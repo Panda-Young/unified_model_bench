@@ -1019,3 +1019,25 @@ QNN_SDK_HTP  avg=16.5~18.1 ms（与基线一致，无回归、无崩溃）
 **vtcm_mb 上限结论（回答"如果 vtcm_mb 不能超过8呢"）**：SM8850 上 **8MB 已是实际可用上限**——vtcm=16MB 时 `composeGraphs` 直接 rc=14 失败（见 5.19 Q5），默认 4MB。因此原生与 ORT 都固定 vtcm_mb=8 **就是最优值**，无需也不能再调高；再高只会让图编译失败（按"绝不静默降级"原则会标记后端失败而非回退）。
 
 **结论性经验**：`rpc_control_latency` 与 `qnn_context_priority` 在原生 QNN 后端均为**非关键项**（单会话基准无调度竞争、DCVS off 模式不依赖 RPC 延迟），移植的意义是**与 ORT 完全对齐 + env 可调**，实测对 sports 无可观收益、无回归；`disable_cpu_ep_fallback` 原生无对应物。vtcm 在 SM8850 上 8MB 封顶（2026-08-12）。
+
+### 5.29 vtcm_mb 按 SoC 自适应 + AAF 说明（2026-08-12，已实现+实测）
+
+**背景问题**：程序不只为 SM8850 写，`vtcm_mb=8` 硬编码在其他芯片上不可移植——"如果是 SM8450 呢？"
+
+**AAF（Advanced Activation Fusion）是什么**：QNN HTP 图级配置项 `QNN_HTP_GRAPH_CONFIG_OPTION_ADVANCED_ACTIVATION_FUSION`（option=15，bool）。HTP 的 HVX/CENG 计算管线内部自带激活硬件，AAF 开启后编译器把**更多激活（ReLU/量化激活等）融合进卷积等前驱算子内部**执行，中间激活无需写回 VTCM/DDR 再读回，减少存储往返流量、省带宽省功耗。与基础"Conv+ReLU 折叠"（`FOLD_RELU_ACTIVATION_INTO_CONV`，HTP 默认即做）不同，AAF 覆盖更广的融合场景；对激活密集的量化/FP16 网络收益明显。项目默认 `aaf=1`（SM8850 实测安全无副作用）。
+
+**关键事实：SM8450 = soc_id 36、Hexagon **V69** 架构**（QAIRT 2.48.40 overview.html "Supported Snapdragon devices" 权威表）。v69 是 HTP v2 早期代，**VTCM 硬件上限比 v81 小**——SM8850(v81) 硬件 8MB（默认 4、16 会失败），硬编码 8MB 在 SM8450 上很可能直接 `composeGraphs` 失败。
+
+**官方跨 SoC 机制**：`QNN_HTP_GRAPH_CONFIG_OPTION_MAX`（=0）——`vtcm_mb` 设为 0 时 QNN **自动取目标 SoC 的最大可用 VTCM**，永远合法、永不超限。已在 SM8850 实测：`QNN_HTP_VTCM_MB=0` → compose rc=0，exec=6.91ms（与 8MB 相当，甚至略快）。**这是替代硬编码的正解**。
+
+**实现（跨 SoC 自适应，两后端统一）**：
+- 新增共享模块 `include/qnn_soc.hpp` / `src/qnn_soc.cpp`：SoC→soc_id→arch 表（来自 overview 权威表）、`qnn_soc_detect()`（读 `ro.soc.model`）、`qnn_arch_at_least()`、`qnn_recommended_vtcm_mb()`（v81+ → 8，其余 → 0=MAX）。onnex 原来的静态 `detect_qnn_soc` 迁入该模块，两后端共用，不再各自维护。
+- **原生 `src/qnn_backend.cpp`（model.so 路径）**：默认 `vtcm=MAX(0)`（env `QNN_HTP_VTCM_MB` 可覆盖）；完整调优（O3+vtcm+hvx8+AAF）**仅当 arch≥v73**（SM8550/SM8650/SM8750/SM8850，HTP v2+）或任意 `QNN_HTP_*` env 显式设置时应用；旧架构（如 SM8450/v69）只投 vtcm=MAX 这一项安全配置。日志明确输出 `vtcm=0MB(SoC-max) O=3 hvx=8 aaf=1 full=1 graph=... arch=81`。
+- **ORT `src/onnx_backend.cpp`**：`vtcm_mb` 改用 `qnn_recommended_vtcm_mb(htp_arch)`——SM8850(v81) 仍是 "8"（**EPContext 缓存复用、不重新生成**），其他架构传 "0"（MAX）。
+
+**实测（SM8850，无回归）**：
+- 原生 model.so：`detected SoC SM8850 -> soc_id=87 htp_arch=81`，`vtcm=0MB(SoC-max) O=3 hvx=8 aaf=1 full=1`，compose rc=0，exec=7.25ms / avg=8.79ms（与 8MB 相当）。
+- ORT ONNX_QNN_HTP：`vtcm_mb=8 (0 = use SoC max)`，EPContext 未重生成，稳态 11.2ms 无回归。
+- 三平台构建通过，`check_braces` TOTAL: 0。
+
+**结论性经验（回答"如果是 sm8450 呢"）**：不要硬编码 vtcm——用 QNN 官方 `MAX(0)` 让 QNN 自动选该 SoC 上限（SM8850→8MB，SM8450/v69→其更小上限），永不失配；原生完整调优按 arch≥v73 门控、env 可强制；ORT 在 v81 保持 "8" 避免 EPContext 重生成。AAF 是激活融合进前驱算子、减少存储往返的图级优化，v81 上 aaf=1 无副作用（2026-08-12）。

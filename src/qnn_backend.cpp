@@ -24,6 +24,7 @@
 
 #include "backend_interface.hpp"
 #include "log.hpp"
+#include "qnn_soc.hpp"
 
 #ifdef HAVE_QNN_SDK_BACKEND
 
@@ -707,10 +708,14 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
         /* HTP graph-level configs for runtime compose (mirrors the offline
          * htp_config JSON: O-level, VTCM, HVX threads, activation fusion).
          * num_cores is deliberately NOT set - the unsigned-PD runtime exposes
-         * a single NSP, so multi-core has no effect (docs 5.24/5.25). Env
-         * tunable for A/B: QNN_HTP_O (3), QNN_HTP_VTCM_MB (8),
-         * QNN_HTP_HVX_THREADS (8), QNN_HTP_AAF (1). GPU/CPU backends keep the
-         * default (no HTP-specific graph config). */
+         * a single NSP, so multi-core has no effect (docs 5.24/5.25).
+         * Per-SoC defaults (docs 5.29): the full tuning set (O3/hvx8/AAF) is
+         * only applied on HTP v73+ (SM8550/SM8650/SM8750/SM8850); older archs
+         * (e.g. SM8450 = v69) get only the portable VTCM vote (SoC max) so an
+         * option the chip does not support cannot fail the compose. Setting any
+         * QNN_HTP_* env var forces the full set on any device. Env:
+         * QNN_HTP_O (3), QNN_HTP_VTCM_MB (0 = SoC max), QNN_HTP_HVX_THREADS (8),
+         * QNN_HTP_AAF (1). GPU/CPU backends keep the default (no HTP config). */
         const qnn_wrapper_api::GraphConfigInfo_t *gci_arr[2] = {nullptr, nullptr};
         const qnn_wrapper_api::GraphConfigInfo_t **gcis = nullptr;
         uint32_t num_gcis = 0;
@@ -719,45 +724,67 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
         const QnnGraph_Config_t *gcfg_ptrs[5] = {};
         std::string graph_name;
         qnn_wrapper_api::GraphConfigInfo_t gci = {};
+        uint32_t n_htp_cfg = 0;
         if (id_ == BackendId::QNN_SDK_HTP) {
+            /* Detect the device HTP arch (shared module) so defaults adapt to
+             * the chip instead of hard-coding for SM8850 (docs 5.29). */
+            std::string soc_model("0");
+            std::string htp_arch("0");
+            qnn_soc_detect(soc_model, htp_arch);
+
             uint32_t o_level = 3;
-            uint32_t vtcm_mb = 8;
+            uint32_t vtcm_mb = QNN_HTP_GRAPH_CONFIG_OPTION_MAX; /* 0 = SoC max */
             uint64_t hvx_threads = 8;
             bool aaf = true;
+            bool env_forced = false;
             const char *env = getenv("QNN_HTP_O");
             if (env && env[0] != '\0') {
                 o_level = (uint32_t)atoi(env);
+                env_forced = true;
             }
             env = getenv("QNN_HTP_VTCM_MB");
             if (env && env[0] != '\0') {
                 vtcm_mb = (uint32_t)atoi(env);
+                env_forced = true;
             }
             env = getenv("QNN_HTP_HVX_THREADS");
             if (env && env[0] != '\0') {
                 hvx_threads = (uint64_t)atoi(env);
+                env_forced = true;
             }
             env = getenv("QNN_HTP_AAF");
             if (env && env[0] != '\0') {
                 aaf = (atoi(env) != 0);
+                env_forced = true;
+            }
+            /* Full tuning (O3/hvx/AAF) only where validated (v73+, HTP v2+);
+             * the VTCM vote is always applied (MAX = safe per-SoC default). */
+            const bool full_tuning = env_forced || qnn_arch_at_least(htp_arch, 73);
+            if (full_tuning) {
+                htp_cfg[n_htp_cfg].option = QNN_HTP_GRAPH_CONFIG_OPTION_OPTIMIZATION;
+                htp_cfg[n_htp_cfg].optimizationOption.type =
+                    QNN_HTP_GRAPH_OPTIMIZATION_TYPE_FINALIZE_OPTIMIZATION_FLAG;
+                htp_cfg[n_htp_cfg].optimizationOption.floatValue = (float)o_level;
+                ++n_htp_cfg;
+            }
+            htp_cfg[n_htp_cfg].option = QNN_HTP_GRAPH_CONFIG_OPTION_VTCM_SIZE;
+            htp_cfg[n_htp_cfg].vtcmSizeInMB = vtcm_mb;
+            ++n_htp_cfg;
+            if (full_tuning) {
+                htp_cfg[n_htp_cfg].option = QNN_HTP_GRAPH_CONFIG_OPTION_NUM_HVX_THREADS;
+                htp_cfg[n_htp_cfg].numHvxThreads = hvx_threads;
+                ++n_htp_cfg;
+                htp_cfg[n_htp_cfg].option = QNN_HTP_GRAPH_CONFIG_OPTION_ADVANCED_ACTIVATION_FUSION;
+                htp_cfg[n_htp_cfg].advancedActivationFusion = aaf;
+                ++n_htp_cfg;
             }
 
-            htp_cfg[0].option = QNN_HTP_GRAPH_CONFIG_OPTION_OPTIMIZATION;
-            htp_cfg[0].optimizationOption.type =
-                QNN_HTP_GRAPH_OPTIMIZATION_TYPE_FINALIZE_OPTIMIZATION_FLAG;
-            htp_cfg[0].optimizationOption.floatValue = (float)o_level;
-            htp_cfg[1].option = QNN_HTP_GRAPH_CONFIG_OPTION_VTCM_SIZE;
-            htp_cfg[1].vtcmSizeInMB = vtcm_mb;
-            htp_cfg[2].option = QNN_HTP_GRAPH_CONFIG_OPTION_NUM_HVX_THREADS;
-            htp_cfg[2].numHvxThreads = hvx_threads;
-            htp_cfg[3].option = QNN_HTP_GRAPH_CONFIG_OPTION_ADVANCED_ACTIVATION_FUSION;
-            htp_cfg[3].advancedActivationFusion = aaf;
-
-            for (uint32_t i = 0; i < 4; ++i) {
+            for (uint32_t i = 0; i < n_htp_cfg; ++i) {
                 gcfg[i].option = QNN_GRAPH_CONFIG_OPTION_CUSTOM;
                 gcfg[i].customConfig = &htp_cfg[i];
                 gcfg_ptrs[i] = &gcfg[i];
             }
-            gcfg_ptrs[4] = nullptr;
+            gcfg_ptrs[n_htp_cfg] = nullptr;
 
             /* Graph name = model file stem minus "lib" prefix (matches the
              * QnnModel_composeGraphs graph name, e.g. libfoo.so -> foo). */
@@ -779,9 +806,19 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
             gci_arr[0] = &gci;
             gcis = gci_arr;
             num_gcis = 1;
-            LOGI("QNN: HTP graph config: O%u vtcm=%uMB hvx=%llu aaf=%d graph=%s",
-                 o_level, vtcm_mb, (unsigned long long)hvx_threads, aaf ? 1 : 0,
-                 graph_name.c_str());
+            char o_str[8] = {0};
+            char hvx_str[8] = {0};
+            snprintf(o_str, sizeof(o_str), "%u", o_level);
+            snprintf(hvx_str, sizeof(hvx_str), "%llu", (unsigned long long)hvx_threads);
+            LOGI("QNN: HTP graph config: vtcm=%uMB(%s) O=%s hvx=%s aaf=%d full=%d "
+                 "graph=%s arch=%s",
+                 vtcm_mb,
+                 vtcm_mb == QNN_HTP_GRAPH_CONFIG_OPTION_MAX ? "SoC-max" : "fixed",
+                 full_tuning ? o_str : "off",
+                 full_tuning ? hvx_str : "off",
+                 full_tuning ? (aaf ? 1 : 0) : 0,
+                 full_tuning ? 1 : 0,
+                 graph_name.c_str(), htp_arch.c_str());
         }
 
         qnn_wrapper_api::GraphInfo_t **gi = nullptr;
