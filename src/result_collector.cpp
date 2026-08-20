@@ -195,6 +195,7 @@ bool ResultCollector::ExportCsv(const char *path, const char *date,
                "model_output_shape,output_elements,warmup_runs,repeat_runs,threads,"
                "total_run_ms,avg_run_ms,max_run_ms,max_run_idx,init_ms,"
                "max_output_diff,avg_output_diff,acceleration_vs_cpu,"
+               "weight_mem_mb,peak_mem_mb,resident_mem_mb,"
                "backend_name,device_info,arch,app_name,notes\n");
 
     for (const auto &r : records_) {
@@ -209,22 +210,34 @@ bool ResultCollector::ExportCsv(const char *path, const char *date,
             fprintf(f, "%d", r.num_threads);
         }
         fputc(',', f);
-        if (r.acceleration_vs_cpu < 0) {
+        bool failed = r.acceleration_vs_cpu == -1.0;                /* failed sentinel */
+        bool no_base = r.acceleration_vs_cpu == kNoBaselineAccel;   /* -2 sentinel */
+        if (failed) {
             fprintf(f, "-,-,-,%d,", r.max_run_idx);
         } else {
             fprintf(f, "%.3f,%.3f,%.3f,%d,",
                     r.total_run_ms, r.avg_run_ms, r.max_run_ms, r.max_run_idx);
         }
-        if (r.acceleration_vs_cpu < 0) {
+        if (failed) {
             fprintf(f, "-,-,-,");
+        } else if (no_base) {
+            fprintf(f, "%.3f,-,-,", r.init_ms); /* timing kept, no comparison */
         } else {
             fprintf(f, "%.3f,%.8f,%.8f,",
                     r.init_ms, r.max_output_diff, r.avg_output_diff);
         }
-        if (r.acceleration_vs_cpu < 0) {
+        if (failed || no_base) {
             fprintf(f, "-");
         } else {
             fprintf(f, "%.3fx", r.acceleration_vs_cpu);
+        }
+        /* Failed backends: memory columns are "-" too (no valid measurement);
+         * no-baseline runs keep the memory values (they are the point). */
+        if (failed) {
+            fprintf(f, ",-,-,-");
+        } else {
+            fprintf(f, ",%.3f,%.3f,%.3f",
+                    r.weight_mem_mb, r.peak_mem_mb, r.resident_mem_mb);
         }
         fprintf(f, ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
                 r.backend_name.c_str(), r.device_info.c_str(),
@@ -273,6 +286,7 @@ bool ResultCollector::AppendCsv(const BenchmarkRecord &rec, const char *path,
                    "model_output_shape,output_elements,warmup_runs,repeat_runs,threads,"
                    "total_run_ms,avg_run_ms,max_run_ms,max_run_idx,init_ms,"
                    "max_output_diff,avg_output_diff,acceleration_vs_cpu,"
+                   "weight_mem_mb,peak_mem_mb,resident_mem_mb,"
                    "backend_name,device_info,arch,app_name,notes\n");
     }
 
@@ -287,22 +301,34 @@ bool ResultCollector::AppendCsv(const BenchmarkRecord &rec, const char *path,
         fprintf(f, "%d", rec.num_threads);
     }
     fputc(',', f);
-    if (rec.acceleration_vs_cpu < 0) {
+    bool failed = rec.acceleration_vs_cpu == -1.0;               /* failed sentinel */
+    bool no_base = rec.acceleration_vs_cpu == kNoBaselineAccel;  /* -2 sentinel */
+    if (failed) {
         fprintf(f, "-,-,-,%d,", rec.max_run_idx);
     } else {
         fprintf(f, "%.3f,%.3f,%.3f,%d,",
                 rec.total_run_ms, rec.avg_run_ms, rec.max_run_ms, rec.max_run_idx);
     }
-    if (rec.acceleration_vs_cpu < 0) {
+    if (failed) {
         fprintf(f, "-,-,-,");
+    } else if (no_base) {
+        fprintf(f, "%.3f,-,-,", rec.init_ms); /* timing kept, no comparison */
     } else {
         fprintf(f, "%.3f,%.8f,%.8f,",
                 rec.init_ms, rec.max_output_diff, rec.avg_output_diff);
     }
-    if (rec.acceleration_vs_cpu < 0) {
+    if (failed || no_base) {
         fprintf(f, "-");
     } else {
         fprintf(f, "%.3fx", rec.acceleration_vs_cpu);
+    }
+    /* Failed backends: memory columns are "-" too (no valid measurement);
+     * no-baseline runs keep the memory values (they are the point). */
+    if (failed) {
+        fprintf(f, ",-,-,-");
+    } else {
+        fprintf(f, ",%.3f,%.3f,%.3f",
+                rec.weight_mem_mb, rec.peak_mem_mb, rec.resident_mem_mb);
     }
     fprintf(f, ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
             rec.backend_name.c_str(), rec.device_info.c_str(),

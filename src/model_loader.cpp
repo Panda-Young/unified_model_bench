@@ -4,9 +4,11 @@
 
 #include "model_loader.hpp"
 #include "log.hpp"
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
+#include <vector>
 
 #ifdef _WIN32
 #include <io.h>
@@ -51,9 +53,9 @@ std::string extract_base_name(const std::string &path)
     auto pos = path.find_last_of("/\\");
     std::string fname = (pos != std::string::npos) ? path.substr(pos + 1) : path;
 
-    /* Handle compound extensions like .ncnn.param */
+    /* Handle compound extensions like .ncnn.param (11 chars) / .ncnn.bin (9) */
     if (ends_with_icase(fname, ".ncnn.param")) {
-        fname = fname.substr(0, fname.length() - 12);
+        fname = fname.substr(0, fname.length() - 11);
     } else if (ends_with_icase(fname, ".ncnn.bin")) {
         fname = fname.substr(0, fname.length() - 9);
     }
@@ -248,4 +250,224 @@ std::vector<const ModelSearchResult *> ModelBundle::all_found() const
         v.push_back(&q);
     }
     return v;
+}
+
+/* ---------------------------------------------------------------------------
+ * Weight memory estimation
+ * -------------------------------------------------------------------------*/
+
+/* Minimal protobuf wire-format reader (no external deps). Only supports the
+ * field kinds used below: varint(0), 64-bit(1), length-delimited(2), 32-bit(5).
+ * -------------------------------------------------------------------------*/
+namespace {
+
+struct PbReader {
+    const uint8_t *p;
+    size_t n;
+    size_t pos = 0;
+    bool ok = true;
+
+    PbReader(const void *data, size_t size) : p((const uint8_t *)data), n(size) {}
+
+    bool eof() const { return pos >= n; }
+
+    uint64_t varint()
+    {
+        uint64_t v = 0;
+        int shift = 0;
+        while (pos < n) {
+            uint8_t b = p[pos++];
+            v |= (uint64_t)(b & 0x7F) << shift;
+            if (!(b & 0x80)) {
+                return v;
+            }
+            shift += 7;
+            if (shift >= 64) {
+                ok = false;
+                return 0;
+            }
+        }
+        ok = false;
+        return 0;
+    }
+
+    /* Skip one field whose tag was already read. Returns false on bad wire. */
+    bool skip(unsigned wire)
+    {
+        switch (wire) {
+        case 0:
+            varint();
+            break;
+        case 1:
+            return take(8) != nullptr;
+        case 2: {
+            size_t l = (size_t)varint();
+            return take(l) != nullptr;
+        }
+        case 5:
+            return take(4) != nullptr;
+        default:
+            ok = false;
+            return false;
+        }
+        return ok;
+    }
+
+    const uint8_t *take(size_t len)
+    {
+        if (pos + len > n || !ok) {
+            ok = false;
+            return nullptr;
+        }
+        const uint8_t *r = p + pos;
+        pos += len;
+        return r;
+    }
+};
+
+/* ONNX ModelProto: graph = field 7 (length-delimited GraphProto).
+ * GraphProto:      initializer = field 5 (repeated TensorProto).
+ * TensorProto payload fields: float_data=4, int32_data=5, string_data=6,
+ * int64_data=7, raw_data=9 (exact bytes), double_data=10, uint64_data=11.
+ * raw_data, when present, is the exact serialized weight payload. */
+size_t onnx_initializer_bytes(const uint8_t *data, size_t size)
+{
+    PbReader r(data, size);
+    while (!r.eof() && r.ok) {
+        uint64_t t = r.varint();
+        unsigned fld = (unsigned)(t >> 3);
+        unsigned wire = (unsigned)(t & 7);
+        if (fld == 7 && wire == 2) {
+            size_t glen = (size_t)r.varint();
+            const uint8_t *graph = r.take(glen);
+            if (!graph) {
+                return 0;
+            }
+            PbReader g(graph, glen);
+            size_t total = 0;
+            while (!g.eof() && g.ok) {
+                uint64_t gt = g.varint();
+                unsigned gf = (unsigned)(gt >> 3);
+                unsigned gw = (unsigned)(gt & 7);
+                if (gf == 5 && gw == 2) {
+                    size_t tlen = (size_t)g.varint();
+                    const uint8_t *tp = g.take(tlen);
+                    if (!tp) {
+                        return 0;
+                    }
+                    /* Sum all payload fields of one TensorProto */
+                    PbReader tr(tp, tlen);
+                    size_t tensor_bytes = 0;
+                    bool have_raw = false;
+                    size_t raw_len = 0;
+                    while (!tr.eof() && tr.ok) {
+                        uint64_t tt = tr.varint();
+                        unsigned tf = (unsigned)(tt >> 3);
+                        unsigned tw = (unsigned)(tt & 7);
+                        if (tf == 9 && tw == 2) { /* raw_data: exact bytes */
+                            size_t l = (size_t)tr.varint();
+                            if (!tr.take(l)) {
+                                break;
+                            }
+                            have_raw = true;
+                            raw_len = l;
+                        } else if ((tf == 4 || tf == 5 || tf == 6 ||
+                                    tf == 7 || tf == 10 || tf == 11) &&
+                                   tw == 2) {
+                            /* float_data/int32_data/string_data/int64_data/
+                             * double_data/uint64_data: payload length is the
+                             * weight byte count (strings: content bytes) */
+                            size_t l = (size_t)tr.varint();
+                            if (!tr.take(l)) {
+                                break;
+                            }
+                            tensor_bytes += l;
+                        } else if (!tr.skip(tw)) {
+                            break;
+                        }
+                    }
+                    total += have_raw ? raw_len : tensor_bytes;
+                } else if (!g.skip(gw)) {
+                    return 0;
+                }
+            }
+            return total;
+        }
+        if (!r.skip(wire)) {
+            return 0;
+        }
+    }
+    return 0;
+}
+
+} // namespace
+
+double estimate_weight_mb(const ModelSearchResult &model)
+{
+    if (!model.found || model.path.empty()) {
+        return 0.0;
+    }
+
+    FILE *f = fopen(model.path.c_str(), "rb");
+    if (!f) {
+        LOGW("estimate_weight_mb: cannot open %s", model.path.c_str());
+        return 0.0;
+    }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) {
+        fclose(f);
+        return 0.0;
+    }
+
+    double mb = 0.0;
+    if (model.format == ModelFormat::ONNX) {
+        /* Exact: sum of all graph initializer payloads */
+        std::vector<uint8_t> buf((size_t)sz);
+        bool parsed = fread(buf.data(), 1, (size_t)sz, f) == (size_t)sz;
+        fclose(f);
+        if (parsed) {
+            size_t bytes = onnx_initializer_bytes(buf.data(), buf.size());
+            if (bytes > 0) {
+                mb = (double)bytes / (1024.0 * 1024.0);
+                LOGI("Weight memory (ONNX, parsed): %.2f MB (%zu bytes)",
+                     mb, bytes);
+                return mb;
+            }
+            LOGW("estimate_weight_mb: ONNX initializer parse failed, "
+                 "falling back to file size");
+        }
+        /* Parser failed / unreadable - approximate with file size */
+        mb = (double)sz / (1024.0 * 1024.0);
+        return mb;
+    }
+
+    /* NCNN: the weights payload IS the .ncnn.bin file */
+    if (model.format == ModelFormat::NCNN) {
+        std::string bin = build_model_path(get_directory(model.path),
+                                           extract_base_name(model.path),
+                                           "ncnn.bin");
+        fclose(f);
+        FILE *bf = fopen(bin.c_str(), "rb");
+        if (!bf) {
+            LOGW("estimate_weight_mb: NCNN weights file not found: %s",
+                 bin.c_str());
+            return 0.0;
+        }
+        fseek(bf, 0, SEEK_END);
+        long bsz = ftell(bf);
+        fclose(bf);
+        mb = bsz > 0 ? (double)bsz / (1024.0 * 1024.0) : 0.0;
+        LOGI("Weight memory (NCNN, .bin size): %.2f MB (%ld bytes)", mb, bsz);
+        return mb;
+    }
+
+    /* TFLite / MNN / QNN: no parser yet - file size approximation
+     * (weights dominate, but graph/metadata overhead is included) */
+    fclose(f);
+    mb = (double)sz / (1024.0 * 1024.0);
+    LOGI("Weight memory (%s, approx. file size): %.2f MB",
+         model_format_name(model.format), mb);
+    return mb;
 }

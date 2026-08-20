@@ -43,3 +43,13 @@ std::string extract_base_name(const std::string &path);
 std::string build_model_path(const std::string &dir,
                              const std::string &base,
                              const std::string &ext);
+
+/* Estimate the model's WEIGHT memory footprint in MB (deployment info).
+ *  - ONNX: parses the graph initializers (minimal protobuf wire reader,
+ *    no external deps) for an exact byte count of all weight tensors.
+ *  - NCNN: the .ncnn.bin file IS the weights payload (param is text), so its
+ *    file size is exact.
+ *  - TFLite / MNN / QNN: no parser yet - approximated by file size (weights
+ *    dominate these files, but graph/metadata overhead is included).
+ * Returns 0.0 when the model or its weights cannot be read. */
+double estimate_weight_mb(const ModelSearchResult &model);

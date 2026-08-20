@@ -179,6 +179,16 @@ bool parse_cmd_args(int argc, char *argv[], BenchConfig &cfg)
                 }
                 p = (*end == ',') ? end + 1 : end;
             }
+        } else if (strcmp(argv[i], "--worker") == 0) {
+            cfg.worker_mode = true;
+        } else if (strcmp(argv[i], "--batch-time") == 0 && i + 1 < argc) {
+            cfg.batch_time = argv[++i];
+        } else if (strcmp(argv[i], "--dump-output") == 0 && i + 1 < argc) {
+            cfg.dump_output = argv[++i];
+        } else if (strcmp(argv[i], "--baseline-file") == 0 && i + 1 < argc) {
+            cfg.baseline_file = argv[++i];
+        } else if (strcmp(argv[i], "--baseline-ms") == 0 && i + 1 < argc) {
+            cfg.baseline_ms = atof(argv[++i]);
         } else if (argv[i][0] != '-') {
             /* Positional argument = model path */
             if (cfg.model_path.empty()) {

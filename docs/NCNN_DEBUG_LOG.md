@@ -319,3 +319,45 @@ ONNX_DML_NPU 报 "No devices detected" 是硬件无 NPU 的预期跳过，与本
 - 补充（2026-08-20）：`safe_extract()` 的 minidump 已从 `MiniDumpWithDataSegs`
   改为 `MiniDumpWithFullMemory`（完整堆/栈内容，便于在崩溃现场查 Mat 等数据；
   文件会显著变大，仅在崩溃时写入）。
+
+---
+
+## 8. Vulkan 进程退出期崩溃 0xC0000409（2026-08-20，已修复）
+
+### 8.1 现象
+
+per-process 调度模式下，`NCNN_VK` / `NCNN_VK_BF16` / `NCNN_VK_FP16` 三个 worker 的
+**数据全部正常写出**（init → run → CSV 写入 → 汇总打印都完成），但进程退出码非 0：
+`-1073740791`（= 0xC0000409，`STATUS_STACK_BUFFER_OVERRUN`）。
+
+- 单 worker 直跑同样 **100% 必现**（bash `$?`=127）；`NCNN_CPU` 系列退出码 0
+- 与 `--baseline-file` / `--batch-time` 等参数无关（隔离实验逐一排除）
+
+### 8.2 根因
+
+崩溃发生在 **`main()` 返回之后的静态析构阶段**：ncnn 全局 Vulkan instance/device 的退出期
+teardown 在 Intel Iris Xe 驱动上触发 stack-buffer-overrun。数据已全部落盘，仅退出码异常——
+因此 CSV 行本身有效，但"进程退出非 0"会误导调用方（也会让调度器给该行补 `abnormal exit` 标记）。
+
+### 8.3 修复（`src/ncnn_backend.cpp` Cleanup）
+
+```cpp
+if (net_) { delete net_; net_ = nullptr; }
+#if NCNN_VULKAN
+if (gpu_device_ >= 0) {
+    ncnn::destroy_gpu_instance();   // 显式销毁全局 Vulkan 实例
+    gpu_device_ = -1;
+}
+#endif
+```
+
+调度器模式下**每进程只跑一个 backend、GPU 不共享**，提前销毁安全——把 teardown 从进程退出期的
+静态析构挪到进程还健康的时候。实测：三个 VK backend worker **全部退出码 0**，
+CSV `notes` 不再带 `worker process exited abnormally`。
+
+### 8.4 经验
+
+- `0xC0000409` 出现在"数据已写完后"≠ 数据无效，但退出码会误导调用方——先区分崩溃阶段
+  （运行期 vs 退出期静态析构）
+- ncnn Vulkan 全局实例是进程级静态资源，退出期析构顺序不可控；**单后端进程场景显式
+  `destroy_gpu_instance()` 更稳**（多后端共享进程时不可随意销毁）

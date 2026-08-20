@@ -2,7 +2,7 @@
 
 跨平台多框架推理基准测试工具，覆盖 **ONNX Runtime / TensorFlow Lite / LiteRT / NCNN / MNN** 五大框架，支持 **CPU / GPU / NPU / DSP** 多种加速后端。同一模型（从同一 ONNX 转换）在多个后端上运行，使用**共享确定性输入**对比推理延迟与输出精度。
 
-> **目的**：尽可能真实地测试每一种 backend 的推理能力——不支持的 backend 直接报错标记失败（`avg=0.0ms, accel=-1.00x`），绝不静默降级。
+> **目的**：尽可能真实地测试每一种 backend 的推理能力——不支持的 backend 直接报错标记失败（CSV 行 `avg/accel` 及内存列显示 `-`，`notes` 写原因），绝不静默降级。
 
 ---
 
@@ -47,7 +47,10 @@ unified_model_bench/
 │   ├── ONNX_DEBUG_LOG.md
 │   ├── TFLITE_NPU_DEBUG_LOG.md
 │   ├── NCNN_DEBUG_LOG.md
-│   └── LiteRT_GPU_DEBUG_LOG.md
+│   ├── LiteRT_GPU_DEBUG_LOG.md
+│   ├── QNN_SDK_DEBUG_LOG.md
+│   ├── QNN_SDK_HTP_OPTIMIZATIONS.md
+│   └── PROJECT_SCORECARD.md
 └── summary.csv                 # 历史测试结果（追加式）
 ```
 
@@ -75,7 +78,6 @@ unified_model_bench/
 | ONNX_CPU | `ONNX_CPU` | ✅ | ✅ | 默认 CPU EP（基准） |
 | ONNX_ONEDNN | `ONNX_oneDNN` | ✅ | ❌ | Intel oneDNN |
 | ONNX_DML_GPU | `ONNX_DML_GPU` | ✅ | ❌ | DirectML GPU |
-| ONNX_DML_GPU_FP16 | `ONNX_DML_GPU_FP16` | ✅ | ❌ | DML FP16 |
 | ONNX_DML_NPU | `ONNX_DML_NPU` | ✅ | ❌ | DirectML NPU（V2 API） |
 | ONNX_OPENVINO_CPU | `ONNX_OpenVINO_CPU` | ✅ | ❌ | OpenVINO CPU |
 | ONNX_OPENVINO_GPU | `ONNX_OpenVINO_GPU` | ✅ | ❌ | OpenVINO GPU FP32 |
@@ -86,6 +88,7 @@ unified_model_bench/
 | ONNX_QNN_CPU / _GPU / _HTP | `ONNX_QNN_*` | ❌ | ✅ | Qualcomm QNN |
 
 > **已删除**：`ONNX_OpenVINO_GPU_BF16`（id=8）——OpenVINO GPU 只支持 FP16/FP32/ACCURACY，BF16 在框架层面无此能力，所有硬件均不支持，故移除。
+> **已删除**：`ONNX_DML_GPU_FP16`（id=3）——DML 无独立 FP16 开关，自动按硬件能力选择精度，与 `ONNX_DML_GPU` 等价，故移除。
 
 **TFLite（100–107）**
 
@@ -201,6 +204,28 @@ unified_bench <model_path> [选项]
   --help / --version
 ```
 
+### 运行模式：每 backend 独立进程（唯一模式）
+
+工具**只有一种运行模式**——调度器为每个（模型变体 × backend）启动一个**独立子进程（worker）**
+执行单后端测试，无同进程顺序跑：
+
+- **内存测量干净**：每个 worker 是全新进程，`peak_mem_mb` / `resident_mem_mb` 不含其他框架的
+  残留（同进程顺序跑时前面 backend 的页会污染后面的读数，这正是采用本架构的原因）
+- **崩溃隔离**：某个 backend 崩溃（如 ncnn Vulkan 在部分驱动上的析构崩溃）只影响自己的 worker，
+  其余 backend 照常出结果；异常退出码合并进该行 `notes` 列
+- **同批同时间戳**：同一调度器运行产生的所有 CSV 行共享同一个 `time` 值
+- **全局基准**：以**入口模型格式的 CPU backend** 为精度基准（`test_model.onnx`→ONNX_CPU、
+  `test_model.ncnn.bin`/`.ncnn.param`→NCNN_CPU、`test_model.mnn`→MNN_CPU，以此类推），其输出
+  dump 给所有其他 worker 做 diff/accel 对比；**基准行本身 diff/accel 显示 `-`**
+
+```bash
+# 直接运行即调度全部可用 backend（每个一个独立进程）
+unified_bench.exe test_model.onnx --repeat 10 --warmup 1
+
+# 限制范围（仍每 backend 独立进程）
+unified_bench.exe test_model.ncnn.bin --backend NCNN_CPU,NCNN_CPU_BF16 --repeat 10
+```
+
 ### 使用外部输入（--input-list）
 
 通过 `tools/generate_test_data_for_onnx.py` 生成模型测试数据与输入列表：
@@ -270,17 +295,22 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 flowchart TD
     A[模型路径] --> B[search_model_variants]
     B --> C{发现变体}
-    C -->|ONNX/TFLite/NCNN/MNN 同源| D[Reference = 第一个变体]
-    D --> E[对每个变体 TestVariant]
-    E --> F[创建临时 CPU backend 查询 IO shape]
-    F --> G[InputProvider 生成共享确定性输入 seed=42]
-    G --> H[对每个 backend TestBackend]
-    H --> I[Initialize]
-    I --> J[SetSharedInput 共享输入]
-    J --> K[RunBenchmark warmup+repeat]
-    K --> L[与基准对比 max_diff / accel]
-    L --> M[追加写 CSV 崩溃安全]
+    C --> D[入口格式 CPU backend = 全局基准]
+    D --> E[spawn 基准 worker: --dump-output 落盘输出 + .avg 计时]
+    E --> F[spawn 每个 variant × backend 一个 worker]
+    F --> G[worker: 单后端 Initialize → 共享确定性输入 → RunBenchmark]
+    G --> H[读 baseline 文件 → 算 max_diff / avg_diff / accel]
+    H --> I[各自追加写共享 CSV 崩溃安全, 同批同 time 戳]
+    I --> J[调度器回收退出码: 非零合并进 notes, 删除 baseline 临时文件]
 ```
+
+- **调度器**（`RunPerProcess`，非 worker 进程）：发现模型变体 → 先跑入口格式 CPU baseline worker
+  （`--dump-output` 把输出与 avg 落盘）→ 再为每个 (variant × backend) spawn 一个 worker
+  （`--worker --backend <name> --batch-time <t>`，带 `--baseline-file`/`--baseline-ms` 做跨进程对比）
+- **worker**（`--worker` 标记的子进程）：普通单后端流程（`TestVariant`→`TestBackend`），
+  写共享 CSV（append），日志直通终端；父进程按退出码区分：`0`=成功、`1`=预期失败（worker 已自写
+  失败行）、其他=异常崩溃（退出码合并进该行 `notes`）
+- 每个 variant 跑完后调度器删除 baseline 临时文件（`<base>_<backend>.out` + `.avg`）
 
 ### 5.2 后端抽象（`backend_interface.hpp`）
 
@@ -299,14 +329,37 @@ IBackend
 ### 5.3 共享输入机制
 
 - 所有 backend 使用**同一份确定性输入**（`InputProvider`，seed=42）保证公平对比
+- per-process 模式下每个 worker 是独立进程，各自用**相同 seed** 生成数值完全一致的输入
+  （无进程间内存共享，但数据相同）
 - 临时 CPU backend 先查询模型 IO shape → 解析成元素个数 → 生成输入
 - 各 backend 内部处理自己的布局需求（TFLite NCHW→NHWC 转置、NCNN [N,C,H,W]→[w,h,c] 等）
 
 ### 5.4 失败语义
 
-- **初始化失败**（如 backend 不可用、精度不支持）→ 记录 `avg=0.0ms, accel=-1.00x` 到 CSV，不崩溃
+- **初始化失败**（backend 不可用、精度不支持等）→ CSV 行 `avg/accel` 及内存 4 列均显示 `-`，
+  `notes` 列写具体原因（`last_error_`，如 "DML_NPU append: No devices detected"），不崩溃
+- **worker 崩溃**（进程非零退出，如 0xC0000409）→ 数据已写则把退出码合并进该行 `notes`
+  （`worker process exited abnormally with code ...`）；仅在崩溃发生在写记录**之前**才补独立失败行
 - **不支持即报错**，绝不静默降级（NCNN BF16 无指令 → 报错；Vulkan 无设备 → 报错；FP16 权重缺失 → 报错）
-- 通过 `last_error_` 携带具体失败原因写入 CSV `notes` 列
+- 模型类型不匹配提前拦截：输入非 FLOAT（如 int64 的 `input_ids`）或含动态维（`-1`）时，
+  `QueryIOMetadata` 给出明确原因并标记失败（本工具基准为 float32，不做 int64/动态 shape 支持）
+
+### 5.5 CSV 输出与内存测量
+
+CSV 共 26 列，除常规 timing/精度外，部署侧关键列：
+
+| 列 | 含义 |
+|----|------|
+| `max_output_diff` / `avg_output_diff` | 与基准输出逐元素差异（`max\|a-b\|` / `avg\|a-b\|`） |
+| `acceleration_vs_cpu` | 基准 avg / 本 backend avg（`baseline_ms / avg_ms`）；无基准时 `-` |
+| `weight_mem_mb` | 模型权重内存（ONNX 解析 initializer 精确统计 / NCNN 取 `.ncnn.bin` 大小 / 其余格式按文件大小近似），与 backend 无关 |
+| `peak_mem_mb` | 进程峰值工作集（Windows `PeakWorkingSetSize` / Linux `VmHWM`），单调递增 |
+| `resident_mem_mb` | run 结束后的常驻工作集（`WorkingSetSize` / `VmRSS`） |
+| `notes` | 初始化耗时明细、失败原因、worker 异常退出码等 |
+
+测量语义：`peak`/`resident` 是**进程级**统计（含框架运行时/arena 开销，不含 GPU 显存）；
+per-process 架构下每 backend 独占进程，读数即该 backend 的部署值，无跨 backend 污染。
+失败行内存列与 `avg/accel` 一致显示 `-`。
 
 ---
 
@@ -402,9 +455,12 @@ IBackend
 |------|------|
 | `docs/ONNX_DEBUG_LOG.md` | ORT_API_VERSION 运行时解析、DML/OpenVINO 各 EP 配置 |
 | `docs/TFLITE_NPU_DEBUG_LOG.md` | QNN TFLite Delegate 全链路（dlopen、struct ABI、版本匹配）+ 桌面 XNNPACK 崩溃与 TFLite/LiteRT 共存方案 |
-| `docs/NCNN_DEBUG_LOG.md` | NaN（clone + packing）、BF16 崩溃（buf_pool）、版本输出、BF16 检测 |
+| `docs/NCNN_DEBUG_LOG.md` | NaN（clone + packing）、BF16 崩溃（buf_pool）、版本输出、BF16 检测、Vulkan extract 4D 崩溃、退出期 0xC0000409 |
+| `docs/MNN_DEBUG_LOG.md` | Vulkan 后端 NaN 分析（BF16 官方不支持、FP32 混合精度路径不稳定、FP16 全链路自洽） |
 | `docs/LiteRT_GPU_DEBUG_LOG.md` | DXC 版本过旧导致 D3D12 shader 编译失败 |
 | `docs/QNN_SDK_DEBUG_LOG.md` | QNN SDK 后端全链路（2.48 API 差异、BinaryInfo V3、tensor 悬空指针、model.so composeGraphs、libQnnHtpPrepare.so 版本匹配、QNN log callback） |
+| `docs/QNN_SDK_HTP_OPTIMIZATIONS.md` | QNN SDK HTP 优化选项汇总（术语表 / 选项速查） |
+| `docs/PROJECT_SCORECARD.md` | 项目综合评估与打分机制（D1–D7 评分卡 + 基线统计） |
 
 ---
 

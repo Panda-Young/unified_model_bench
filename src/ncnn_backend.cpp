@@ -827,15 +827,22 @@ bool NCNNBackend::SaveOutputs(const char * /*suffix*/) { return true; }
 void NCNNBackend::Cleanup()
 {
     if (net_) {
-#if NCNN_VULKAN
-        if (gpu_device_ >= 0) {
-            ncnn::VulkanDevice *vkdev = ncnn::get_gpu_device(gpu_device_);
-            (void)vkdev; /* Don't destroy - GPU might be shared */
-        }
-#endif
         delete net_;
         net_ = nullptr;
     }
+#if NCNN_VULKAN
+    /* Every process runs exactly ONE backend (scheduler/worker model), so the
+     * global Vulkan instance is never shared: tear it down explicitly while
+     * the process is still healthy. ncnn's exit-time static destruction of
+     * the global GPU instance crashes on some drivers with 0xC0000409 (stack
+     * buffer overrun, seen on Intel Iris Xe) AFTER main() returns and after
+     * the benchmark record was already written; destroying it here avoids
+     * that teardown path entirely. */
+    if (gpu_device_ >= 0) {
+        ncnn::destroy_gpu_instance();
+        gpu_device_ = -1;
+    }
+#endif
     for (size_t i = 0; i < input_bufs_.size(); ++i) {
         if (input_bufs_[i] && !input_external_[i]) {
             free(input_bufs_[i]);

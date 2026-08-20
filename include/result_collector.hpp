@@ -38,6 +38,12 @@ struct FormatBaseline {
     BackendId cpu_backend_id = BackendId::ONNX_CPU;
 };
 
+/* Sentinel for BenchmarkRecord::acceleration_vs_cpu when the run succeeded but
+ * there was no baseline to compare against (e.g. --no-baseline single-backend
+ * runs). CSV writes "-" for the comparison columns while keeping the timing
+ * columns intact. -1.0 remains the "failed" sentinel. */
+constexpr double kNoBaselineAccel = -2.0;
+
 /* ---------------------------------------------------------------------------
  * BenchmarkRecord - one row of CSV output
  * -------------------------------------------------------------------------*/
@@ -65,6 +71,15 @@ struct BenchmarkRecord {
     double max_output_diff = 0.0;
     double avg_output_diff = 0.0;
     double acceleration_vs_cpu = 0.0;
+
+    /* Memory (MB) - deployment info (directly measured, no estimation)
+     * weight_mem_mb:      model weights (parsed for ONNX / NCNN, else file
+     *                     size approximation), backend-independent
+     * peak_mem_mb:        process peak working set / RSS after this run
+     * resident_mem_mb:    process resident working set / RSS after this run */
+    double weight_mem_mb = 0.0;
+    double peak_mem_mb = 0.0;
+    double resident_mem_mb = 0.0;
 
     /* Metadata */
     std::string backend_name;

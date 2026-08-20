@@ -31,7 +31,7 @@ int main(int argc, char *argv[])
              cfg.model_path.c_str(), cfg.repeat, cfg.warmup_runs, cfg.num_threads);
 
         ResultCollector collector;
-        BenchmarkRunner runner(cfg, collector);
+        BenchmarkRunner runner(cfg, collector, argc, argv);
         bool ok = runner.Run();
         if (!ok) {
             LOGW("Completed with warnings");

@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -18,6 +19,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <psapi.h>
 #endif
 
 /* ---------------------------------------------------------------------------
@@ -68,6 +70,49 @@ inline double get_time_ms()
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
 #else
 #error "Unsupported platform for get_time_ms()"
+#endif
+}
+
+/* ---------------------------------------------------------------------------
+ * Process memory usage (MB). Returns false if the OS counters are unavailable.
+ *  - peak_mb:     process peak working set / RSS (Windows PeakWorkingSetSize,
+ *                 Linux VmHWM) - monotonic since process start
+ *  - resident_mb: current working set / RSS (Windows WorkingSetSize,
+ *                 Linux VmRSS)
+ * Both are PROCESS-level aggregates (framework arena, thread stacks, DLLs,
+ * weights and activations all included); they are NOT per-tensor values.
+ * -------------------------------------------------------------------------*/
+inline bool get_process_mem_mb(double &peak_mb, double &resident_mb)
+{
+    peak_mb = 0.0;
+    resident_mb = 0.0;
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return false;
+    }
+    peak_mb = (double)pmc.PeakWorkingSetSize / (1024.0 * 1024.0);
+    resident_mb = (double)pmc.WorkingSetSize / (1024.0 * 1024.0);
+    return true;
+#elif defined(__ANDROID__) || defined(__linux__)
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) {
+        return false;
+    }
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "VmHWM:", 6) == 0) {
+            peak_mb = atof(line + 6) / 1024.0; /* kB -> MB */
+        } else if (strncmp(line, "VmRSS:", 6) == 0) {
+            resident_mb = atof(line + 6) / 1024.0; /* kB -> MB */
+        }
+    }
+    fclose(f);
+    return (peak_mb > 0.0 || resident_mb > 0.0);
+#else
+    (void)peak_mb;
+    (void)resident_mb;
+    return false;
 #endif
 }
 

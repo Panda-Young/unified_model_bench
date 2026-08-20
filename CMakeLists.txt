@@ -115,7 +115,7 @@ set_target_properties(unified_bench_${TARGET_SUFFIX} PROPERTIES OUTPUT_NAME "uni
 
 # ---- Link libraries ----
 if(WIN32)
-    target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE Advapi32.lib)
+    target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE Advapi32.lib psapi.lib)
 endif()
 
 if(HAVE_ONNX_BACKEND AND NOT WIN32)

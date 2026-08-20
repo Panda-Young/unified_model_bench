@@ -65,7 +65,7 @@ inline ModelFormat detect_model_format(const std::string &path)
     if (ends_with(path, ".tflite")) {
         return ModelFormat::TFLITE;
     }
-    if (ends_with(path, ".ncnn.bin")) {
+    if (ends_with(path, ".ncnn.param") || ends_with(path, ".ncnn.bin")) {
         return ModelFormat::NCNN;
     }
     if (ends_with(path, ".mnn")) {

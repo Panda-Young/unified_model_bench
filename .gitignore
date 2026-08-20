@@ -40,7 +40,6 @@ deps/
 
 # IDE
 .vscode/
-.workbuddy
 .github
 .idea/
 *.swp

@@ -1,6 +1,7 @@
 # unified_bench 项目综合评估与打分机制
 
 > 评估日期：2026-08-14 ｜ 评估人：AI 辅助（基于代码/文档/git 历史/真机实测证据）
+> 统计修订：2026-08-20（代码量/文档量/架构描述同步到当前，评分结论未重评）
 > 说明：本文件包含两部分——①一套**可复用的项目评分卡**（任意 C++ 推理基准项目可用）；
 > ②针对 unified_bench 的**逐维度打分与证据**。
 
@@ -40,19 +41,24 @@
 
 ---
 
-## 2. 项目实测基线（2026-08-14）
+## 2. 项目实测基线（2026-08-14，统计修订 2026-08-20）
 
 | 指标 | 数值 |
 |---|---|
-| 源码量 | `src/` ≈ **8086 行 / 18 文件**（最大：qnn_backend 1887、onnx_backend 1101、litert 750） |
-| 头文件量 | `include/` ≈ **831 行 / 12 文件** |
+| 源码量 | `src/` ≈ **9637 行 / 18 文件**（最大：qnn_backend 1988、benchmark_runner 1293、onnx_backend 1197） |
+| 头文件量 | `include/` ≈ **1055 行 / 12 文件** |
 | 支持框架 | ONNX Runtime（18 EP 位）/ TFLite / LiteRT / NCNN / MNN / QNN SDK 原生 |
 | 目标平台 | Windows x86/x64 / Linux / Android arm64；MSVC、MinGW、GCC、Clang |
-| 文档规模 | `docs/` 6 篇 ≈ **1650 行**（QNN_SDK_DEBUG_LOG 766 行） |
-| git 历史 | **70 commits**（近 20+ 条为 QNN HTP 优化/文档/勘误） |
+| 文档规模 | `docs/` 7 篇 ≈ **2474 行**（QNN_SDK_DEBUG_LOG 1043 行） |
+| git 历史 | **73 commits**（近 20+ 条为 QNN HTP 优化/文档/勘误） |
 | 自动化测试 | **无单测框架**（无 gtest/doctest/CTest）；验证靠真机跑分 + CSV 基线 + max_diff 精度校验 |
 | 静态检查 | `tools/utils/check_braces.py`（当前 TOTAL: 0） |
 | 真机实测亮点 | QNN model.so exec 13.7→7.2ms；ORT QNN HTP 稳态 11.2ms；FP16 pop 47.5→5.9ms；QNN SDK 反超 ORT |
+
+> 2026-08-20 架构演进（统计修订时点）：工具改为**每 backend 独立进程调度**（唯一模式，
+> 调度器 spawn worker，跨进程 baseline dump 对比 diff/accel，同批同 time 戳）；
+> CSV 新增部署内存列 `weight_mem_mb / peak_mem_mb / resident_mem_mb`；
+> 入口模型格式的 CPU backend 为全局精度基准。相关文档（README §4/§5、NCNN_DEBUG_LOG §8）已同步。
 
 ---
 
@@ -94,7 +100,7 @@
 ### D5 文档与可维护性 —— **4.7 / 5**（权重 15%）
 
 **得分证据**：
-- ✅ 每后端一篇 `*_DEBUG_LOG.md`（现象/根因/方案/实测数据），QNN 篇 766 行且持续维护
+- ✅ 每后端一篇 `*_DEBUG_LOG.md`（现象/根因/方案/实测数据），QNN 篇 1043 行且持续维护
 - ✅ 专项 `QNN_SDK_HTP_OPTIMIZATIONS.md`（术语表/选项汇总/一页速查），README 覆盖构建/用法/架构/踩坑
 - ✅ "代码-文档强同步"纪律（本会话中多次针对文档勘误、术语表、汇总同步提交）
 - ✅ 结论性经验标注日期，避免重复排查（如"DML 图融合必须关闭""vtcm 用 MAX"）

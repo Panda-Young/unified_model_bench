@@ -14,7 +14,8 @@
 class BenchmarkRunner
 {
 public:
-    BenchmarkRunner(const BenchConfig &cfg, ResultCollector &collector);
+    BenchmarkRunner(const BenchConfig &cfg, ResultCollector &collector,
+                    int argc, char **argv);
 
     /* Run the full benchmark suite */
     bool Run();
@@ -25,6 +26,8 @@ public:
 private:
     const BenchConfig &cfg_;
     ResultCollector &collector_;
+    int argc_;
+    char **argv_;
     std::string device_info_;
     std::string arch_;
     std::string batch_date_; /* frozen once per Run() */
@@ -40,7 +43,11 @@ private:
                      ModelFormat fmt,
                      ModelFormat ref_fmt,
                      InputProvider &shared_inputs,
-                     const std::string &ncnn_shapes_path);
+                     const std::string &ncnn_shapes_path,
+                     double weight_mem_mb);
+
+    /* --per-process scheduler: spawn one child process per (variant, backend) */
+    bool RunPerProcess();
 
     /* Get current date/time strings */
     static std::string current_date();
