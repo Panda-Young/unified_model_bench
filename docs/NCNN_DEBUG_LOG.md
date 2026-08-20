@@ -238,3 +238,84 @@ CPU 和 GPU 的 BF16 支持检测均在对应分支中正确使用：
    NCNN 上真正跑通，需对转换后的 ncnn 图做输入侧 Permute/Reshape 手术（把 3D 输入
    布局掰成 conv1d 需要的直序），并排查 blob 1195 处崩溃（疑似后续某 4D 输入或层
    的布局问题）。此问题已超出"升级工具链"范畴。
+
+---
+
+## 7. Vulkan extract(out0) 硬崩溃 0xC0000005（2026-08-20，已修复）
+
+### 7.1 现象
+
+`unified_bench.exe test_model.onnx --repeat 1`，三个 Vulkan 后端（NCNN_VK /
+NCNN_VK_BF16 / NCNN_VK_FP16）均在 warmup 阶段崩溃：
+
+```
+ncnn_backend.cpp:93 @safe_extract  NCNN: HW exception (0xC0000005) in extract(out0)
+ncnn_backend.cpp:670 @NCNNBackend::RunBenchmark  NCNN: warmup extract out0 crashed (SEH) (ret=-1)
+Benchmark failed: NCNN_VK / NCNN_VK_BF16 / NCNN_VK_FP16
+```
+
+CPU 后端（NCNN_CPU / _FP16 / _BF16）完全正常 → 问题锁定在 Vulkan 路径。
+
+### 7.2 模型
+
+`test_model.onnx`（gen_test_model.py，2 输入 1 输出，全部 **rank-4**）：
+
+```
+in0=1,3,224,224   (图像)
+in1=1,48,1,1      (bias 注入，进 BinaryOp add)
+out0=1,10
+```
+
+### 7.3 根因（python ncnn 逐步定位）
+
+用 `tools/probe_vk_walk.py` 遍历中间 blob，精确锁定崩溃层：
+
+| blob | 层 | 结果 |
+|------|----|------|
+| 2~7 | convrelu_0..cat_0 | 正常 |
+| **8** | **BinaryOp add_0（cat 输出 + in1）** | **段错误** |
+
+- **输入 Mat 是 dims=4**（`MakeMatFromShape` 用 `Mat(shape[3],shape[2],shape[1],shape[0],data)`
+  构造，如 in1 → `Mat(w=1,h=1,d=48,c=1)`）。
+- cat_0 输出是 dims=3（`Mat(w=224,h=224,c=48)`）。
+- **ncnn Vulkan 的 BinaryOp shader 只支持 dims<=3 的广播**，4D 输入参与广播时
+  越界访问 → 0xC0000005。CPU 路径的 BinaryOp 广播逻辑健壮，故 CPU 正常。
+- 次要问题：旧代码用外部 flat buffer 直接包装 Mat，依赖外部 stride 恰好等于
+  ncnn 对齐后的 cstep（如 `Mat(w=1,h=1,c=48)` 时 cstep=4，外部 stride=1，会错位）。
+
+### 7.4 修复（`src/ncnn_backend.cpp` MakeMatFromShape 重写）
+
+1. **返回自有 Mat**（数据拷入 ncnn 分配缓冲区，逐 channel memcpy），彻底摆脱
+   外部 stride 与 cstep 对齐的耦合，消除潜在的 use-after-free / 错位读写。
+2. **rank-4 且 N==1 的输入折叠为 3D**：`[1,C,H,W]` → `Mat(w=W,h=H,c=C)`。
+   batch=1 时逻辑布局完全等价，但避开了 Vulkan BinaryOp 的 4D 崩溃路径。
+   `[1,48,1,1]` → `Mat(w=1,h=1,c=48)`，在 add 中按 w/h=1 正确广播到 48 通道。
+3. rank-4 且 N>1 保留旧 4D 映射（罕见，打 LOGW 警告）。
+
+### 7.5 验证
+
+- python ncnn（1.0.20260526）：CPU / VK FP32 / FP16 / BF16 全部 extract 成功，
+  softmax 输出 sum≈1.0；与 CPU 参考最大偏差 < 4e-4。
+- C++ 全量构建（cl.exe 手工编译+链接，x86）：9 个后端全部出结果：
+
+| 后端 | avg(ms) | max_diff | 修复前 |
+|------|---------|----------|--------|
+| NCNN_CPU | 53.1 | 1.9e-7 | 正常 |
+| NCNN_CPU_FP16 | 52.8 | 1.9e-7 | 正常 |
+| NCNN_CPU_BF16 | 79.7 | 2.2e-7 | 正常 |
+| **NCNN_VK** | 48.4 | 1e-8 | **崩溃** |
+| **NCNN_VK_BF16** | 53.4 | 3.5e-4 | **崩溃** |
+| **NCNN_VK_FP16** | 28.2 | 4.2e-5 | **崩溃** |
+
+ONNX_DML_NPU 报 "No devices detected" 是硬件无 NPU 的预期跳过，与本次修复无关。
+
+### 7.6 排查工具（tools/utils/）
+
+- `probe_vk_crash.py` / `probe_vk_steps.py`：逐步复现（load→input→extract）。
+- `probe_vk_walk.py`：遍历中间 blob，二分定位首个崩溃层。
+- `probe_vk_fix.py` / `probe_vk_verify.py`：验证 3D 折叠修复方案 + 数值一致性。
+- 关键经验：**ncnn Vulkan 路径遇到 4D blob 参与 BinaryOp 广播会硬崩**；排查
+  Vulkan 崩溃优先用 python 绑定走中间 blob，先把崩溃层缩小到具体算子。
+- 补充（2026-08-20）：`safe_extract()` 的 minidump 已从 `MiniDumpWithDataSegs`
+  改为 `MiniDumpWithFullMemory`（完整堆/栈内容，便于在崩溃现场查 Mat 等数据；
+  文件会显著变大，仅在崩溃时写入）。

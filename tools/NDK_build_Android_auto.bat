@@ -209,6 +209,7 @@ if defined MODEL_ARG (
     adb push "%ROOT%\test_model.shapes" /data/local/tmp/bench_test/ 2>nul
     adb push "%ROOT%\test_model.mnn" /data/local/tmp/bench_test/ 2>nul
     adb push "%ROOT%\libtest_model.so" /data/local/tmp/bench_test/ 2>nul
+    adb push "%ROOT%\test_model.serialized.bin" /data/local/tmp/bench_test/ 2>nul
 )
 
 REM --- Push .so files (skip if already on device) ---
@@ -360,7 +361,7 @@ echo ============================================================
 echo  Running benchmark ...
 echo ============================================================
 adb shell "rm -f /data/local/tmp/bench_test/summary.csv"
-adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% %MODEL_NAME% --repeat 1"
+adb shell "cd /data/local/tmp/bench_test && chmod +x ./%OUT% && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn ./%OUT% %MODEL_NAME% --log-level warn"
 set BENCH_EXIT=%ERRORLEVEL%
 
 echo.
