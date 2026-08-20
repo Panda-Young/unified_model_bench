@@ -751,7 +751,12 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
 
     auto t6 = std::chrono::high_resolution_clock::now();
     if (!QueryIOMetadata()) {
-        last_error_ = "ONNX: QueryIOMetadata failed";
+        /* QueryIOMetadata sets a specific last_error_ (unsupported input type
+         * / dynamic shape / ORT API failure); keep it, only fall back to a
+         * generic message when nothing was recorded. */
+        if (last_error_.empty()) {
+            last_error_ = "ONNX: QueryIOMetadata failed";
+        }
         return false;
     }
     timing_[7] = std::chrono::duration<double, std::milli>(
@@ -808,6 +813,45 @@ bool ONNXBackend::QueryIOMetadata()
         if (!OrOk(ort_, ort_->GetDimensions(si, dims.data(), nd),
                   "GetDimensions", last_error_)) {
             return false;
+        }
+        /* Early, explicit rejection of unsupported inputs. The benchmark feeds
+         * float32 buffers with static shapes, so a dynamic dim (-1) or a
+         * non-FLOAT element type would otherwise fail later with a cryptic
+         * "tried creating tensor with negative value in shape" deep inside
+         * CreateTensorWithDataAsOrtValue on the first Run. Fail here instead
+         * with a reason that names the actual model mismatch. */
+        ONNXTensorElementDataType elem_type;
+        if (!OrOk(ort_, ort_->GetTensorElementType(si, &elem_type),
+                  "GetTensorElementType", last_error_)) {
+            ort_->ReleaseTypeInfo(ti);
+            return false;
+        }
+        if (elem_type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+            const char *in_name = name ? name : "?";
+            LOGE("ONNX: input '%s' element type %d is not FLOAT - model type "
+                 "mismatch, benchmark only supports float32 inputs",
+                 in_name, (int)elem_type);
+            last_error_ = "ONNX: input '" + std::string(in_name) +
+                          "' has non-float element type (" +
+                          std::to_string((int)elem_type) +
+                          "), not supported (benchmark feeds float32 inputs)";
+            ort_->ReleaseTypeInfo(ti);
+            return false;
+        }
+        for (auto d : dims) {
+            if (d < 0) {
+                const char *in_name = name ? name : "?";
+                LOGE("ONNX: input '%s' has dynamic input shape (dim=%lld) - "
+                     "model type mismatch, benchmark requires static input "
+                     "shapes",
+                     in_name, (long long)d);
+                last_error_ = "ONNX: input '" + std::string(in_name) +
+                              "' has dynamic input shape (dim=" +
+                              std::to_string(d) +
+                              "), not supported (static shape required)";
+                ort_->ReleaseTypeInfo(ti);
+                return false;
+            }
         }
         size_t elems = 1;
         for (auto d : dims) {

@@ -25,6 +25,7 @@ bench_bins/
 *.param
 *.shapes
 *.mnn
+*.data
 model_cache/
 
 # CMake build directory
@@ -39,6 +40,8 @@ deps/
 
 # IDE
 .vscode/
+.workbuddy
+.github
 .idea/
 *.swp
 *.swo
