@@ -181,8 +181,8 @@ bool csv_append_note(const std::string &path, const std::string &batch_time,
                 nl += csv_quote_field(flds[k]);
             }
             lines[li] = nl + "\n";
-            changed = true;
         }
+        changed = true;
     }
     if (changed) {
         FILE *w = fopen(path.c_str(), "w");

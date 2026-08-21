@@ -45,6 +45,8 @@ double csv_read_avg_run_ms(const std::string &path,
                            const std::string &backend_name);
 
 /* Append "note" to the notes column of the matching row (merging instead of
- * adding a second row). Returns true when a row was modified. */
+ * adding a second row). Returns true when a matching row exists and is
+ * guaranteed to contain the note (idempotent - an already-present note still
+ * counts as success); false only when no row matches. */
 bool csv_append_note(const std::string &path, const std::string &batch_time,
                      const std::string &backend_name, const std::string &note);

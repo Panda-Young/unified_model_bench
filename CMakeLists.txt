@@ -276,3 +276,35 @@ if(HAVE_LITERT_BACKEND)
     endforeach()
 endif()
 endif()
+
+# ---- Unit tests (doctest, single-header) ----
+# The test runner compiles the pure-logic modules WITHOUT the HAVE_*_BACKEND
+# macros, so no backend (and its 3rd-party libs) is pulled into the link.
+option(BUILD_TESTING "Build the doctest unit test runner" ON)
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(unified_bench_tests
+        tests/test_main.cpp
+        tests/test_csv_utils.cpp
+        tests/test_scheduler.cpp
+        tests/test_model_loader.cpp
+        tests/test_cmd_args.cpp
+        tests/test_input_provider.cpp
+        # Units under test (no backend macros -> registry stays empty)
+        src/csv_utils.cpp
+        src/scheduler.cpp
+        src/backend_registry.cpp
+        src/model_loader.cpp
+        src/result_collector.cpp
+        src/cmd_args.cpp
+        src/input_provider.cpp
+        src/log.cpp
+    )
+    target_include_directories(unified_bench_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/include" "${DEPS_DIR}/doctest")
+    target_compile_definitions(unified_bench_tests PRIVATE
+        _CRT_SECURE_NO_WARNINGS NOMINMAX
+        "UB_TEST_MODEL_PATH=\"${CMAKE_SOURCE_DIR}/test_model.onnx\""
+        "UB_TEST_MODEL_DIR=\"${CMAKE_SOURCE_DIR}\"")
+    add_test(NAME unit_tests COMMAND unified_bench_tests)
+endif()
