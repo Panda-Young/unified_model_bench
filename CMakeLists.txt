@@ -106,8 +106,49 @@ if(ANDROID AND HAVE_QNN_SDK_BACKEND)
         COMPILE_OPTIONS "-march=armv8.2-a+fp16")
 endif()
 
-# ---- Source files (glob all .cpp in src/) ----
-file(GLOB SRC_FILES "${CMAKE_SOURCE_DIR}/src/*.cpp")
+# ---- Source files ----
+# Core (always compiled): orchestration, registry, CLI, IO, collection.
+# NOTE: keep in sync when adding a new core module; backend files are appended
+# conditionally below so disabled backends cost zero build time (each backend
+# .cpp is additionally wrapped in #ifdef HAVE_*_BACKEND as a safety net).
+set(SRC_FILES
+    "${CMAKE_SOURCE_DIR}/src/main.cpp"
+    "${CMAKE_SOURCE_DIR}/src/benchmark_runner.cpp"
+    "${CMAKE_SOURCE_DIR}/src/scheduler.cpp"
+    "${CMAKE_SOURCE_DIR}/src/csv_utils.cpp"
+    "${CMAKE_SOURCE_DIR}/src/backend_registry.cpp"
+    "${CMAKE_SOURCE_DIR}/src/cmd_args.cpp"
+    "${CMAKE_SOURCE_DIR}/src/device_info.cpp"
+    "${CMAKE_SOURCE_DIR}/src/file_ops.cpp"
+    "${CMAKE_SOURCE_DIR}/src/input_provider.cpp"
+    "${CMAKE_SOURCE_DIR}/src/log.cpp"
+    "${CMAKE_SOURCE_DIR}/src/model_loader.cpp"
+    "${CMAKE_SOURCE_DIR}/src/result_collector.cpp"
+    # Shared QNN SoC detection, used by both the ORT QNN EP path and the
+    # native QNN SDK backend; standalone (no QNN SDK headers needed).
+    "${CMAKE_SOURCE_DIR}/src/qnn_soc.cpp"
+)
+if(HAVE_ONNX_BACKEND)
+    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/onnx_backend.cpp")
+endif()
+if(HAVE_TFLITE_BACKEND)
+    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/tflite_backend.cpp")
+endif()
+if(HAVE_NCNN_BACKEND)
+    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/ncnn_backend.cpp")
+endif()
+if(HAVE_MNN_BACKEND)
+    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/mnn_backend.cpp")
+endif()
+if(HAVE_LITERT_BACKEND)
+    # Qualcomm options stubs are only needed by the LiteRT backend (Android).
+    list(APPEND SRC_FILES
+        "${CMAKE_SOURCE_DIR}/src/litert_backend.cpp"
+        "${CMAKE_SOURCE_DIR}/src/litert_qualcomm_stubs.cpp")
+endif()
+if(HAVE_QNN_SDK_BACKEND)
+    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/qnn_backend.cpp")
+endif()
 
 # ---- Executable ----
 add_executable(unified_bench_${TARGET_SUFFIX} ${SRC_FILES})

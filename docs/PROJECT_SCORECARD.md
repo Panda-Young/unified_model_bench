@@ -45,7 +45,7 @@
 
 | 指标 | 数值 |
 |---|---|
-| 源码量 | `src/` ≈ **9637 行 / 18 文件**（最大：qnn_backend 1988、benchmark_runner 1293、onnx_backend 1197） |
+| 源码量 | `src/` ≈ **9204 行 / 20 文件**（最大：qnn_backend 1944、onnx_backend 1156、benchmark_runner 627 + scheduler 530 + csv_utils 198） |
 | 头文件量 | `include/` ≈ **1055 行 / 12 文件** |
 | 支持框架 | ONNX Runtime（18 EP 位）/ TFLite / LiteRT / NCNN / MNN / QNN SDK 原生 |
 | 目标平台 | Windows x86/x64 / Linux / Android arm64；MSVC、MinGW、GCC、Clang |

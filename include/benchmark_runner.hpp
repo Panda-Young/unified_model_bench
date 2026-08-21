@@ -3,6 +3,7 @@
  * benchmark_runner.hpp - Main benchmark orchestrator
  *============================================================================*/
 
+#include "backend_interface.hpp"
 #include "cmd_args.hpp"
 #include "device_info.hpp"
 #include "input_provider.hpp"
@@ -34,14 +35,12 @@ private:
     std::string batch_time_;
 
     /* Test one model variant across all its backends */
-    bool TestVariant(const ModelSearchResult &variant,
-                     const ModelSearchResult &ref_variant);
+    bool TestVariant(const ModelSearchResult &variant);
 
     /* Test one specific backend */
     bool TestBackend(const BackendConfig &bcfg,
                      const std::string &model_path,
                      ModelFormat fmt,
-                     ModelFormat ref_fmt,
                      InputProvider &shared_inputs,
                      const std::string &ncnn_shapes_path,
                      double weight_mem_mb);

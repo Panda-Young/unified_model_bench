@@ -295,20 +295,24 @@ struct PbReader {
     bool skip(unsigned wire)
     {
         switch (wire) {
-        case 0:
+        case 0: {
             varint();
             break;
-        case 1:
+        }
+        case 1: {
             return take(8) != nullptr;
+        }
         case 2: {
             size_t l = (size_t)varint();
             return take(l) != nullptr;
         }
-        case 5:
+        case 5: {
             return take(4) != nullptr;
-        default:
+        }
+        default: {
             ok = false;
             return false;
+        }
         }
         return ok;
     }

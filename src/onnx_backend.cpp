@@ -58,8 +58,6 @@ public:
 
     bool Initialize(const char *model_path, int num_threads) override;
     bool QueryIOInfo(std::string &is, size_t &ie, std::string &os, size_t &oe) override;
-    bool PrepareInputs(float *&fd, size_t &fe, const char *arg,
-                       bool random, const float *const *ext, const size_t *extc) override;
     void SetSharedInput(const float *const *data, const size_t *counts) override;
     bool RunBenchmark(int warmup, int repeat, double &total, double &maxv,
                       double &minv, int &maxi, std::vector<float *> &odata,
@@ -67,7 +65,6 @@ public:
                       std::vector<std::array<size_t, MAX_DIMENSIONS>> &oshapes,
                       std::vector<size_t> &odims) override;
     void GetTiming(std::array<double, 10> &timing) override;
-    bool SaveOutputs(const char *suffix) override;
     const std::vector<std::string> &GetOutputNames() const override
     {
         return output_names_str_;
@@ -943,45 +940,8 @@ bool ONNXBackend::QueryIOInfo(std::string &is, size_t &ie, std::string &os, size
 }
 
 /* ---------------------------------------------------------------------------
- * PrepareInputs / SetSharedInput
+ * SetSharedInput
  * -------------------------------------------------------------------------*/
-bool ONNXBackend::PrepareInputs(float *&fd, size_t &fe, const char *, bool random, const float *const *ext, const size_t *extc)
-{
-    for (size_t i = 0; i < num_inputs_; ++i) {
-        size_t n = input_elems_[i] ? input_elems_[i] : 1;
-        if (i >= input_bufs_.size()) {
-            input_bufs_.resize(i + 1, nullptr);
-            input_buf_elems_.resize(i + 1, 0);
-            input_external_.resize(i + 1, false);
-        }
-        if (input_bufs_[i] && !input_external_[i]) {
-            free(input_bufs_[i]);
-        }
-        if (ext && ext[i] && extc && extc[i] == n) {
-            input_bufs_[i] = (float *)ext[i];
-            input_external_[i] = true;
-        } else {
-            float *b = (float *)malloc(n * sizeof(float));
-            if (!b) {
-                LOGE("ONNX: malloc(%zu) failed at input %zu, due to %s, %d", n * sizeof(float), i, strerror(errno), errno);
-                return false;
-            }
-            if (random) {
-                for (size_t j = 0; j < n; ++j) {
-                    b[j] = (float)rand() / (float)RAND_MAX;
-                }
-            } else {
-                memset(b, 0, n * sizeof(float));
-            }
-            input_bufs_[i] = b;
-            input_external_[i] = false;
-        }
-        input_buf_elems_[i] = n;
-    }
-    fd = num_inputs_ > 0 ? input_bufs_[0] : nullptr;
-    fe = num_inputs_ > 0 ? input_buf_elems_[0] : 0;
-    return true;
-}
 void ONNXBackend::SetSharedInput(const float *const *data, const size_t *counts)
 {
     for (size_t i = 0; i < num_inputs_; ++i) {
@@ -1152,7 +1112,6 @@ void ONNXBackend::GetTiming(std::array<double, 10> &t)
     }
     t[0] = init_ms_;
 }
-bool ONNXBackend::SaveOutputs(const char *) { return true; }
 
 void ONNXBackend::Cleanup()
 {

@@ -13,14 +13,18 @@ unified_model_bench/
 ├── CMakeLists.txt              # 主构建脚本（VS / NDK / Ninja 通用）
 ├── include/                    # 公共头文件
 │   ├── backend_interface.hpp   # IBackend 抽象接口 + BackendId/BackendType 枚举 + Registry
-│   ├── benchmark_runner.hpp    # 基准测试编排
+│   ├── benchmark_runner.hpp    # 基准测试编排（worker 流程 + RunPerProcess 声明）
+│   ├── scheduler.hpp           # 每 backend 独立进程调度器的辅助函数声明
+│   ├── csv_utils.hpp           # CSV 行级工具声明（列索引 + 行解析/回查）
 │   ├── cmd_args.hpp            # CLI 参数结构
-│   ├── model_format.hpp        # 模型格式枚举（ONNX/TFLite/NCNN/MNN）
+│   ├── model_format.hpp        # 模型格式枚举（ONNX/TFLite/NCNN/MNN/QNN）
 │   ├── platform.hpp            # 平台宏（ARCH_STR 等）
-│   └── ...                     # log / input_provider / result_collector 等
+│   └── ...                     # log / input_provider / result_collector / qnn_soc 等
 ├── src/                        # 实现
 │   ├── main.cpp                # 入口
-│   ├── benchmark_runner.cpp    # 编排：模型发现 → 输入生成 → 逐 backend 测试 → CSV
+│   ├── benchmark_runner.cpp    # worker 编排：模型发现 → 输入生成 → 逐 backend 测试 → CSV
+│   ├── scheduler.cpp           # 每 backend 独立进程调度（spawn worker + 跨进程 baseline）
+│   ├── csv_utils.cpp           # CSV 行级工具（解析/列索引/worker 记录回查）
 │   ├── backend_registry.cpp    # 各平台 backend 注册表
 │   ├── onnx_backend.cpp        # ONNX Runtime EP（DML/OpenVINO/oneDNN/QNN/NNAPI/XNNPACK）
 │   ├── tflite_backend.cpp      # TFLite Delegate（XNNPACK/NNAPI/GPU/QNN-NPU）
@@ -29,7 +33,7 @@ unified_model_bench/
 │   ├── qnn_backend.cpp         # QNN SDK 原生后端（context binary，直接调 QNN C API）
 │   ├── ncnn_backend.cpp        # NCNN（CPU/Vulkan，FP32/FP16/BF16）
 │   ├── mnn_backend.cpp         # MNN（CPU/OpenCL/Vulkan）
-│   └── ...                     # cmd_args / device_info / file_ops / input_provider / result_collector / log
+│   └── ...                     # cmd_args / device_info / file_ops / input_provider / result_collector / log / qnn_soc
 ├── deps/                       # 第三方依赖（离线 vendored）
 │   ├── onnxruntime/            # ORT 1.22.0 + DML/OpenVINO/oneDNN/QNN 各 EP 变体
 │   ├── tflite/                 # TFLite 2.18.0（include + 各平台 .so/.dll）
@@ -186,7 +190,6 @@ unified_bench <model_path> [选项]
 
 选项：
   --model <path>       模型路径（也支持位置参数）
-  --input <path>       单个输入文件（二进制 float32）
   --input-list <path>  输入列表文件（见下），由 tools/generate_test_data_for_onnx.py 生成
   --input-format <fmt> 输入数据格式：auto|float32|uint8（默认 auto，按文件大小探测）
   --backend <name,...> 指定 backend（逗号分隔，缺省=全部可用）
@@ -196,11 +199,8 @@ unified_bench <model_path> [选项]
   --threads <N>        线程数（默认 4）
   --csv <path>         CSV 输出路径（默认 summary.csv）
   --log-level <0-4>    日志级别（0=OFF..4=ERR，默认 2=INFO）
-  --output-dir <path>  输出目录
-  --save-input         保存输入
-  --no-save-output     不保存输出
+  --output-dir <path>  输出目录（存放基准临时文件）
   --no-csv             不写 CSV
-  --no-output-print    不打印输出
   --help / --version
 ```
 

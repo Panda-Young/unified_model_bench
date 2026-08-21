@@ -42,8 +42,7 @@
  * -------------------------------------------------------------------------*/
 constexpr size_t MAX_DIMENSIONS = 8;
 constexpr size_t MAX_PATH_LEN = 1024;
-constexpr size_t MAX_IO = 128;      /* max inputs/outputs per model */
-constexpr size_t MAX_RECORDS = 256; /* max benchmark records */
+constexpr size_t MAX_IO = 128; /* max inputs/outputs per model */
 
 /* ---------------------------------------------------------------------------
  * Platform-specific path separator

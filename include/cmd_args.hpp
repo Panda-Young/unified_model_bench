@@ -13,7 +13,6 @@ enum class InputDataFormat { Auto = 0,
 
 struct BenchConfig {
     std::string model_path;
-    std::string input_path;
     std::string input_list_path;                          /* --input-list: file of .bin input paths */
     InputDataFormat input_format = InputDataFormat::Auto; /* --input-format */
     std::string output_dir;
@@ -25,9 +24,6 @@ struct BenchConfig {
     int log_level = 2; // 0=OFF, 1=DBG, 2=INFO, 3=WARN, 4=ERR
 
     bool enable_csv = true;
-    bool enable_output = true;
-    bool save_input = false;
-    bool save_output = true;
 
     /* Empty = run all available backends. Populated by --backend <name1,name2,...> */
     std::vector<int> backend_ids;

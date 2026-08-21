@@ -120,11 +120,6 @@ public:
     virtual bool QueryIOInfo(std::string &input_shape, size_t &input_elems,
                              std::string &output_shape, size_t &output_elems) = 0;
 
-    virtual bool PrepareInputs(float *&first_data, size_t &first_elems,
-                               const char *input_arg, bool use_random,
-                               const float *const *ext_data,
-                               const size_t *ext_counts) = 0;
-
     virtual void SetSharedInput(const float *const *data,
                                 const size_t *counts) = 0;
 
@@ -137,8 +132,6 @@ public:
                               std::vector<size_t> &output_num_dims) = 0;
 
     virtual void GetTiming(std::array<double, 10> &timing) = 0;
-
-    virtual bool SaveOutputs(const char *suffix) = 0;
 
     BackendId GetId() const { return id_; }
     void SetId(BackendId id) { id_ = id; }
