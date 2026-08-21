@@ -4,6 +4,7 @@
 #include "model_loader.hpp"
 #include "doctest.h"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 
@@ -60,5 +61,30 @@ TEST_CASE("estimate_weight_mb: NCNN uses the .bin file size")
     double mb = estimate_weight_mb(m);
     CHECK(mb > 0.0);
     CHECK(mb < 1.0);
+}
+
+TEST_CASE("estimate_weight_mb: TFLite parses buffers (not file size)")
+{
+    /* The minimal FlatBuffers reader must return the exact sum of all
+     * Buffer.data payloads. For the stock test model the three formats of
+     * the SAME network must agree closely: TFLite weights vs NCNN .bin
+     * (186,240 B) - the tflite buffer sum is 186,344 B (extra constants),
+     * while the raw FILE size is 191,612 B. A file-size approximation would
+     * overshoot by ~5.4 KB, so assert against the parsed NCNN value. */
+    ModelSearchResult t;
+    t.found = true;
+    t.path = UB_TEST_MODEL_DIR "/test_model.tflite";
+    t.format = ModelFormat::TFLITE;
+
+    ModelSearchResult n;
+    n.found = true;
+    n.path = UB_TEST_MODEL_DIR "/test_model.ncnn.param";
+    n.format = ModelFormat::NCNN;
+
+    double tflite_mb = estimate_weight_mb(t);
+    double ncnn_mb = estimate_weight_mb(n);
+    CHECK(tflite_mb > 0.0);
+    /* within 5% of the true weights (186,240 vs 186,344) */
+    CHECK(std::fabs(tflite_mb - ncnn_mb) / ncnn_mb < 0.05);
 }
 #endif /* UB_TEST_MODEL_PATH */

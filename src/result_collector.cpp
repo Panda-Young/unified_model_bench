@@ -15,20 +15,22 @@
  * 26 columns, in order:
  *   0 date            1 time          2 model_name    3 model_input_shape
  *   4 input_elements  5 model_output_shape  6 output_elements
- *   7 warmup_runs     8 repeat_runs   9 threads
- *  10 total_run_ms   11 avg_run_ms   12 max_run_ms   13 max_run_idx
- *  14 init_ms        15 max_output_diff  16 avg_output_diff
- *  17 acceleration_vs_cpu
- *  18 weight_mem_mb  19 peak_mem_mb  20 resident_mem_mb
+ *   7 weight_mem_mb
+ *   8 warmup_runs     9 repeat_runs  10 threads
+ *  11 total_run_ms   12 avg_run_ms   13 max_run_ms   14 max_run_idx
+ *  15 init_ms        16 max_output_diff  17 avg_output_diff
+ *  18 acceleration_vs_cpu
+ *  19 peak_mem_mb    20 resident_mem_mb
  *  21 backend_name   22 device_info  23 arch         24 app_name
  *  25 notes
  * -------------------------------------------------------------------------*/
 static const char *kCsvHeader =
     "date,time,model_name,model_input_shape,input_elements,"
-    "model_output_shape,output_elements,warmup_runs,repeat_runs,threads,"
+    "model_output_shape,output_elements,weight_mem_mb,"
+    "warmup_runs,repeat_runs,threads,"
     "total_run_ms,avg_run_ms,max_run_ms,max_run_idx,init_ms,"
     "max_output_diff,avg_output_diff,acceleration_vs_cpu,"
-    "weight_mem_mb,peak_mem_mb,resident_mem_mb,"
+    "peak_mem_mb,resident_mem_mb,"
     "backend_name,device_info,arch,app_name,notes\n";
 
 /* Write one record row (quote-aware for string fields). Shared by every
@@ -41,6 +43,16 @@ static void write_csv_record(FILE *f, const BenchmarkRecord &r,
     fprintf(f, "\"%s\",%zu,\"%s\",%zu,",
             r.input_shape_str.c_str(), r.input_elements,
             r.output_shape_str.c_str(), r.output_elements);
+    bool failed = r.acceleration_vs_cpu == -1.0;               /* failed sentinel */
+    bool no_base = r.acceleration_vs_cpu == kNoBaselineAccel;  /* -2 sentinel */
+    /* weight memory (deployment info): right after the output shapes.
+     * Failed backends have no valid measurement -> "-". */
+    if (failed) {
+        fputs("-", f);
+    } else {
+        fprintf(f, "%.3f", r.weight_mem_mb);
+    }
+    fputc(',', f);
     fprintf(f, "%d,%d,", r.warmup_runs, r.repeat_runs);
     if (r.num_threads < 0) {
         fputs("-", f); /* e.g. QNN HTP: thread count not meaningful */
@@ -48,8 +60,6 @@ static void write_csv_record(FILE *f, const BenchmarkRecord &r,
         fprintf(f, "%d", r.num_threads);
     }
     fputc(',', f);
-    bool failed = r.acceleration_vs_cpu == -1.0;               /* failed sentinel */
-    bool no_base = r.acceleration_vs_cpu == kNoBaselineAccel;  /* -2 sentinel */
     if (failed) {
         fprintf(f, "-,-,-,%d,", r.max_run_idx);
     } else {
@@ -69,13 +79,13 @@ static void write_csv_record(FILE *f, const BenchmarkRecord &r,
     } else {
         fprintf(f, "%.3fx", r.acceleration_vs_cpu);
     }
-    /* Failed backends: memory columns are "-" too (no valid measurement);
-     * no-baseline runs keep the memory values (they are the point). */
+    /* Failed backends: peak/resident are "-" too (no valid measurement);
+     * no-baseline runs keep the memory values (they are the point).
+     * weight_mem_mb was already emitted after the output shapes above. */
     if (failed) {
-        fprintf(f, ",-,-,-");
+        fprintf(f, ",-,-");
     } else {
-        fprintf(f, ",%.3f,%.3f,%.3f",
-                r.weight_mem_mb, r.peak_mem_mb, r.resident_mem_mb);
+        fprintf(f, ",%.3f,%.3f", r.peak_mem_mb, r.resident_mem_mb);
     }
     fprintf(f, ",\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"\n",
             r.backend_name.c_str(), r.device_info.c_str(),

@@ -404,6 +404,122 @@ size_t onnx_initializer_bytes(const uint8_t *data, size_t size)
     return 0;
 }
 
+/* ---------------------------------------------------------------------------
+ * Minimal FlatBuffers reader for TFLite weight estimation (no external deps).
+ *
+ * Layout walked (tflite schema.fbs):
+ *   Model.buffers (field 4) -> vector of Buffer tables
+ *   Buffer.data   (field 0) -> vector<uint8> (the weight payload)
+ *
+ * FlatBuffers rules used:
+ *   - the file starts with a uoffset to the root table (relative to itself)
+ *   - table: int32 soffset -> vtable = table - soffset (soffset is the signed
+ *     table->vtable distance and may be positive or negative); the vtable
+ *     holds [u16 vtable_size][u16 table_size][u16 field_offset...], and a
+ *     field exists only when vtable_size >= 4 + (field_index+1)*2
+ *   - field content offset = table + field_offset
+ *   - a vector is [u32 length][elements]; a vector-of-tables element is a
+ *     uoffset relative to the element slot itself
+ *   - uoffset target = position + uoffset value
+ * -------------------------------------------------------------------------*/
+struct FbReader {
+    const uint8_t *p;
+    size_t n;
+    bool ok = true;
+
+    uint32_t u32(size_t off)
+    {
+        if (off + 4 > n) {
+            ok = false;
+            return 0;
+        }
+        return (uint32_t)p[off] | ((uint32_t)p[off + 1] << 8) |
+               ((uint32_t)p[off + 2] << 16) | ((uint32_t)p[off + 3] << 24);
+    }
+    int32_t i32(size_t off) { return (int32_t)u32(off); }
+    uint16_t u16(size_t off)
+    {
+        if (off + 2 > n) {
+            ok = false;
+            return 0;
+        }
+        return (uint16_t)(p[off] | (p[off + 1] << 8));
+    }
+
+    /* Absolute offset of field 'fidx' inside the table at 't'; 0 when the
+     * field is absent or the structure is not a valid table. */
+    size_t table_field(size_t t, size_t fidx)
+    {
+        if (t + 4 > n) {
+            ok = false;
+            return 0;
+        }
+        int32_t soff = i32(t);
+        if (soff == 0) {
+            return 0; /* zero soffset: not a table */
+        }
+        int64_t vtab = (int64_t)t - soff; /* vtable = table - soffset */
+        if (vtab < 8 || vtab + 4 > (int64_t)n) {
+            ok = false;
+            return 0;
+        }
+        uint16_t vsz = u16((size_t)vtab);
+        if (vsz < 4 + (fidx + 1) * 2 || (int64_t)(vtab + vsz) > (int64_t)n) {
+            return 0; /* field not declared in this vtable */
+        }
+        uint16_t fo = u16((size_t)vtab + 4 + fidx * 2);
+        return fo ? (t + fo) : 0;
+    }
+};
+
+/* Sum of all Buffer.data payload sizes in a .tflite model (exact weight
+ * bytes). Returns 0 when the file cannot be parsed as a TFLite model. */
+size_t tflite_weights_bytes(const uint8_t *data, size_t size)
+{
+    if (size < 8) {
+        return 0;
+    }
+    FbReader r{data, size};
+    size_t root = r.u32(0); /* root table offset (relative to itself) */
+    if (!r.ok || root >= size) {
+        return 0;
+    }
+    size_t bufs = r.table_field(root, 4); /* Model.buffers */
+    if (!bufs || !r.ok) {
+        return 0;
+    }
+    size_t vec = bufs + r.u32(bufs); /* vector start = field + uoffset */
+    if (!r.ok || vec + 4 > size) {
+        return 0;
+    }
+    uint32_t nb = r.u32(vec);
+    if (nb > 65536) { /* sanity cap against garbage lengths */
+        return 0;
+    }
+    size_t total = 0;
+    for (uint32_t i = 0; i < nb; ++i) {
+        size_t elem = vec + 4 + (size_t)i * 4;
+        if (elem + 4 > size) {
+            r.ok = false;
+            break;
+        }
+        size_t bt = elem + r.u32(elem); /* uoffset relative to the element slot */
+        if (!r.ok || bt >= size) {
+            break;
+        }
+        size_t d = r.table_field(bt, 0); /* Buffer.data */
+        if (!d || !r.ok) {
+            continue; /* empty buffer (no data field) */
+        }
+        size_t dv = d + r.u32(d); /* vector start = field + uoffset */
+        if (!r.ok || dv + 4 > size) {
+            break;
+        }
+        total += r.u32(dv);
+    }
+    return r.ok ? total : 0;
+}
+
 } // namespace
 
 double estimate_weight_mb(const ModelSearchResult &model)
@@ -467,7 +583,31 @@ double estimate_weight_mb(const ModelSearchResult &model)
         return mb;
     }
 
-    /* TFLite / MNN / QNN: no parser yet - file size approximation
+    /* TFLite: exact - sum of all Buffer.data payloads via the minimal
+     * FlatBuffers reader above (graph/metadata overhead now excluded).
+     * MNN / QNN keep the file size approximation: .mnn uses a complex custom
+     * flatbuffer schema, and QNN context binaries (.serialized.bin/.dlc) are
+     * a closed format. */
+    if (model.format == ModelFormat::TFLITE) {
+        std::vector<uint8_t> buf((size_t)sz);
+        bool parsed = fread(buf.data(), 1, (size_t)sz, f) == (size_t)sz;
+        fclose(f);
+        if (parsed) {
+            size_t bytes = tflite_weights_bytes(buf.data(), buf.size());
+            if (bytes > 0) {
+                mb = (double)bytes / (1024.0 * 1024.0);
+                LOGI("Weight memory (TFLite, parsed): %.2f MB (%zu bytes)",
+                     mb, bytes);
+                return mb;
+            }
+            LOGW("estimate_weight_mb: TFLite buffer parse failed, "
+                 "falling back to file size");
+        }
+        mb = (double)sz / (1024.0 * 1024.0);
+        return mb;
+    }
+
+    /* MNN / QNN: no parser yet - file size approximation
      * (weights dominate, but graph/metadata overhead is included) */
     fclose(f);
     mb = (double)sz / (1024.0 * 1024.0);

@@ -49,7 +49,10 @@ std::string build_model_path(const std::string &dir,
  *    no external deps) for an exact byte count of all weight tensors.
  *  - NCNN: the .ncnn.bin file IS the weights payload (param is text), so its
  *    file size is exact.
- *  - TFLite / MNN / QNN: no parser yet - approximated by file size (weights
- *    dominate these files, but graph/metadata overhead is included).
+ *  - TFLite: minimal FlatBuffers reader sums every Buffer.data payload
+ *    (exact weight bytes; graph/metadata overhead excluded).
+ *  - MNN / QNN: approximated by file size (no parser for the .mnn schema /
+ *    the closed QNN context-binary format; weights dominate, but
+ *    graph/metadata overhead is included).
  * Returns 0.0 when the model or its weights cannot be read. */
 double estimate_weight_mb(const ModelSearchResult &model);

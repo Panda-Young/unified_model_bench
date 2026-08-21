@@ -346,13 +346,16 @@ IBackend
 
 ### 5.5 CSV 输出与内存测量
 
-CSV 共 26 列，除常规 timing/精度外，部署侧关键列：
+CSV 共 26 列：模型信息（`model_name` → `output_elements`）之后紧跟 `weight_mem_mb`，
+然后是运行配置与 timing/精度列（`warmup_runs` → `acceleration_vs_cpu`），
+内存实测列（`peak_mem_mb` / `resident_mem_mb`）与元数据（`backend_name` → `notes`）收尾。
+部署侧关键列：
 
 | 列 | 含义 |
 |----|------|
 | `max_output_diff` / `avg_output_diff` | 与基准输出逐元素差异（`max\|a-b\|` / `avg\|a-b\|`） |
 | `acceleration_vs_cpu` | 基准 avg / 本 backend avg（`baseline_ms / avg_ms`）；无基准时 `-` |
-| `weight_mem_mb` | 模型权重内存（ONNX 解析 initializer 精确统计 / NCNN 取 `.ncnn.bin` 大小 / 其余格式按文件大小近似），与 backend 无关 |
+| `weight_mem_mb` | 模型权重内存（ONNX 解析 initializer / NCNN 取 `.ncnn.bin` 大小 / TFLite 解析 flatbuffer Buffer 精确统计 / MNN·QNN 按文件大小近似），与 backend 无关 |
 | `peak_mem_mb` | 进程峰值工作集（Windows `PeakWorkingSetSize` / Linux `VmHWM`），单调递增 |
 | `resident_mem_mb` | run 结束后的常驻工作集（`WorkingSetSize` / `VmRSS`） |
 | `notes` | 初始化耗时明细、失败原因、worker 异常退出码等 |

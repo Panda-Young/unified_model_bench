@@ -290,6 +290,7 @@ if(BUILD_TESTING)
         tests/test_model_loader.cpp
         tests/test_cmd_args.cpp
         tests/test_input_provider.cpp
+        tests/test_result_collector.cpp
         # Units under test (no backend macros -> registry stays empty)
         src/csv_utils.cpp
         src/scheduler.cpp
@@ -306,5 +307,22 @@ if(BUILD_TESTING)
         _CRT_SECURE_NO_WARNINGS NOMINMAX
         "UB_TEST_MODEL_PATH=\"${CMAKE_SOURCE_DIR}/test_model.onnx\""
         "UB_TEST_MODEL_DIR=\"${CMAKE_SOURCE_DIR}\"")
+    # The top-level add_definitions(-DHAVE_*_BACKEND) is directory-scoped, so
+    # this target inherits every backend macro. Undefine them here: the units
+    # under test must compile with an EMPTY backend registry, otherwise
+    # backend_registry.cpp's InitDefaults() references Create*Backend() whose
+    # implementations live in the backend .cpp files that are deliberately NOT
+    # part of this target (and would pull in 3rd-party libs).
+    if(MSVC)
+        target_compile_options(unified_bench_tests PRIVATE
+            /UHAVE_ONNX_BACKEND /UHAVE_TFLITE_BACKEND /UHAVE_NCNN_BACKEND
+            /UHAVE_MNN_BACKEND /UHAVE_LITERT_BACKEND /UHAVE_QNN_SDK_BACKEND
+            # doctest.h specializes std::tuple (C5285/N5014) - 3rd-party header, ignore
+            /wd5285)
+    else()
+        target_compile_options(unified_bench_tests PRIVATE
+            -UHAVE_ONNX_BACKEND -UHAVE_TFLITE_BACKEND -UHAVE_NCNN_BACKEND
+            -UHAVE_MNN_BACKEND -UHAVE_LITERT_BACKEND -UHAVE_QNN_SDK_BACKEND)
+    endif()
     add_test(NAME unit_tests COMMAND unified_bench_tests)
 endif()
