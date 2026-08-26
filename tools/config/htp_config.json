@@ -1,20 +1,24 @@
 {
   "graphs": [
     {
-      "graph_names": ["sports_vlog_online_small_0718"],
+      "graph_names": [
+        "test_model"
+      ],
       "vtcm_mb": 8,
       "O": 3,
       "hvx_threads": 8,
       "advanced_activation_fusion": true,
       "num_cores": 2,
-      "finalize_config": { "P": 23 }
+      "finalize_config": {
+        "P": 23
+      }
     }
   ],
   "devices": [
     {
       "device_id": 0,
-      "soc_id": 87,
-      "dsp_arch": "v81",
+      "soc_id": 0,
+      "dsp_arch": "0",
       "pd_session": "unsigned"
     }
   ]

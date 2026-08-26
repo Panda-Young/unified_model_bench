@@ -534,43 +534,49 @@ python <SDK>/bin/x86_64-windows-msvc/qnn-onnx-converter \
   --input_model tfc_tdf_epoch_127_val_loss_0_05071_causal_8frame_state.onnx \
   --output_model tfc_tdf_host.so --target x86_64-windows-msvc
 
-# 2) 编写 HTP 后端配置 tools/htp_context_sm8850.json（O=3 + soc_id=87 + v81，可加 finalize_config P 点）
+# 2) 编写 HTP 后端配置 tools/config/htp_config.json（O=3 + soc_id + dsp_arch，可加 finalize_config P 点）
+#    注意：soc_id / dsp_arch 必须用真实值（见 5.19 Q1），不要写 0。
+#    用脚本按目标设备自动填充（无需手查枚举）：
+#      python tools/utils/fill_htp_config.py                 # 连设备读 ro.soc.model
+#      python tools/utils/fill_htp_config.py --soc SM8850    # 或显式指定型号
+#    示例结果（SM8850）→ devices[].{ "soc_id": 87, "dsp_arch": "v81" }
 # 3) 生成 context binary（离线准备）
 <SDK>/bin/x86_64-windows-msvc/qnn-context-binary-generator.exe \
   --backend <SDK>/lib/x86_64-windows-msvc/QnnHtp.dll \
   --model tfc_tdf_host.so \
   --binary_file tfc_tdf_o3.serialized.bin \
   --profiling_level basic \
-  --config_file tools/htp_context_sm8850.json
+  --config_file tools/config/backend_ext_config.json
 
 # 4) 性能估算（不跑真机，先看 Simulated cycles + Bandwidth stats）
 <SDK>/bin/x86_64-windows-msvc/qnn-profile-viewer.exe \
   --input_log output/qnn-profiling-data.log \
   --reader <SDK>/lib/x86_64-windows-msvc/QnnHtpProfilingReader.dll
 
-# 5) P 点扫描：改 htp_context_sm8850.json 里 finalize_config {"P": n}，重复 3-4，对比 Simulated cycles
+# 5) P 点扫描：改 htp_config.json 里 finalize_config {"P": n}，重复 3-4，对比 Simulated cycles
 ```
 
 **配置文件（已入库 tools/config/，全部实测可用）**：
-- `tools/config/backend_ext_sm8850.json`：**设备端生成器实际要传的配置**（`backend_extensions` 包装：`shared_library_path=./libQnnHtpNetRunExtensions.so` + `config_file_path=./htp_config_sm8850.json`）。
-- `tools/config/htp_config_sm8850.json`：真正的图/设备配置（`graphs[].graph_names` 必须用**图名 = 模型名**、`O:3`、`vtcm_mb`、`hvx_threads`、`advanced_activation_fusion`；`devices[]` 的 `soc_id:87`、`dsp_arch:"v81"`）。
-- `tools/config/htp_context_sm8850.json`：同内容的平铺版（x86 主机生成器若支持平铺可直接传；设备端会报 Unknown Key，须用包装版）。
+- `tools/config/backend_ext_config.json`：**生成器实际要传的配置**（`backend_extensions` 包装：`shared_library_path=./libQnnHtpNetRunExtensions.so` + `config_file_path=./htp_config.json`）。设备端与 x86 主机生成器都只认这个包装格式。
+- `tools/config/htp_config.json`：真正的图/设备配置（`graphs[].graph_names` 必须用**图名 = 模型名**、`O:3`、`vtcm_mb`、`hvx_threads`、`advanced_activation_fusion`、`num_cores`、`finalize_config`；`devices[]` 的 `soc_id`/`dsp_arch` 由 `fill_htp_config.py` 按目标设备自动写入真实值，见 5.19）。
 
-**设备端生成（实测可用，2026-08-06）**：
+**设备端生成（实测可用，2026-08-06，现行文件名）**：
 ```bash
 # 设备 /data/local/tmp/qnn-2.48.40 下执行（注意命令格式！）
+# 先把 tools/config/{htp_config.json, backend_ext_config.json} 推到该目录，并
+# 用 fill_htp_config.py 按本机 ro.soc.model 填好 soc_id / dsp_arch。
 ./qnn-context-binary-generator \
   --model ../bench_test/libtfc_tdf_epoch_127_val_loss_0_05071_causal_8frame_state.so \
   --backend ./libQnnHtp.so \
   --binary_file tfc_tdf_o3_opt.serialized \
-  --config_file ./backend_ext_sm8850.json
+  --config_file ./backend_ext_config.json
 # 产物在 ./output/tfc_tdf_o3_opt.serialized.bin
 ```
 **实测结果（O=3 + soc_id=87 + vtcm 8MB，`--repeat 1000`）**：基线（默认 O=2）p50=12.26ms；O=3 p50=12.46ms——**无明显提升**（avg 被低电量尖峰污染到 20-22ms，p50 对比有效）。与文档"O=3 不一定更优、需实测"一致；TDF 类逐元素/小卷积图对 finalize 优化不敏感，真正的性能上限是时钟（见 5.11 的 4.83ms 启动态），图优化空间有限。下一步可试 **P 点扫描** 与 **`num_cores: 2`（多核编译）**。
 
 **踩坑记录（2026-08-06 实测）**：
 1. **设备端生成器命令格式**：`--binary_file` 用**裸文件名**（不要 `output/` 前缀、不要手动加 `.bin`）；`--model` 用相对路径更稳。之前"静默失败"是命令格式问题（绝对路径 + `output/xxx.bin`），改用用户命令格式后正常。
-2. **设备端生成器只认 `backend_extensions` 包装配置**：直接传平铺 graphs/devices 会全部报 `Unknown Key = ...` 且优化不生效（仍按默认编译）；必须传 `backend_ext_sm8850.json` 包装，让 `libQnnHtpNetRunExtensions.so` 解析图配置。
+2. **设备端生成器只认 `backend_extensions` 包装配置**：直接传平铺 graphs/devices 会全部报 `Unknown Key = ...` 且优化不生效（仍按默认编译）；必须传 `backend_ext_config.json` 包装，让 `libQnnHtpNetRunExtensions.so` 解析图配置。
 3. **图名 = 模型名**（`tfc_tdf_epoch_127_val_loss_0_05071_causal_8frame_state`），不是 ONNX 图名 `main_graph`；写错报 `getQnnGraphConfigFromInfo() unable to find graphName:xxx`。
 4. **QNN 2.48 的 `qnn-net-run` 已移除 `--save_context_binary`**（`Invalid Argument Consumption`），只有 `--retrieve_context`；`qairt-net-run` 在设备上 `Permission denied`。→ 落盘靠生成器。
 5. **Windows 主机生成器无法加载 aarch64-android 的 model.so**（`dlerror(): load library failed`，架构不匹配），必须先转出 x86 主机版 model.so（需 Python 3.10/3.12，见 6）。
@@ -699,7 +705,7 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 
 - **a. NEON FP16 转换（`qnn_backend.cpp` PopulateInput/ReadOutput + CMakeLists）**：arm64 用 `vcvt_f16_f32` / `vcvt_f32_f16`（单指令 4 通道）替代标量位运算。CMakeLists 对 `src/qnn_backend.cpp` 单独加 `-march=armv8.2-a+fp16`（`set_source_files_properties`，不影响其它文件）。效果：pop **47.5→5.9ms**（small），61→19.5ms。
 - **b. 多线程输入转换（RunBenchmark）**：22 个输入张量互相独立，用 `std::thread` 按 `num_threads` 分块并行转换（`--threads` 控制）。效果：pop **5.9→2.5ms**（small）、13→4.3ms（0129）。
-- **c. 重新编译 context binary：O=3 + soc_id=87 + num_cores=2 + hvx_threads=8 + P=23**（`tools/config/htp_config_sports.json`，设备端 `qnn-context-binary-generator`）。效果：exec（HTP 计算）**13.7→8.3ms**（small）；后续 hvx_threads 扫描再降到 **~7.5ms**（见下）。
+- **c. 重新编译 context binary：O=3 + soc_id=87 + num_cores=2 + hvx_threads=8 + P=23**（`tools/config/htp_config.json`，先由 `fill_htp_config.py` 按设备填好 `soc_id`/`dsp_arch`，设备端 `qnn-context-binary-generator` 读 `backend_ext_config.json`）。效果：exec（HTP 计算）**13.7→8.3ms**（small）；后续 hvx_threads 扫描再降到 **~7.5ms**（见下）。
 
 **关键认知：ORT 为什么快？** 加载 ORT 的 `-ONNX_QNN_HTP-epContext_qnn.bin` 到 QNN SDK backend 实测：**ORT 图是 FP32 IO + HTP 内部 FP16 计算**（`enable_htp_fp16_precision=1` 只影响图内），所以 ORT 每帧输入是 memcpy（~2.9ms）而非 FP16 转换。我们的 FP16 图 exec 更快（8.3 vs 10.1ms），只需把 pop 优化到同量级即反超。
 
@@ -728,8 +734,8 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 **结论性经验（2026-08-11）**：
 1. FP16 大 IO 图的隐藏瓶颈在 **CPU 端逐帧数据类型转换**（float→half/量化），不在 HTP 计算——先加 per-run 分解计时定位，再对症优化（NEON + 多线程）。
 2. ORT QNN EP 的 epContext 图是 **FP32 IO + HTP 内部 FP16**；要反超 ORT，用 **FP16 图 + 优化 CPU 转换**比照搬 FP32 IO 更快（exec 更短）。
-3. 编译 context binary 用 **O=3 + soc_id + num_cores=2 + hvx_threads=8 + P=23** 是当前最优组合；P 点需实测、vtcm 超限会失败、hvx_threads 影响显著需扫描（默认 4 非最优、2 明显差）。
-4. 新生成的正式 serialized.bin 已部署到设备（`sports_vlog_online_0129.serialized.bin`、`sports_vlog_online_small_0718.serialized.bin`），复现命令见 `tools/config/htp_config_sports.json`（graph_names 需改为目标模型名）。
+3. 编译 context binary 用 **O=3 + soc_id（真实值，由 fill_htp_config.py 填）+ num_cores=2 + hvx_threads=8 + P=23** 是当前最优组合；P 点需实测、vtcm 超限会失败、hvx_threads 影响显著需扫描（默认 4 非最优、2 明显差）。
+4. 新生成的正式 serialized.bin 已部署到设备（`sports_vlog_online_0129.serialized.bin`、`sports_vlog_online_small_0718.serialized.bin`），复现命令见 `tools/config/htp_config.json`（graph_names 需改为目标模型名；soc_id/dsp_arch 用 `fill_htp_config.py` 按设备填）。
 
 ### 5.19 FAQ：soc_id / HTP 核心数 / P 点 / vtcm_mb / context binary 生成命令解析（2026-08-11）
 
@@ -762,14 +768,14 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 - **为什么排除 {7,9,10,11,12,14,18}（2026-08-11 查证）**：官方文档（《HTP Auto Optimization》`htp_auto_optimization.html`）**只给出合法值清单，没有解释排除原因**，仅注明"合法 P 值集合与每个值的行为可能随 SDK 版本变化，升级需重验"。查 `QnnHtpGraph.h`：`QnnHtpGraph_FinalizeConfig_t` 是 key-value 结构，P 点具体值不在头文件中、只在文档列出。**实测**（设备 SM8850）：填被排除的 `P=7` 生成 context binary **不报错**（rc=0），产物与 `P=0`（默认，不改变任何参数）**字节完全相同**（16806808B）→ 排除值被生成器**静默忽略、回退默认**，等价于没设。**结论**：排除值是该 SDK 版本中**未定义/未实现的编译器内部配置状态**（保留空洞，可能给未来版本或内部调试用），填了无效果而非报错；有效 P 值本质是 finalize 阶段的一组编译器内部启发式策略点，随版本可能增减。
 - **其他模型/设备**：**必须重新扫描实测**。P 是编译器内部权衡点，最优值与图结构强相关（不同网络最佳 P 不同）；不同 SoC 的 HTP 架构不同，最佳 P 也可能变。结论性做法：O=3+num_cores 基础上扫一遍候选 P（建议 0,6,15,20,23 起步），取 exec 最优者。
 
-**Q4：生成优化的 bin 的完整命令（SM8850，设备端）**
+**Q4：生成优化的 bin 的完整命令（设备端，现行文件名）**
 
 前提：已有该模型转换出的 `model.so`（如 `libsports_vlog_online_small_0718.so`，由 `qnn-onnx-converter` 从 `.onnx` 以 FP16 精度生成）。
 
-① 设备端两份配置（`/data/local/tmp/qnn-2.48.40/`，`graph_names` 必须改为目标模型名）：
+① 准备 `tools/config/htp_config.json`（`graph_names` 必须改为目标模型名；`soc_id`/`dsp_arch` 用脚本按设备自动填充，**不要写 0 / 不要写死其它型号**）：
 
 ```json
-// htp_config_sports.json
+// tools/config/htp_config.json
 {
   "graphs": [
     {
@@ -785,30 +791,35 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
   ]
 }
 ```
+> 上例 `soc_id:87 / dsp_arch:"v81"` 是 SM8850 的值，仅为示意；实际请先执行
+> `python tools/utils/fill_htp_config.py`（连设备）或 `... --soc SM8550` 写入本机真实值（SM8550→43/v73、SM8650→57/v75、SM8750→69/v79）。
+
+`tools/config/backend_ext_config.json`（生成器只认 backend_extensions 包装格式，固定引用 `./htp_config.json`，一般无需改）：
 
 ```json
-// backend_ext_sports.json（设备端生成器只认 backend_extensions 包装格式）
 {
   "backend_extensions": {
     "shared_library_path": "./libQnnHtpNetRunExtensions.so",
-    "config_file_path": "./htp_config_sports.json"
+    "config_file_path": "./htp_config.json"
   }
 }
 ```
 
-② 生成优化 context binary：
+② 把两份配置推到设备并生成优化 context binary：
 
 ```bash
+adb push tools/config/htp_config.json      /data/local/tmp/qnn-2.48.40/htp_config.json
+adb push tools/config/backend_ext_config.json /data/local/tmp/qnn-2.48.40/backend_ext_config.json
 adb shell "cd /data/local/tmp/qnn-2.48.40 && \
   ./qnn-context-binary-generator \
     --model ../bench_test/libsports_vlog_online_small_0718.so \
     --backend ./libQnnHtp.so \
     --binary_file sports_opt \
-    --config_file ./backend_ext_sports.json"
+    --config_file ./backend_ext_config.json"
 # 产物：/data/local/tmp/qnn-2.48.40/output/sports_opt.bin
 ```
 
-> 换模型：改 `graph_names` 为对应模型名 + 确保有对应 `model.so`，重跑 ②③ 即可。正式配置已入库：`tools/config/htp_config_sports.json`、`tools/config/backend_ext_sports.json`。
+> 换模型：改 `htp_config.json` 的 `graph_names` 为对应模型名 + 确保有对应 `model.so`，重跑 ② 即可（soc_id/dsp_arch 用 `fill_htp_config.py` 重填）。现行配置已入库：`tools/config/htp_config.json`、`tools/config/backend_ext_config.json`。
 
 **Q5：vtcm_mb 是什么参数？**
 
@@ -897,7 +908,7 @@ ONNX_QNN_HTP [test_model.onnx] avg=0.657 ms  diff=0.000184  accel=37.90x
 
 三平台构建（android-arm64 / win-x64 / win-x86）通过。
 
-**结论性经验**：QNN HTP context binary 的编译参数（hvx_threads 等）运行时不可知，CSV `threads` 列对 `QNN_SDK_HTP` 打印 `-`；实际编译参数以 `tools/config/htp_config_sports.json` 为准（2026-08-11）。
+**结论性经验**：QNN HTP context binary 的编译参数（hvx_threads 等）运行时不可知，CSV `threads` 列对 `QNN_SDK_HTP` 打印 `-`；实际编译参数以 `tools/config/htp_config.json`（由 `fill_htp_config.py` 填好 soc_id/dsp_arch）为准（2026-08-11）。
 
 ### 5.24 model.so 路径的多核设备配置——实测无效，已回退（2026-08-12）
 
