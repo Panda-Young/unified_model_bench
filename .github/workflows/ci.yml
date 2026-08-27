@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # windows-latest: full build of the default-enabled backends (ONNX + NCNN)
+  # and run the doctest unit-test suite via ctest.
+  # The vendored prebuilt libs in deps/ are Windows (win-x64/win-x86) and
+  # Android (android/arm64-v8a) only, so Windows is the primary verification
+  # target. TFLITE/MNN/LITERT/QNN are OFF by default and left OFF here to keep
+  # CI from needing libs that are not shipped for the CI image.
+  # ---------------------------------------------------------------------------
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build `
+          -DBUILD_TESTING=ON `
+          -DHAVE_ONNX_BACKEND=ON `
+          -DHAVE_NCNN_BACKEND=ON `
+          -DHAVE_TFLITE_BACKEND=OFF `
+          -DHAVE_MNN_BACKEND=OFF `
+          -DHAVE_LITERT_BACKEND=OFF `
+          -DHAVE_QNN_SDK_BACKEND=OFF
+        shell: pwsh
+
+      - name: Build
+        run: cmake --build build --config Release
+        shell: pwsh
+
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+        shell: pwsh
+
+  # ---------------------------------------------------------------------------
+  # ubuntu-latest: source-compilability smoke test. deps/ has no Linux desktop
+  # prebuilt libraries (only win-x64/win-x86 and android/arm64-v8a), so every
+  # HAVE_*_BACKEND is turned OFF. This still compiles the pure-logic modules and
+  # the doctest suite (csv_utils / scheduler / cmd_args / model_loader /
+  # input_provider / result_collector), guarding against Linux-only breakage.
+  # ---------------------------------------------------------------------------
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DBUILD_TESTING=ON \
+            -DHAVE_ONNX_BACKEND=OFF \
+            -DHAVE_TFLITE_BACKEND=OFF \
+            -DHAVE_NCNN_BACKEND=OFF \
+            -DHAVE_MNN_BACKEND=OFF \
+            -DHAVE_LITERT_BACKEND=OFF \
+            -DHAVE_QNN_SDK_BACKEND=OFF
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

@@ -33,6 +33,8 @@ build/
 
 # Python
 __pycache__/
+.venv/
+.venv/
 
 # Dependencies (large binaries, copy manually or via script)
 deps/
@@ -40,7 +42,6 @@ deps/
 
 # IDE
 .vscode/
-.github
 .idea/
 *.swp
 *.swo
