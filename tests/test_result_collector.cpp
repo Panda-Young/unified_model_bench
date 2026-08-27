@@ -103,3 +103,22 @@ TEST_CASE("AppendCsv: failed row keeps 26 columns with '-' placeholders")
     CHECK(flds[20] == "-");             /* resident_mem_mb */
     std::remove(kTmpCsv);
 }
+
+TEST_CASE("AppendCsv: refuses to append to a misaligned existing CSV")
+{
+    /* A pre-existing file with the WRONG column count (e.g. produced by an
+     * older build or hand-edited). Appending a correct row would shift every
+     * column (the warmup_runs-gets-weight_mem_mb corruption seen in the wild),
+     * so AppendCsv must refuse instead of writing misaligned data. */
+    std::remove(kTmpCsv);
+    {
+        FILE *f = fopen(kTmpCsv, "w");
+        REQUIRE(f != nullptr);
+        fputs("date,time,model_name,only4\n", f); /* 4 columns != 26 */
+        fclose(f);
+    }
+    ResultCollector c;
+    BenchmarkRecord r = make_record();
+    CHECK_FALSE(c.AppendCsv(r, kTmpCsv, "2026-08-21", "10:00:00", r.app_name.c_str()));
+    std::remove(kTmpCsv);
+}

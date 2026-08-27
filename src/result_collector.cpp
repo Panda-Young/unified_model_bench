@@ -92,6 +92,12 @@ static void write_csv_record(FILE *f, const BenchmarkRecord &r,
             r.arch.c_str(), app_name, r.notes.c_str());
 }
 
+/* The header/row schema is fixed at 26 columns; every write path must produce
+ * exactly that many fields or the CSV silently misaligns. Verify at build time
+ * via the shared constant. */
+static_assert(kCsvExpectedColumns == 26,
+              "CSV schema changed - update kCsvExpectedColumns");
+
 /* ---------------------------------------------------------------------------
  * Record management
  * -------------------------------------------------------------------------*/
@@ -126,6 +132,43 @@ bool ResultCollector::AppendCsv(const BenchmarkRecord &rec, const char *path,
         }
         if (sz > 0) {
             need_header = false;
+        }
+    }
+
+    /* Guard against appending to a CSV that has a different (older or
+     * hand-edited) column layout: the existing header column count must match
+     * the current schema, otherwise every new row would be shifted and silently
+     * corrupt the file (seen in the wild: warmup_runs populated with the
+     * weight_mem_mb value). Refuse to append and tell the user to fix the
+     * file, instead of writing misaligned rows. */
+    if (!need_header) {
+        FILE *hdr = fopen(path, "r");
+        if (hdr) {
+            char first_line[4096] = {0};
+            if (fgets(first_line, sizeof(first_line), hdr) != nullptr) {
+                size_t commas = 0;
+                bool in_quotes = false;
+                for (const char *p = first_line; *p != '\0' && *p != '\n'; ++p) {
+                    if (*p == '"') {
+                        in_quotes = !in_quotes;
+                    } else if (*p == ',' && !in_quotes) {
+                        ++commas;
+                    }
+                }
+                const size_t cols = commas + 1; /* N fields -> N-1 commas */
+                if (cols != kCsvExpectedColumns) {
+                    LOGW("CSV %s has %zu columns but schema requires %zu - "
+                         "refusing to append (fix or remove the file first)",
+                         path, cols, (size_t)kCsvExpectedColumns);
+                    if (fclose(hdr) != 0) {
+                        LOGW("fclose(%s) failed: %s, %d", path, strerror(errno), errno);
+                    }
+                    return false;
+                }
+            }
+            if (fclose(hdr) != 0) {
+                LOGW("fclose(%s) failed: %s, %d", path, strerror(errno), errno);
+            }
         }
     }
 

@@ -13,6 +13,11 @@
  * columns intact. -1.0 remains the "failed" sentinel. */
 constexpr double kNoBaselineAccel = -2.0;
 
+/* Number of columns in the CSV schema (must match kCsvHeader in
+ * result_collector.cpp). Kept in the header so any consumer can validate
+ * parsed rows against it; result_collector.cpp static_asserts on it. */
+constexpr size_t kCsvExpectedColumns = 26;
+
 /* ---------------------------------------------------------------------------
  * BenchmarkRecord - one row of CSV output
  * -------------------------------------------------------------------------*/

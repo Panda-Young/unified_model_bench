@@ -173,6 +173,17 @@ def csv_to_xlsx(in_csv, out_xlsx=None, hide_cols=None, sheet_name="Sheet1", enco
     # Restore header if the CSV was appended without one (bat pull uses tail -n +2).
     df = restore_header_if_missing(df)
 
+    # Column-count guard: a CSV whose header width does not match the standard
+    # schema means the file was misaligned upstream (e.g. a run appended a wrong
+    # number of fields, shifting warmup_runs / weight_mem_mb values sideways).
+    # pandas would silently NaN-pad short rows, hiding the corruption, so check
+    # the header explicitly and warn loudly instead of producing a misleading
+    # Excel report.
+    if len(df.columns) != len(STANDARD_HEADER):
+        print(f"Warning: CSV has {len(df.columns)} columns but the standard schema "
+              f"has {len(STANDARD_HEADER)}. The file is likely misaligned; the Excel "
+              f"report may show wrong values in some columns.")
+
     if "device_info" in df.columns:
         df["device_info"] = df["device_info"].apply(format_device_info)
 
