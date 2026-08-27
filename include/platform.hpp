@@ -3,12 +3,21 @@
  * platform.hpp - Platform abstraction & shared constants
  *============================================================================*/
 
+/* glibc only exposes clock_gettime()/CLOCK_MONOTONIC when a POSIX feature
+ * macro is defined before <time.h> is first included.  Define _DEFAULT_SOURCE
+ * up front so the Linux timer code below compiles regardless of which system
+ * headers a translation unit pulls in first. */
+#if defined(__linux__) && !defined(_DEFAULT_SOURCE)
+#define _DEFAULT_SOURCE
+#endif
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 
 #ifdef _WIN32
