@@ -332,9 +332,17 @@ if(BUILD_TESTING)
     target_include_directories(unified_bench_tests PRIVATE
         "${CMAKE_SOURCE_DIR}/include" "${DEPS_DIR}/doctest")
     target_compile_definitions(unified_bench_tests PRIVATE
-        _CRT_SECURE_NO_WARNINGS NOMINMAX
-        "UB_TEST_MODEL_PATH=\"${CMAKE_SOURCE_DIR}/test_model.onnx\""
-        "UB_TEST_MODEL_DIR=\"${CMAKE_SOURCE_DIR}\"")
+        _CRT_SECURE_NO_WARNINGS NOMINMAX)
+    # The three estimate_weight_mb cases in test_model_loader.cpp need the
+    # real repo test models, which are .gitignored ("user-provided") and thus
+    # absent on CI runners. Only define these macros when the models are
+    # actually present, so the tests adapt to the environment instead of
+    # failing on a missing file.
+    if(EXISTS "${CMAKE_SOURCE_DIR}/test_model.onnx")
+        target_compile_definitions(unified_bench_tests PRIVATE
+            "UB_TEST_MODEL_PATH=\"${CMAKE_SOURCE_DIR}/test_model.onnx\""
+            "UB_TEST_MODEL_DIR=\"${CMAKE_SOURCE_DIR}\"")
+    endif()
     # The top-level add_definitions(-DHAVE_*_BACKEND) is directory-scoped, so
     # this target inherits every backend macro. Undefine them here: the units
     # under test must compile with an EMPTY backend registry, otherwise
