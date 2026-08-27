@@ -49,8 +49,10 @@ unified_model_bench/
 │   └── csv_to_excel.py             # CSV → Excel
 ├── docs/                       # 各模块调试记录（详见 §8）
 │   ├── ONNX_DEBUG_LOG.md
+│   ├── ONNX_CONVERT_DEBUG_LOG.md
 │   ├── TFLITE_NPU_DEBUG_LOG.md
 │   ├── NCNN_DEBUG_LOG.md
+│   ├── MNN_DEBUG_LOG.md
 │   ├── LiteRT_GPU_DEBUG_LOG.md
 │   ├── QNN_SDK_DEBUG_LOG.md
 │   ├── QNN_SDK_HTP_OPTIMIZATIONS.md
@@ -293,15 +295,37 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
 
 ```mermaid
 flowchart TD
-    A[模型路径] --> B[search_model_variants]
-    B --> C{发现变体}
-    C --> D[入口格式 CPU backend = 全局基准]
-    D --> E[spawn 基准 worker: --dump-output 落盘输出 + .avg 计时]
-    E --> F[spawn 每个 variant × backend 一个 worker]
-    F --> G[worker: 单后端 Initialize → 共享确定性输入 → RunBenchmark]
-    G --> H[读 baseline 文件 → 算 max_diff / avg_diff / accel]
-    H --> I[各自追加写共享 CSV 崩溃安全, 同批同 time 戳]
-    I --> J[调度器回收退出码: 非零合并进 notes, 删除 baseline 临时文件]
+    subgraph SCHED["调度器 RunPerProcess（父进程）"]
+        direction TB
+        A["模型路径"] --> B["search_model_variants<br/>发现所有格式变体"]
+        B --> C["选定入口格式 CPU backend<br/>作为全局基准"]
+        C --> D["生成共享确定性输入<br/>InputProvider seed=42"]
+        D --> E["spawn 基准 worker<br/>--dump-output + .avg 落盘"]
+        E --> F["为每个 variant × backend<br/>spawn 独立 worker"]
+        F --> G["回收退出码<br/>合并 notes / 清理临时文件"]
+    end
+
+    E -.并行.-> BW["基准 worker<br/>(--dump-output)"]
+    F -.并行.-> W1["测试 worker 1"]
+    F -.并行.-> W2["测试 worker 2"]
+    F -.并行.-> WN["测试 worker N"]
+
+    BW -->|"输出 baseline 文件"| BL["baseline 文件 + .avg"]
+
+    subgraph W["worker（--worker 独立子进程 · 崩溃隔离）"]
+        direction TB
+        I["Initialize 单后端"] --> P["PrepareInputs<br/>共享确定性输入"]
+        P --> R["RunBenchmark<br/>warmup + repeat"]
+        R --> O["SaveOutputs / 快照"]
+    end
+
+    W1 --> I
+    W2 --> I
+    WN --> I
+    BL -.被读取.-> Y["算 max_diff / avg_diff<br/>accel = baseline_ms / avg_ms"]
+    O --> Y
+    Y --> Z["各自 append 写共享 CSV<br/>崩溃安全 · 同批同 time 戳"]
+    Z --> G
 ```
 
 - **调度器**（`RunPerProcess`，非 worker 进程）：发现模型变体 → 先跑入口格式 CPU baseline worker
@@ -385,43 +409,17 @@ per-process 架构下每 backend 独占进程，读数即该 backend 的部署�
 
 ---
 
-## 6. 关键平台适配（踩坑记录摘要）
+## 6. 平台适配要点（详见各 backend 调试文档）
 
-### 6.1 Windows：TFLite + LiteRT 共存（2026-07-21 解决）
+跨平台编译/运行中的具体踩坑与修复细节（符号冲突、宏名冲突、硬件能力硬失败、DXC 版本、QNN 库版本匹配等）已记录在对应的后端调试文档中，README 仅保留架构性结论：
 
-**问题**：`libLiteRt.dll` 与 `tensorflowlite_c.dll` 都导出完整 TFLite C API（21 个 `TfLite*` 符号）。linker 解析到 `libLiteRt.dll` 的 XNNPACK 实现，其在 Intel Iris Xe 上初始化时 `0xC0000005` 访问违规崩溃。
-
-**方案**：
-1. Windows 上**不链接** `tensorflowlite_c.dll.if.lib`（避免符号冲突），基础 TFLite 函数取自 `libLiteRt.lib`（验证正常）
-2. **仅 XNNPACK delegate** 通过 `LoadLibrary("tensorflowlite_c.dll")` + `GetProcAddress` 动态加载（避免 `libLiteRt` 的 buggy 副本）
-3. CMake 中两者可同时 `ON`，运行互不冲突
-
-**验证**：TFLITE_CPU 29.6ms / TFLITE_XNNPACK 17.2ms / LiteRT_CPU 37.9ms 同时运行正常。
-
-### 6.2 Android：NCNN Vulkan 宏冲突（2026-07-21 解决）
-
-**问题**：`ncnn/platform.h` 定义 `#define NCNN_VULKAN 0`（Android 无 Vulkan），与 `BackendId::NCNN_VULKAN` 枚举名冲突，导致编译错误。
-
-**方案**：枚举改名 `NCNN_VULKAN → NCNN_VK`（`NCNN_VK` / `NCNN_VK_FP16` / `NCNN_VK_BF16`），保留 `NCNN_VULKAN` 宏用于 `#if` 平台检测。Android 无 Vulkan 时初始化报错而非降级。
-
-### 6.3 Android：NCNN BF16 / FP16 硬失败（2026-07-21）
-
-- CPU BF16：无 `AVX512-BF16`/`ARM-BF16` 指令 → 直接 `return false`（不再 fallback FP32）
-- CPU BF16：trial 前向崩溃 → `return false`
-- Vulkan BF16：GPU 不支持 → `return false`
-- Vulkan FP16：`_fp16.ncnn.bin` 权重缺失 → `return false`
-
-### 6.4 Windows：LiteRT GPU 需要新版 DXC（2026-07-21）
-
-`libLiteRtWebGpuAccelerator.dll` 运行时 `LoadLibrary` 加载 `dxcompiler.dll`，旧版（10.0.19041）无 Dawn 需要的 CLSID → `E_NOINTERFACE`。CMake post-build 自动搜索 Windows SDK 最新 `dxcompiler.dll`/`dxil.dll` 复制到输出目录。
-
-### 6.5 Android：QNN 版本严格匹配
-
-| 场景 | 版本要求 |
-|------|----------|
-| TFLITE_NPU（QNN TFLite Delegate） | Stub（aarch64-android）与 Skel（hexagon）必须同 SDK，否则 DSP 固件加载失败 error 1008 |
-| ONNX_QNN（QNN EP） | `libonnxruntime.so` 必须是含 QNN EP 的定制构建 |
-| LiteRT_NPU（dispatch） | dispatch 编译时的 QNN 版本需与设备库匹配（2.36.x vs 2.37.x 会导致 504） |
+| 适配点 | 结论 | 详细记录 |
+|------|------|---------|
+| Windows：TFLite + LiteRT 符号共存 | 不链 `tensorflowlite_c.dll.if.lib`，仅 XNNPACK delegate 动态加载；两者可同时 `ON` | `docs/TFLITE_NPU_DEBUG_LOG.md` |
+| Android：NCNN Vulkan 宏冲突 | 枚举改名 `NCNN_VK`（`NCNN_VULKAN` 宏保留作平台检测）；无 Vulkan 时初始化报错而非降级 | `docs/NCNN_DEBUG_LOG.md` |
+| Android：NCNN BF16/FP16 硬失败 | 指令/权重不支持时直接 `return false`，绝不静默降级 | `docs/NCNN_DEBUG_LOG.md` |
+| Windows：LiteRT GPU 需新版 DXC | CMake post-build 自动复制 Windows SDK 新版 `dxcompiler.dll`/`dxil.dll` | `docs/LiteRT_GPU_DEBUG_LOG.md` |
+| Android：QNN 版本严格匹配 | Stub/Skel 同 SDK；定制 ORT-QNN 构建；dispatch 与设备库版本一致 | `docs/TFLITE_NPU_DEBUG_LOG.md`、`docs/QNN_SDK_DEBUG_LOG.md` |
 
 ---
 
@@ -466,8 +464,8 @@ per-process 架构下每 backend 独占进程，读数即该 backend 的部署�
 - 执行流程（仿 `SampleAppSharedBuffer`）：`dlopen(libQnnHtp.so)` → `QnnInterface_getProviders` → 版本匹配选 `QNN_INTERFACE_VER_TYPE` → `backendCreate` → `deviceCreate` → `dlopen(libQnnSystem.so)` → `systemContextCreate` + `systemContextGetBinaryInfo` → `contextCreateFromBinary` → `graphRetrieve` → `graphExecute`
 - **输入/输出缓冲**：Android 上优先用 `rpc_mem`（dlopen `libcdsprpc.so`，无需头文件）分配共享内存并经 `QnnMem_register` 注册为 DMA-BUF 实现零拷贝；失败时回退普通 client buffer
 - **量化**：根据 context binary 的 `Qnn_ScaleOffset_t` 做 float↔uint8 量化/反量化，自动适配量化模型
-- **QNN 2.48 API 差异**（已在实现中踩坑）：`Qnn_Tensor_t` 无 `QNN_TENSOR_GET/SET_*` 宏，需直接访问 `tensor.v1.*`；`QnnMem_register` 需 `Qnn_MemDescriptor_t`（含 memType=QNN_MEM_TYPE_DMA_BUF、fd）；`QnnSystemContext_getBinaryInfo` 首参为 `sysCtxHandle`；`QnnSystemContext_free` 仅 1 参数；BinaryInfo 用 `contextBinaryInfoV1/V2`（非 `binaryInfoV1`），GraphInfo 用 `graphInfoV1.graphName/numGraphInputs/graphInputs/numGraphOutputs/graphOutputs`
 - 编译开关：`-DHAVE_QNN_SDK_BACKEND=ON -DQNN_SDK_ROOT=...`（自动检测 `QnnInterface.h`）；仅 Android
+- QNN 2.48 C API 的具体差异与踩坑（结构体字段、BinaryInfo V3、tensor 悬空指针、model.so composeGraphs、libQnnHtpPrepare.so 版本匹配、QNN log callback 等）见 `docs/QNN_SDK_DEBUG_LOG.md`
 
 ---
 
@@ -476,6 +474,7 @@ per-process 架构下每 backend 独占进程，读数即该 backend 的部署�
 | 文档 | 内容 |
 |------|------|
 | `docs/ONNX_DEBUG_LOG.md` | ORT_API_VERSION 运行时解析、DML/OpenVINO 各 EP 配置 |
+| `docs/ONNX_CONVERT_DEBUG_LOG.md` | ONNX → ncnn/MNN/TFLite 转换排查（动态 Split/Tile、pnnx 崩溃等） |
 | `docs/TFLITE_NPU_DEBUG_LOG.md` | QNN TFLite Delegate 全链路（dlopen、struct ABI、版本匹配）+ 桌面 XNNPACK 崩溃与 TFLite/LiteRT 共存方案 |
 | `docs/NCNN_DEBUG_LOG.md` | NaN（clone + packing）、BF16 崩溃（buf_pool）、版本输出、BF16 检测、Vulkan extract 4D 崩溃、退出期 0xC0000409 |
 | `docs/MNN_DEBUG_LOG.md` | Vulkan 后端 NaN 分析（BF16 官方不支持、FP32 混合精度路径不稳定、FP16 全链路自洽） |
@@ -483,6 +482,8 @@ per-process 架构下每 backend 独占进程，读数即该 backend 的部署�
 | `docs/QNN_SDK_DEBUG_LOG.md` | QNN SDK 后端全链路（2.48 API 差异、BinaryInfo V3、tensor 悬空指针、model.so composeGraphs、libQnnHtpPrepare.so 版本匹配、QNN log callback） |
 | `docs/QNN_SDK_HTP_OPTIMIZATIONS.md` | QNN SDK HTP 优化选项汇总（术语表 / 选项速查） |
 | `docs/PROJECT_SCORECARD.md` | 项目综合评估与打分机制（D1–D7 评分卡 + 基线统计） |
+
+> 跨平台编译/运行的具体踩坑（符号冲突、宏名冲突、硬件能力硬失败、DXC 版本、QNN 库版本匹配）见各后端调试文档，已在 §6 列出对应索引。
 
 ---
 

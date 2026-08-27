@@ -210,7 +210,7 @@ if ((id_ == ONNX_QNN_GPU || id_ == ONNX_QNN_HTP) &&
   **不值得**产出错误结果 → 必须保持 `ep.dml.disable_graph_fusion=1`。
 - 融合 ON 不再崩溃（DirectML 1.15.4 修好了图编译崩溃），但图编译后的数值不正确。
 
-### 4.7 为什么"关掉图融合后 DML 还在 GPU 上但没加速"？
+### 4.6 为什么"关掉图融合后 DML 还在 GPU 上但没加速"？
 
 **根因：加速本来就来自图融合；逐算子执行在 Intel iGPU 上 ≈ CPU 速度。**
 
@@ -227,7 +227,7 @@ if ((id_ == ONNX_QNN_GPU || id_ == ONNX_QNN_HTP) &&
   独显（dGPU）/ NPU 上；本机若需加速，优先走 QNN NPU（见第 3 节，1.7ms）或
   直接用 x64 CPU（39ms）。
 
-### 4.6 排查工具
+### 4.7 排查工具
 
 - `tools/test_dml_ops.py`：生成单算子最小 ONNX（`dml_op_tests/`），逐个在 DML 上定位失败算子。
 - `tools/bisect_dml.py`：按拓扑前缀二分定位首个失败节点（注意：其成功判定有缺陷，`avg=0.000`

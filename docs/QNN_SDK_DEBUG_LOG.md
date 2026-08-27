@@ -587,22 +587,6 @@ python <SDK>/bin/x86_64-windows-msvc/qnn-onnx-converter \
 
 ---
 
-## 6. 验证命令速查
-
-```bash
-# context binary → HTP（离线编译产物）
-adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn \
-  ./unified_bench test_model.serialized.bin --backend QNN_SDK_HTP --repeat 5 --warmup 1"
-
-# model.so → CPU/GPU/HTP（现场编译）
-adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn \
-  ./unified_bench libtest_model.so --backend QNN_SDK_CPU,QNN_SDK_GPU,QNN_SDK_HTP --repeat 5 --warmup 1"
-
-# 官方对照（证明 model.so 支持 HTP）
-./qnn-net-run --backend libQnnHtp.so --model libtest_model.so \
-  --input_list input_list_test_model_float32.txt --perf_profile burst --shared_buffer
-```
-
 ### 5.13 TDF 模型优化机制清单（2026-08-06，基于 ONNX 结构分析 + omen Linux 主机）
 
 **模型结构事实**（tfc_tdf_epoch_127，从 .onnx.text 解析）：735 节点 / 14 种算子；常量 361、Slice 63、Conv 62、Reshape 46、Relu 43、Concat 43、Transpose 37、ConstantOfShape/Cast/Pad 各 21、Add 7、Mul 4、ConvTranspose 3、BatchNormalization 3；141 个 initializer 全 FP32，权重 ~20MB；22 in / 22 out FP32（state 类 21 组 + 音频 input）；7 组 sub-band 重复展开结构（H.0/H.1/H.2 + tdf + ds/us）。
@@ -1048,7 +1032,26 @@ QNN_SDK_HTP  avg=16.5~18.1 ms（与基线一致，无回归、无崩溃）
 
 **实测（SM8850，无回归）**：
 - 原生 model.so：`detected SoC SM8850 -> soc_id=87 htp_arch=81`，`vtcm=0MB(SoC-max) O=3 hvx=8 aaf=1 full=1`，compose rc=0，exec=7.25ms / avg=8.79ms（与 8MB 相当）。
+
 - ORT ONNX_QNN_HTP：`vtcm_mb=8 (0 = use SoC max)`，EPContext 未重生成，稳态 11.2ms 无回归。
 - 三平台构建通过，`check_braces` TOTAL: 0。
 
 **结论性经验（回答"如果是 sm8450 呢"）**：不要硬编码 vtcm——用 QNN 官方 `MAX(0)` 让 QNN 自动选该 SoC 上限（SM8850→8MB，SM8450/v69→其更小上限），永不失配；原生完整调优按 arch≥v73 门控、env 可强制；ORT 在 v81 保持 "8" 避免 EPContext 重生成。AAF 是激活融合进前驱算子、减少存储往返的图级优化，v81 上 aaf=1 无副作用（2026-08-12）。
+
+---
+
+## 6. 验证命令速查
+
+```bash
+# context binary → HTP（离线编译产物）
+adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn \
+  ./unified_bench test_model.serialized.bin --backend QNN_SDK_HTP --repeat 5 --warmup 1"
+
+# model.so → CPU/GPU/HTP（现场编译）
+adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY_PATH=./qnn \
+  ./unified_bench libtest_model.so --backend QNN_SDK_CPU,QNN_SDK_GPU,QNN_SDK_HTP --repeat 5 --warmup 1"
+
+# 官方对照（证明 model.so 支持 HTP）
+./qnn-net-run --backend libQnnHtp.so --model libtest_model.so \
+  --input_list input_list_test_model_float32.txt --perf_profile burst --shared_buffer
+```
