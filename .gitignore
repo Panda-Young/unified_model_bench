@@ -52,6 +52,4 @@ deps/
 Thumbs.db
 
 # Logs
-*.txt
-!README.md
 *.log

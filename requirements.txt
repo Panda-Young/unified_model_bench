@@ -1,0 +1,16 @@
+# Python dependencies for tools/onnx_convert.py (model conversion: NCNN / MNN / TFLite)
+# Install into the project venv:
+#   python -m venv .venv
+#   .venv\Scripts\Activate.ps1
+#   pip install -r requirements.txt
+#
+# NOTE: tensorflow/onnx2tf require a recent protobuf (>=6.31.1); the version set
+# below is what onnx_convert.py's ensure_tflite_deps() expects (PROTOBUF_PIN).
+# onnx-graphsurgeon is pulled in by the script's auto-install path.
+tensorflow==2.21.0
+tf-keras==2.21.0
+onnx2tf==2.6.8
+onnx-graphsurgeon
+protobuf>=6.31.1
+numpy==2.2.6
+onnx==1.20.1
