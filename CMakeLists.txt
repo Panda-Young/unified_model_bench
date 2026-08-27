@@ -1,5 +1,8 @@
-﻿cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.16)
 project(unified_bench VERSION 2.0 LANGUAGES C CXX)
+
+# NCNN static builds (Linux desktop prebuilt) require OpenMP at link time.
+find_package(OpenMP QUIET)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,12 +19,20 @@ option(HAVE_QNN_SDK_BACKEND "Build native QNN SDK backend" OFF)
 if(ANDROID)
     set(ARCH_DIR "android/arm64-v8a")
     set(TARGET_SUFFIX "android")
-elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set(ARCH_DIR "win-x64")
-    set(TARGET_SUFFIX "win-x64")
-else()
-    set(ARCH_DIR "win-x86")
-    set(TARGET_SUFFIX "win-x86")
+elseif(WIN32)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(ARCH_DIR "win-x64")
+        set(TARGET_SUFFIX "win-x64")
+    else()
+        set(ARCH_DIR "win-x86")
+        set(TARGET_SUFFIX "win-x86")
+    endif()
+elseif(UNIX AND NOT ANDROID)
+    # Linux desktop: vendored prebuilt libs live under linux-x64
+    # (deps/onnxruntime/lib/linux-x64, deps/ncnn/lib/linux-x64). The suffix is
+    # kept as "linux-x64" so the produced binary name is self-describing.
+    set(ARCH_DIR "linux-x64")
+    set(TARGET_SUFFIX "linux-x64")
 endif()
 
 # ---- Include paths ----
@@ -32,6 +43,10 @@ set(ONNX_INC "${DEPS_DIR}/onnxruntime/include")
 set(TFLITE_INC "${DEPS_DIR}/tflite/include")
 if(ANDROID)
     set(NCNN_INC "${DEPS_DIR}/ncnn/include-android")
+elseif(UNIX AND NOT APPLE)
+    # Linux desktop uses the Linux prebuilt headers (platform macros differ
+    # from the Windows ones in deps/ncnn/include).
+    set(NCNN_INC "${DEPS_DIR}/ncnn/include-linux")
 else()
     set(NCNN_INC "${DEPS_DIR}/ncnn/include")
 endif()
@@ -169,9 +184,22 @@ if(HAVE_NCNN_BACKEND)
     if(WIN32)
         target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
             "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/ncnn.lib")
-    else()
+    elseif(ANDROID)
         target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
             "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.so")
+    else()
+        # Linux desktop: official Ubuntu prebuilt ships a static libncnn.a
+        # built with OpenMP + Vulkan/Glslang, so we must pull in libgomp and
+        # the bundled glslang static libraries.
+        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
+            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.a"
+            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang.a"
+            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang-default-resource-limits.a"
+            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libMachineIndependent.a"
+            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libGenericCodeGen.a"
+            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libOSDependent.a"
+            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libSPIRV.a"
+            OpenMP::OpenMP_CXX)
     endif()
 endif()
 

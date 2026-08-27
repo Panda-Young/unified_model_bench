@@ -591,7 +591,13 @@ bool NCNNBackend::Initialize(const char *model_path, int num_threads)
 #if defined(__ARM_NEON) || defined(__aarch64__) || defined(_M_ARM64)
         bool have_bf16 = !!ncnn::cpu_support_arm_bf16();
 #elif defined(__x86_64__) || defined(_M_AMD64) || defined(_M_X64)
+#ifdef _WIN32
+        /* On Windows some CPUs raise an access violation on BF16
+           instructions; safe_check_bf16() guards that with a VEH. */
         bool have_bf16 = !!safe_check_bf16();
+#else
+        bool have_bf16 = !!ncnn::cpu_support_x86_avx512_bf16();
+#endif
 #else
         bool have_bf16 = true;
 #endif

@@ -512,15 +512,13 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     if (!lib_handle_) {
         lib_handle_ = load_library("libonnxruntime.so");
     }
-#else
-    /* Desktop: deps/onnxruntime/lib/<arch>/<ep>/onnxruntime.dll */
+#elif defined(_WIN32)
+    /* Windows desktop: deps/onnxruntime/lib/<arch>/<ep>/onnxruntime.dll */
     const char *arch_dir =
 #if defined(_WIN64)
         "win-x64";
-#elif defined(_WIN32)
-        "win-x86";
 #else
-        "linux-x64";
+        "win-x86";
 #endif
 
     if (ep_subdir) {
@@ -542,6 +540,15 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
     if (!lib_handle_) {
         /* Last resort: try current directory */
         lib_handle_ = load_library(dll_name.c_str());
+    }
+#elif defined(__linux__)
+    /* Linux desktop: official prebuilt lays the .so flat under
+       deps/onnxruntime/lib/linux-x64/ (no cpu/ subdir). Linux has no DML/
+       OpenVINO EP builds, so every desktop backend here maps to the CPU .so. */
+    lib_handle_ = load_library("deps/onnxruntime/lib/linux-x64/libonnxruntime.so");
+    if (!lib_handle_) {
+        /* Fallback: rely on LD_LIBRARY_PATH (e.g. pointing at the same dir) */
+        lib_handle_ = load_library("libonnxruntime.so");
     }
 #endif
     if (!lib_handle_) {
