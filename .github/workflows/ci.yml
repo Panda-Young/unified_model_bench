@@ -18,7 +18,7 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         run: cmake -S . -B build `
@@ -40,16 +40,20 @@ jobs:
         shell: pwsh
 
   # ---------------------------------------------------------------------------
-  # ubuntu-latest: source-compilability smoke test. deps/ has no Linux desktop
-  # prebuilt libraries (only win-x64/win-x86 and android/arm64-v8a), so every
-  # HAVE_*_BACKEND is turned OFF. This still compiles the pure-logic modules and
-  # the doctest suite (csv_utils / scheduler / cmd_args / model_loader /
-  # input_provider / result_collector), guarding against Linux-only breakage.
+  # ubuntu-latest: source-compilability smoke test. The vendored Linux desktop
+  # prebuilt libraries (deps/onnxruntime/lib/linux-x64, deps/ncnn/lib/linux-x64)
+  # exist in the working tree but are excluded from git (.gitignore -> deps/),
+  # so the CI image does not have them. Every HAVE_*_BACKEND is therefore kept
+  # OFF here: this still compiles the pure-logic modules and the doctest suite
+  # (csv_utils / scheduler / cmd_args / model_loader / input_provider /
+  # result_collector / platform), guarding against Linux-only breakage such as
+  # the glibc clock_gettime/CLOCK_MONOTONIC issue. Real ONNX+NCNN inference on
+  # Linux is verified locally where the vendored libs are present.
   # ---------------------------------------------------------------------------
   build-ubuntu:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         run: |
