@@ -121,6 +121,8 @@ public:
                       std::vector<std::array<size_t, MAX_DIMENSIONS>> &oshapes,
                       std::vector<size_t> &odims) override;
     void GetTiming(std::array<double, 10> &timing) override;
+    void GetTransferTiming(double &transfer_in_ms,
+                           double &transfer_out_ms) override;
 
 private:
     void Cleanup();
@@ -144,6 +146,12 @@ private:
     std::vector<bool> input_external_;
 
     double init_ms_ = 0;
+
+    /* Tensor transfer timing (avg ms per repeat).
+     * transfer_in_ms_  = input buffer create + host memcpy (H2D)
+     * transfer_out_ms_ = output buffer lock + snapshot memcpy (D2H) */
+    double transfer_in_ms_ = 0.0;
+    double transfer_out_ms_ = 0.0;
 
     /* NPU dispatch directory string (must outlive env_ which holds pointer) */
     std::string npu_dispatch_dir_;
@@ -645,6 +653,8 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
     /* Benchmark repeats */
     for (int r = 0; r < repeat; ++r) {
         std::vector<LiteRtTensorBuffer> in_bufs, out_bufs;
+        /* Time input buffer creation + host memcpy (H2D staging). */
+        auto t_in0 = std::chrono::high_resolution_clock::now();
         if (!create_input_buffers(in_bufs)) {
             return false;
         }
@@ -652,6 +662,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             destroy_buffers("repeat_buf_err", in_bufs);
             return false;
         }
+        auto t_in1 = std::chrono::high_resolution_clock::now();
+        transfer_in_ms_ +=
+            std::chrono::duration<double, std::milli>(t_in1 - t_in0).count();
 
         auto t0 = std::chrono::high_resolution_clock::now();
         LiteRtStatus st = LiteRtRunCompiledModel(compiled_, 0, num_inputs_, in_bufs.data(),
@@ -667,7 +680,8 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
             return false;
         }
 
-        /* Copy outputs to snapshots */
+        /* Time output download: buffer lock + snapshot memcpy (D2H). */
+        auto t_out0 = std::chrono::high_resolution_clock::now();
         for (size_t i = 0; i < num_outputs_; ++i) {
             if (out_bufs[i]) {
                 void *host_ptr = nullptr;
@@ -681,6 +695,9 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
                 LiteRtUnlockTensorBuffer(out_bufs[i]);
             }
         }
+        auto t_out1 = std::chrono::high_resolution_clock::now();
+        transfer_out_ms_ +=
+            std::chrono::duration<double, std::milli>(t_out1 - t_out0).count();
 
         destroy_buffers("repeat_in", in_bufs);
         destroy_buffers("repeat_out", out_bufs);
@@ -692,6 +709,12 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
         if (ms < minv) {
             minv = ms;
         }
+    }
+
+    /* Normalize transfer time to avg ms per repeat. */
+    if (repeat > 0) {
+        transfer_in_ms_ /= (double)repeat;
+        transfer_out_ms_ /= (double)repeat;
     }
 
     /* Allocate output data */
@@ -726,6 +749,13 @@ void LiteRTBackend::GetTiming(std::array<double, 10> &timing)
 {
     timing.fill(0);
     timing[0] = init_ms_;
+}
+
+void LiteRTBackend::GetTransferTiming(double &transfer_in_ms,
+                                      double &transfer_out_ms)
+{
+    transfer_in_ms = transfer_in_ms_;
+    transfer_out_ms = transfer_out_ms_;
 }
 
 /* ---------------------------------------------------------------------------

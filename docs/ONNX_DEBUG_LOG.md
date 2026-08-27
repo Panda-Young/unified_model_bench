@@ -299,3 +299,117 @@ if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, "ep.dml.disable_graph_fusion"
 | `(void)` 丢弃返回 | ORT C API 返回 `OrtStatus*`，失败必须记录并 abort，禁止 `(void)` 吞掉 |
 | 统一辅助函数 | `OrOk` 模式：失败 → LOGE + `last_error_` + `ReleaseStatus` + `return false` |
 | 成功路径残留错误 | 探测式失败（如 DML V1 device=1→0 回退）成功后必须 `last_error_.clear()`，避免污染成功记录 |
+
+---
+
+## 6. ONNX_OpenVINO_GPU 编译失败排查（2026-08-27，scnet_tfc_tdf_v3_20260821.onnx）
+
+### 6.1 现象
+
+``
+.\build\win-x64\Release\unified_bench.exe "...\scnet_tfc_tdf_v3_20260821.onnx" --backend ONNX_OpenVINO_GPU --repeat 1
+``
+
+失败，日志：
+
+``
+[GPU] ProgramBuilder build failed!
+[GPU] can't get group dimension for data layout
+ONNX: CreateSession failed: Exception during initialization: ... backend_manager.cc:188 ...
+``
+
+### 6.2 排查过程（排除法）
+
+| 步骤 | 测试 | 结果 |
+|------|------|------|
+| 1 | ONNX_CPU | 正常（avg≈18ms） |
+| 2 | ONNX_OpenVINO_CPU | 正常（avg≈11ms, accel≈1.3x） |
+| 3 | ONNX_OpenVINO_GPU（scnet 模型） | **失败** can't get group dimension for data layout |
+| 4 | ONNX_OpenVINO_GPU（test_model.onnx） | 正常（avg=5.7ms, accel=1.91x） |
+| 5 | ONNX_OpenVINO_GPU（online_convert_1frame.onnx） | 正常（avg=13.3ms） |
+| 6 | OpenVINO 官方 enchmark_app -d GPU（scnet 模型） | **同样失败**，复现同一错误 |
+| 7 | 删除/恢复 model_cache 的 blob | 均失败，排除缓存问题 |
+
+### 6.3 根因
+
+**OpenVINO GPU 插件（openvino_intel_gpu_plugin.dll 2025.1.0）无法编译 scnet 模型的特定 group conv 布局。**
+
+对比模型结构：
+
+| 模型 | GPU 结果 | group conv 种类 |
+|------|---------|----------------|
+| online_convert_1frame | 成功 | 仅 kernel=(3,3) group=128 |
+| test_model | 成功 | 无 group conv |
+| **scnet_tfc_tdf_v3_20260821** | **失败** | **kernel=(1,3) group=2/40/80（9 个）+ kernel=(3,3) group=40/80/160/320（30 个）** |
+
+scnet 是 **1D 时序卷积用 4D 张量表示**（H=1），其中 9 个 down_convs.* 的 kernel_shape=[1,3] group conv（H 维 kernel=1）在 Intel GPU 插件的 program_builder.cpp:165 解析 data layout 时无法推断 group 维度 → 编译崩溃。
+
+### 6.4 关于"之前可以运行"与 15:45 的 blob 缓存
+
+model_cache/3678230654899558819.blob（4.5MB）看似是 scnet 的 GPU 缓存，经分析：
+
+- blob 内容**无任何 GPU 内核标记**（无 ocl::、_gpu_、cldnn）；
+- 删除后跑 ONNX_OpenVINO_CPU **重新生成了完全同名的 blob**（同大小 4.5MB）；
+- **结论：该 blob 是 OpenVINO CPU 的编译缓存**，scnet 模型在 GPU 上**从未成功编译过**；
+- 用户记忆中的"之前可以运行"实为 **OpenVINO_CPU**（scnet 在 CPU 上一直正常）或**其他模型在 GPU 上**（online_convert/test_model 均可）。
+
+### 6.5 结论与建议
+
+1. **该模型当前无法在 OpenVINO GPU 上运行**，是 OpenVINO GPU 插件对"4D 表示的 1D group conv（kernel=(1,3)）"的编译限制，非 unified_bench 代码问题；
+2. 可用 ONNX_OpenVINO_CPU 获得 OpenVINO 加速（accel≈1.3x）；或改用 DML/其他 GPU 后端；
+3. 如需 GPU，可尝试：onnxsim 折叠动态 shape 后重试、把 kernel=(1,3) group conv 展开为普通卷积、或升级/降级 OpenVINO GPU 驱动与插件。
+
+### 6.6 二次深入定位（2026-08-27 补充，精确到插件源码）
+
+上一轮已确认是 OpenVINO GPU 插件问题。本轮用 OpenVINO Python API 对 IR 做**逐节点二分编译**，把失败点精确定位到单个 op：
+
+| 步骤 | 方法 | 结果 |
+|------|------|------|
+| 1 | ovc 把 onnxsim 折叠模型转成 IR（1011 个 op） | 转换成功（ONNX 前端 OK，说明模型本身合法） |
+| 2 | OpenVINO Python 逐个 GroupConvolution 前缀子图编译 GPU | **全部 OK**（含 down_convs H=1 group conv、conv/depthwise H=3） |
+| 3 | 细粒度扫描 op[800] 之后每 5 个 op | 首个失败在 op[845] 附近 |
+| 4 | 精确扫描 op[830]~op[850] | **首个失败 op[843] Concat_80** |
+| 5 | 测试 Concat_80 的 3 个输入分支 | **分支[0]（su_layers.0，含 H=1 group ConvTranspose）单独编译即 FAIL** |
+| 6 | 测试 su_layers.0 的 GroupConvolutionBackpropData | **全部 FAIL**（op[821]/[868]/[980]） |
+
+**决定性证据**：su_layers.0/deconv/deconv.0/ConvTranspose（GroupConvolutionBackpropData，输入 [1,160,1,122] H=1，权重 5D [160,1,1,1,3]）**单独子图编译 GPU 就失败**，报：
+
+`
+[GPU] ProgramBuilder build failed!
+[GPU] can't get group dimension for data layout
+`
+
+**插件源码根因**（openvino/src/plugins/intel_gpu/src/runtime/layout.cpp:84-86）：
+
+`cpp
+tensor::value_type layout::group() const {
+    const auto& dims = get_dims();
+    if (!format::is_weights_format(format)) {
+        throw std::logic_error("[GPU] can't get group dimension for data layout");
+    }
+    ...
+}
+`
+
+即 GPU 插件把 **data layout（输入张量）误当成 weights format 调用了 group()**，抛 can't get group dimension for data layout。触发条件是 **H=1（spatial=1）的 group 转置卷积（GroupConvolutionBackpropData，kernel=(1,3)）**，在解码器（su_layers）多分支结构中 layout 推断出错。
+
+### 6.7 修复可行性评估
+
+| 方案 | 可行性 | 说明 |
+|------|--------|------|
+| 修 OpenVINO 插件源码 | ❌ | 第三方插件，unified_bench 无法修改 |
+| onnxsim 折叠/固定 shape | ❌ | 已测试仍失败，非动态 shape 问题 |
+| 模型重写（H 维 Squeeze 成 3D） | ⚠️ 理论可行 | 需转换 18 个 H=1 group conv/ConvTranspose 及全部中间张量，风险高、未验证 GPU 能通过 |
+| HETERO/配置绕过 | ❌ | 已测试失败（GPU 子图编译本身崩） |
+| **换替代后端** | ✅ **推荐** | 见下 |
+
+**推荐替代后端**（均已在 summary.csv 验证成功）：
+
+| 后端 | avg | 说明 |
+|------|-----|------|
+| ONNX_OpenVINO_CPU | 11ms / 1.3x | 最快，OpenVINO CPU 加速 |
+| ONNX_CPU | 18ms / 1.0x | 基准 |
+| ONNX_DML_GPU | 17ms / 0.62x | DML GPU，可用 |
+| MNN_OpenCL | 11ms / 0.94x | MNN GPU |
+
+**结论**：ONNX_OpenVINO_GPU/GPU_FP16 对本模型不可用，是 OpenVINO GPU 插件对 H=1 group 转置卷积的编译 bug。用 ONNX_OpenVINO_CPU 或 ONNX_DML_GPU/MNN_OpenCL 替代。

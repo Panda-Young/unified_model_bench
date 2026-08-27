@@ -16,7 +16,7 @@ constexpr double kNoBaselineAccel = -2.0;
 /* Number of columns in the CSV schema (must match kCsvHeader in
  * result_collector.cpp). Kept in the header so any consumer can validate
  * parsed rows against it; result_collector.cpp static_asserts on it. */
-constexpr size_t kCsvExpectedColumns = 26;
+constexpr size_t kCsvExpectedColumns = 29;
 
 /* ---------------------------------------------------------------------------
  * BenchmarkRecord - one row of CSV output
@@ -40,6 +40,15 @@ struct BenchmarkRecord {
     double max_run_ms = 0.0;
     int max_run_idx = 0;
     double init_ms = 0.0;
+
+    /* Tensor transfer (CPU<->device) time, average ms per repeat.
+     * See IBackend::GetTransferTiming() for per-backend semantics.
+     * transfer_in_ms:  H2D input upload
+     * transfer_out_ms: D2H output download (incl. snapshot memcpy)
+     * transfer_total_ms: transfer_in_ms + transfer_out_ms (convenience) */
+    double transfer_in_ms = 0.0;
+    double transfer_out_ms = 0.0;
+    double transfer_total_ms = 0.0;
 
     /* Accuracy vs baseline */
     double max_output_diff = 0.0;

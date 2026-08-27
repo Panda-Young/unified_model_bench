@@ -34,6 +34,8 @@ public:
                       std::vector<std::array<size_t, MAX_DIMENSIONS>> &oshapes,
                       std::vector<size_t> &odims) override;
     void GetTiming(std::array<double, 10> &timing) override;
+    void GetTransferTiming(double &transfer_in_ms,
+                           double &transfer_out_ms) override;
 
 private:
     void Cleanup();
@@ -59,6 +61,13 @@ private:
     std::vector<bool> input_external_;
 
     double init_ms_ = 0;
+
+    /* Tensor transfer timing (avg ms per repeat):
+     * transfer_in_ms_  = host -> device input upload (feed_inputs)
+     * transfer_out_ms_ = device -> host output download (copyToHostTensor +
+     *                    snapshot memcpy) */
+    double transfer_in_ms_ = 0.0;
+    double transfer_out_ms_ = 0.0;
 };
 
 bool MNNBackend::Initialize(const char *model_path, int num_threads)
@@ -341,17 +350,30 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     feed_inputs();
 
     for (int r = 0; r < repeat; ++r) {
+        /* Time the host->device input upload (feed_inputs). */
+        auto t_in0 = std::chrono::high_resolution_clock::now();
         if (r > 0) {
             interp_->resizeSession(session_);
             feed_inputs();
         }
+        auto t_in1 = std::chrono::high_resolution_clock::now();
+        transfer_in_ms_ +=
+            std::chrono::duration<double, std::milli>(t_in1 - t_in0).count();
 
         auto t0 = std::chrono::high_resolution_clock::now();
         if (interp_->runSession(session_) != MNN::NO_ERROR) {
             LOGE("MNN: run %d failed", r);
             return false;
         }
-        /* Snapshot outputs */
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        LOGD("MNN: run %d took %.3f ms", r, ms);
+
+        /* Time the device->host output download (copyToHostTensor +
+         * snapshot memcpy). Kept OUTSIDE avg_run_ms so the avg column is the
+         * pure inference time (MNN GPU runSession is async: the D2H sync
+         * happens in copyToHostTensor below). */
+        auto t_out0 = std::chrono::high_resolution_clock::now();
         for (size_t i = 0; i < num_outputs_; ++i) {
             MNN::Tensor *t = output_tensors_[i];
             if (!t) {
@@ -375,9 +397,9 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
                 }
             }
         }
-        auto t1 = std::chrono::high_resolution_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        LOGD("MNN: run %d took %.3f ms", r, ms);
+        auto t_out1 = std::chrono::high_resolution_clock::now();
+        transfer_out_ms_ +=
+            std::chrono::duration<double, std::milli>(t_out1 - t_out0).count();
 
         total += ms;
         if (ms > maxv) {
@@ -387,6 +409,12 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         if (ms < minv) {
             minv = ms;
         }
+    }
+
+    /* Normalize transfer time to avg ms per repeat. */
+    if (repeat > 0) {
+        transfer_in_ms_ /= (double)repeat;
+        transfer_out_ms_ /= (double)repeat;
     }
 
     /* Cleanup pre-allocated GPU host tensors */
@@ -428,6 +456,13 @@ void MNNBackend::GetTiming(std::array<double, 10> &timing)
 {
     timing.fill(0);
     timing[0] = init_ms_;
+}
+
+void MNNBackend::GetTransferTiming(double &transfer_in_ms,
+                                   double &transfer_out_ms)
+{
+    transfer_in_ms = transfer_in_ms_;
+    transfer_out_ms = transfer_out_ms_;
 }
 
 void MNNBackend::Cleanup()

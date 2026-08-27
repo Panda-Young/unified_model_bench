@@ -239,6 +239,8 @@ public:
                       std::vector<std::array<size_t, MAX_DIMENSIONS>> &oshapes,
                       std::vector<size_t> &odims) override;
     void GetTiming(std::array<double, 10> &timing) override;
+    void GetTransferTiming(double &transfer_in_ms,
+                           double &transfer_out_ms) override;
     const std::vector<std::string> &GetOutputNames() const override
     {
         return out_names_;
@@ -334,6 +336,14 @@ private:
     int num_threads_ = 4; /* CPU threads for input conversion */
 
     double init_ms_ = 0;
+
+    /* Tensor transfer timing (avg ms per repeat):
+     * transfer_in_ms_  = input populate (float->FP16/quant conversion + DMA
+     *                    buffer write) - the acc_pop accumulator
+     * transfer_out_ms_ = output readback (only happens on the last repeat;
+     *                    amortized here so the column stays comparable) */
+    double transfer_in_ms_ = 0.0;
+    double transfer_out_ms_ = 0.0;
 };
 
 /* ---------------------------------------------------------------------------
@@ -1754,15 +1764,22 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
                 dma_buf_sync(out_dma_[0].fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
             }
 #endif
+            auto t_out0 = std::chrono::high_resolution_clock::now();
             for (size_t i = 0; i < num_outputs_; ++i) {
                 ReadOutput((int)i, snaps[i].data(), out_elems_[i]);
             }
+            auto t_out1 = std::chrono::high_resolution_clock::now();
+            /* Output readback happens once per run; keep it as the average
+             * contribution per repeat so the CSV column stays comparable. */
+            transfer_out_ms_ = std::chrono::duration<double, std::milli>(t_out1 - t_out0).count();
 #if defined(__ANDROID__) || defined(__android__)
             if (!out_dma_.empty() && out_dma_[0].fd >= 0) {
                 dma_buf_sync(out_dma_[0].fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
             }
 #endif
         }
+        /* Accumulate input populate time (avg per repeat normalized below). */
+        transfer_in_ms_ += t_pop;
         total += ms;
         if (ms > maxv) {
             maxv = ms;
@@ -1776,6 +1793,7 @@ bool QnnSdkBackend::RunBenchmark(int warmup, int repeat, double &total,
         LOGI("QNN: avg breakdown pop=%.2f sync=%.2f exec=%.2f ms (of avg %.2f ms)",
              acc_pop / repeat, acc_sync / repeat, acc_exec / repeat,
              total / repeat);
+        transfer_in_ms_ /= (double)repeat;
     }
 
     odata.resize(num_outputs_);
@@ -1809,6 +1827,13 @@ void QnnSdkBackend::GetTiming(std::array<double, 10> &timing)
 {
     timing.fill(0);
     timing[0] = init_ms_;
+}
+
+void QnnSdkBackend::GetTransferTiming(double &transfer_in_ms,
+                                      double &transfer_out_ms)
+{
+    transfer_in_ms = transfer_in_ms_;
+    transfer_out_ms = transfer_out_ms_;
 }
 
 /* ---------------------------------------------------------------------------

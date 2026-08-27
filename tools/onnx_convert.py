@@ -64,6 +64,28 @@ onnx.helper.bfloat16_to_float32 = _onnx_helper.bfloat16_to_float32
 _orig_np_load = np.load
 np.load = lambda *a, **kw: _orig_np_load(*a, **{**kw, 'allow_pickle': kw.get('allow_pickle', True)})
 
+# onnx_graphsurgeon Node API compatibility.
+# onnx2tf 1.28.8 (and similar) still uses legacy singular aliases
+# (graph_node.output / graph_node.input) while onnx_graphsurgeon 0.5.x only
+# exposes plural lists (outputs / inputs). Add property aliases so the whole
+# onnx2tf op set keeps working without downgrading onnx_graphsurgeon.
+try:
+    import onnx_graphsurgeon as _gs_mod
+
+    if not hasattr(_gs_mod.Node, 'output'):
+        def _node_output(self):
+            outs = object.__getattribute__(self, 'outputs')
+            return outs[0] if outs else None
+        _gs_mod.Node.output = property(_node_output)
+
+    if not hasattr(_gs_mod.Node, 'input'):
+        def _node_input(self):
+            ins = object.__getattribute__(self, 'inputs')
+            return ins[0] if ins else None
+        _gs_mod.Node.input = property(_node_input)
+except Exception as _gs_patch_err:
+    print(f"  WARNING: onnx_graphsurgeon Node alias patch failed: {_gs_patch_err}")
+
 # Prevent onnx2tf from downloading test images
 os.environ['ONNX2TF_DOWNLOAD_TEST_DATA'] = '0'
 
@@ -154,11 +176,17 @@ def get_inputshape_string(model_path: str) -> str:
 
 
 def write_ncnn_shapes(shapes_path: str, info: dict):
+    """Write NCNN shapes file (in0..inN / out0..outN lines only).
+
+    NOTE: do NOT write 'inputs=N' / 'outputs=N' count lines - the C++ reader
+    (NCNNBackend::ReadShapesFile) matches prefixes 'in'/'out', so a line
+    'inputs=31' would be parsed as a fake input named 'inputs' with shape
+    [31], shifting every real input/output and corrupting the accuracy
+    baseline comparison (first-output diff explodes).
+    """
     with open(shapes_path, 'w') as f:
-        f.write(f"inputs={len(info['inputs'])}\n")
         for i, (name, dims) in enumerate(info['inputs']):
             f.write(f"in{i}={','.join(str(d) for d in dims)}\n")
-        f.write(f"outputs={len(info['outputs'])}\n")
         for i, (name, dims) in enumerate(info['outputs']):
             f.write(f"out{i}={','.join(str(d) for d in dims)}\n")
     print(f"  Wrote shapes: {shapes_path}")
@@ -313,10 +341,17 @@ def verify_ncnn(onnx_path: str, ncnn_param: str, ncnn_bin: str) -> int:
 
 
 def preprocess_onnx_for_ncnn(onnx_path: Path) -> Path | None:
-    """Replace ONNX Tile ops with equivalent Concat ops.
+    """Replace ONNX Tile ops with equivalent Concat ops, and fix static
+    Split nodes that pnnx cannot infer.
 
     PNNX converts ONNX Tile to custom 'torch.tile' layers not available in
     standard ncnn. Replacing Tile with Concat before conversion avoids this.
+
+    PNNX also crashes (0xC0000005) on Split nodes WITHOUT a `split` input when
+    it cannot infer the split sizes (e.g. input produced by a Slice), even
+    though the sizes are actually static. If every output chunk size can be
+    derived from shape inference, the `split` input tensor is added explicitly
+    so pnnx sees a fully static Split.
 
     Returns path to preprocessed model (a temp file), or None if no changes.
     """
@@ -338,10 +373,23 @@ def preprocess_onnx_for_ncnn(onnx_path: Path) -> Path | None:
             inits[init.name] = onnx_np.to_array(init)
         except Exception:
             pass
+    # Constant nodes also produce compile-time tensors (e.g. Tile repeats
+    # exported by PyTorch as a Constant node instead of an initializer).
+    # Treat their `value` attribute like an initializer so Tile->Concat can
+    # fire for them too.
+    for node in graph.node:
+        if node.op_type == "Constant" and len(node.output) == 1:
+            for a in node.attribute:
+                if a.name == "value" and node.output[0] not in inits:
+                    try:
+                        inits[node.output[0]] = onnx_np.to_array(a.t)
+                    except Exception:
+                        pass
 
     changes = 0
     tile_replacements = []
     erf_replacements = []
+    split_fixes = []   # (node, split_sizes_tensor_name, sizes_list)
 
     for node in graph.node:
         # ── Tile -> Concat ──
@@ -370,6 +418,57 @@ def preprocess_onnx_for_ncnn(onnx_path: Path) -> Path | None:
             erf_replacements.append(node)
             changes += 1
 
+    # ── Static Split fix ──
+    # pnnx crashes (0xC0000005) on Split nodes without a `split` input when it
+    # cannot infer the chunk sizes from the graph. If shape inference yields a
+    # concrete input shape, compute the equal-split sizes and attach them as an
+    # explicit `split` initializer (opset 13+ form: second input tensor). This
+    # makes the Split fully static for pnnx. Skip dynamic shapes entirely.
+    try:
+        import onnx.shape_inference as onnx_si
+    except ImportError:
+        onnx_si = None
+
+    split_candidates = [n for n in graph.node if n.op_type == "Split" and len(n.input) == 1]
+    if split_candidates and onnx_si is not None:
+        try:
+            inferred = onnx_si.infer_shapes(model)
+            value_info = {}
+            for vi in inferred.graph.value_info:
+                value_info[vi.name] = vi
+            for vi in inferred.graph.input:
+                value_info[vi.name] = vi
+
+            for node in split_candidates:
+                src = node.input[0]
+                vi = value_info.get(src)
+                if vi is None or not vi.type.HasField("tensor_type"):
+                    continue
+                dims = vi.type.tensor_type.shape.dim
+                axis = 1
+                for a in node.attribute:
+                    if a.name == "axis":
+                        axis = onnx_helper.get_attribute_value(a)
+                axis = axis if axis >= 0 else axis + len(dims)
+                if axis < 0 or axis >= len(dims) or not dims[axis].HasField("dim_value"):
+                    continue  # dynamic dim -> cannot fix
+                total = dims[axis].dim_value
+                n_out = len(node.output)
+                if n_out <= 0 or total % n_out != 0:
+                    continue  # not evenly splittable -> leave as-is
+                size = total // n_out
+                sizes = [size] * n_out
+                split_name = f"{node.name}_split_sizes"
+                if split_name not in inits:
+                    split_init = onnx_np.from_array(
+                        np.array(sizes, dtype=np.int64), name=split_name)
+                    graph.initializer.append(split_init)
+                    inits[split_name] = sizes
+                split_fixes.append((node, split_name, sizes))
+                changes += 1
+        except Exception as e:
+            print(f"  WARNING: Split static-size inference failed: {e}")
+
     if changes == 0:
         return None
 
@@ -381,6 +480,8 @@ def preprocess_onnx_for_ncnn(onnx_path: Path) -> Path | None:
         parts.append(f"{len(tile_replacements)} Tile->Concat")
     if erf_replacements:
         parts.append(f"{len(erf_replacements)} Erf->Tanh")
+    if split_fixes:
+        parts.append(f"{len(split_fixes)} Split->static")
     print(f"  Preprocessing ONNX: {', '.join(parts)}...")
 
     # Erf approximation constants as ONNX initializers
@@ -453,6 +554,20 @@ def preprocess_onnx_for_ncnn(onnx_path: Path) -> Path | None:
                                                 for attr in n.attribute})
                             break
                 print(f"    {node.name}: Tile(rep={rlist}) -> Concat chain")
+            continue
+
+        # ── Handle static Split fix ──
+        split_repl = [s for s in split_fixes if s[0] == node]
+        if split_repl:
+            _, split_name, sizes = split_repl[0]
+            n2 = onnx_helper.make_node(
+                "Split",
+                inputs=list(node.input) + [split_name],
+                outputs=list(node.output),
+                name=node.name,
+                **{a.name: onnx_helper.get_attribute_value(a) for a in node.attribute})
+            new_nodes.append(n2)
+            print(f"    {node.name}: Split -> static split={sizes}")
             continue
 
         # ── Handle Erf replacement ──
@@ -600,7 +715,12 @@ def convert_ncnn(model_path: Path, args) -> int:
                 _run_pnnx("0")
                 param = _find_pnnx_output(pnnx_input, ".ncnn.param")
                 bin_  = _find_pnnx_output(pnnx_input, ".ncnn.bin")
-            tmp_b = _find_pnnx_output(model_path, ".ncnn.bin")
+            # pnnx always writes outputs next to its input file, which is the
+            # preprocessed (prep) model. Look up via pnnx_input so the fresh
+            # FP16 bin is found and renamed to the model name before we move
+            # it to the _fp16 target. Looking up via model_path misses the
+            # prep-prefixed output and silently drops the FP16 model.
+            tmp_b = _find_pnnx_output(pnnx_input, ".ncnn.bin")
             if tmp_b is not None and tmp_b.exists():
                 os.replace(str(tmp_b), str(fp16_bin))
                 print(f"  FP16 bin: {fp16_bin} ({fp16_bin.stat().st_size/1024:.0f} KB)")
@@ -825,6 +945,7 @@ TFLITE_DEPS = {
     "tf_keras": "tf-keras",
     "onnx": "onnx",
     "onnx_graphsurgeon": "onnx-graphsurgeon",
+    "onnxsim": "onnxsim",
 }
 
 # TensorFlow often requires a newer protobuf than what's currently installed.
@@ -1227,6 +1348,42 @@ def verify_tflite(onnx_path: Path, tflite_path: Path) -> int:
         return 1
 
 
+def fold_constants_with_onnxsim(onnx_path: Path) -> Path | None:
+    """Fold dynamic shape computations (Shape/Gather/Concat/Reshape/Cast
+    chains that produce Pad pads, Slice starts/ends, etc.) into static
+    initializers via onnx-simplifier.
+
+    Many streaming/audio models export such dynamic-shape helper graphs from
+    PyTorch. onnx2tf cannot infer the NCHW->NHWC layout of intermediate
+    tensors when these shapes stay dynamic, which breaks Conv/ConvTranspose
+    (group/depthwise channel mismatch). Constant folding makes every
+    intermediate shape static so onnx2tf can convert correctly.
+
+    Returns path to the folded model (temp file), or None if onnxsim is
+    unavailable or the model has no dynamic-shape helpers.
+    """
+    try:
+        import onnxsim
+        import onnx as onnx_mod
+    except ImportError:
+        return None
+
+    folded_path = onnx_path.with_suffix(".onnxsim.onnx")
+    try:
+        model = onnx_mod.load(str(onnx_path))
+        sim_model, check = onnxsim.simplify(model, overwrite_input_shapes={})
+        if not check:
+            print("  onnxsim: verification failed, using original model")
+            return None
+        onnx_mod.save(sim_model, str(folded_path))
+        print(f"  onnxsim: folded dynamic shape ops -> {folded_path}")
+        return folded_path
+    except Exception as e:
+        msg = str(e).split('\n')[0] if str(e) else str(type(e).__name__)
+        print(f"  WARNING: onnxsim constant folding failed: {msg}")
+        return None
+
+
 def convert_tflite(model_path: Path, args) -> int:
     print("\n" + "=" * 60)
     print(" [3/3] TFLite Conversion")
@@ -1244,6 +1401,13 @@ def convert_tflite(model_path: Path, args) -> int:
     if preprocessed:
         print(f"  Using preprocessed model: {tflite_input}")
 
+    # Fold dynamic shape computations so onnx2tf sees static intermediate
+    # shapes (required for correct NCHW->NHWC of group/depthwise Conv).
+    folded = fold_constants_with_onnxsim(tflite_input)
+    if folded:
+        tflite_input = folded
+        print(f"  Using onnxsim-folded model: {tflite_input}")
+
     try:
         convert_tflite_inner(tflite_input, out_path,
                              keep_temp=getattr(args, 'keep_temp', False))
@@ -1251,7 +1415,12 @@ def convert_tflite(model_path: Path, args) -> int:
         print(f"  TFLite conversion failed: {e}")
         return (False, str(e))
 
-    # Cleanup preprocessed model
+    # Cleanup temp models
+    if folded and folded.exists():
+        try:
+            folded.unlink()
+        except OSError:
+            pass
     if preprocessed and preprocessed.exists():
         try:
             preprocessed.unlink()

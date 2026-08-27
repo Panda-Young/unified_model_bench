@@ -565,6 +565,12 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     } else {
         notes << "load_lib=" << timing[0];
     }
+    /* Tensor transfer (avg ms per repeat) - see CSV columns 16-18. */
+    {
+        double t_in = 0.0, t_out = 0.0;
+        backend->GetTransferTiming(t_in, t_out);
+        notes << ",t_in=" << t_in << ",t_out=" << t_out;
+    }
 
     /* Record */
     BenchmarkRecord rec;
@@ -578,6 +584,12 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     rec.max_run_ms = max_ms;
     rec.max_run_idx = max_idx;
     rec.init_ms = timing[0];
+
+    /* Tensor transfer timing (avg ms per repeat). See
+     * IBackend::GetTransferTiming() for per-backend semantics. */
+    backend->GetTransferTiming(rec.transfer_in_ms, rec.transfer_out_ms);
+    rec.transfer_total_ms = rec.transfer_in_ms + rec.transfer_out_ms;
+
     rec.max_output_diff = max_diff;
     rec.avg_output_diff = avg_diff;
     rec.acceleration_vs_cpu = accel;

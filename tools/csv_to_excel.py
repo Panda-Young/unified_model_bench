@@ -9,12 +9,16 @@ from openpyxl.styles import Alignment, Border, Side
 from decimal import Decimal
 
 DEFAULT_HIDE_COLS = [
+    # 可推导的冗余列：total_run_ms == repeat * avg_run_ms（浮点误差内），
+    # transfer_total_ms == transfer_in_ms + transfer_out_ms（代码恒等赋值），
+    # 看 avg_run_ms + transfer_in/out 即可，冗余列无信息量。
     "model_input_shape",
     "input_elements",
     "model_output_shape",
     "output_elements",
     "weight_mem_mb",
-    "total_run_ms",
+    "total_run_ms",        # == repeat_runs * avg_run_ms
+    "transfer_total_ms",   # == transfer_in_ms + transfer_out_ms
     "max_run_idx",
     "init_ms",
     "app_name",
@@ -55,6 +59,9 @@ STANDARD_HEADER = [
     "max_run_ms",
     "max_run_idx",
     "init_ms",
+    "transfer_in_ms",
+    "transfer_out_ms",
+    "transfer_total_ms",
     "max_output_diff",
     "avg_output_diff",
     "acceleration_vs_cpu",

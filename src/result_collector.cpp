@@ -12,23 +12,26 @@
 /* ---------------------------------------------------------------------------
  * CSV schema (single source of truth for header + record rows)
  *
- * 26 columns, in order:
+ * 29 columns, in order:
  *   0 date            1 time          2 model_name    3 model_input_shape
  *   4 input_elements  5 model_output_shape  6 output_elements
  *   7 weight_mem_mb
  *   8 warmup_runs     9 repeat_runs  10 threads
  *  11 total_run_ms   12 avg_run_ms   13 max_run_ms   14 max_run_idx
- *  15 init_ms        16 max_output_diff  17 avg_output_diff
- *  18 acceleration_vs_cpu
- *  19 peak_mem_mb    20 resident_mem_mb
- *  21 backend_name   22 device_info  23 arch         24 app_name
- *  25 notes
+ *  15 init_ms
+ *  16 transfer_in_ms 17 transfer_out_ms 18 transfer_total_ms
+ *  19 max_output_diff 20 avg_output_diff
+ *  21 acceleration_vs_cpu
+ *  22 peak_mem_mb    23 resident_mem_mb
+ *  24 backend_name   25 device_info  26 arch         27 app_name
+ *  28 notes
  * -------------------------------------------------------------------------*/
 static const char *kCsvHeader =
     "date,time,model_name,model_input_shape,input_elements,"
     "model_output_shape,output_elements,weight_mem_mb,"
     "warmup_runs,repeat_runs,threads,"
     "total_run_ms,avg_run_ms,max_run_ms,max_run_idx,init_ms,"
+    "transfer_in_ms,transfer_out_ms,transfer_total_ms,"
     "max_output_diff,avg_output_diff,acceleration_vs_cpu,"
     "peak_mem_mb,resident_mem_mb,"
     "backend_name,device_info,arch,app_name,notes\n";
@@ -66,13 +69,26 @@ static void write_csv_record(FILE *f, const BenchmarkRecord &r,
         fprintf(f, "%.3f,%.3f,%.3f,%d,",
                 r.total_run_ms, r.avg_run_ms, r.max_run_ms, r.max_run_idx);
     }
+    /* init_ms first, then the transfer block, then the diff block (matching
+     * the header order: init_ms, transfer_in/out/total, max/avg_diff). */
+    if (failed) {
+        fprintf(f, "-,");
+    } else {
+        fprintf(f, "%.3f,", r.init_ms);
+    }
     if (failed) {
         fprintf(f, "-,-,-,");
-    } else if (no_base) {
-        fprintf(f, "%.3f,-,-,", r.init_ms); /* timing kept, no comparison */
     } else {
-        fprintf(f, "%.3f,%.8f,%.8f,",
-                r.init_ms, r.max_output_diff, r.avg_output_diff);
+        fprintf(f, "%.6f,%.6f,%.6f,",
+                r.transfer_in_ms, r.transfer_out_ms, r.transfer_total_ms);
+    }
+    if (failed) {
+        fprintf(f, "-,-,");
+    } else if (no_base) {
+        fprintf(f, "-,-,"); /* no comparison: diff columns are "-" */
+    } else {
+        fprintf(f, "%.8f,%.8f,",
+                r.max_output_diff, r.avg_output_diff);
     }
     if (failed || no_base) {
         fprintf(f, "-");
@@ -92,10 +108,10 @@ static void write_csv_record(FILE *f, const BenchmarkRecord &r,
             r.arch.c_str(), app_name, r.notes.c_str());
 }
 
-/* The header/row schema is fixed at 26 columns; every write path must produce
+/* The header/row schema is fixed at 29 columns; every write path must produce
  * exactly that many fields or the CSV silently misaligns. Verify at build time
  * via the shared constant. */
-static_assert(kCsvExpectedColumns == 26,
+static_assert(kCsvExpectedColumns == 29,
               "CSV schema changed - update kCsvExpectedColumns");
 
 /* ---------------------------------------------------------------------------

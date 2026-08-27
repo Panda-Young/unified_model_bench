@@ -9,13 +9,13 @@
 #include <string>
 #include <vector>
 
-/* Build a 26-column CSV row from explicit field values (quotes applied). */
+/* Build a CSV row with the full schema width (quotes applied). */
 static std::string make_csv_row(const std::string &time,
                                 const std::string &avg_ms,
                                 const std::string &backend,
                                 const std::string &notes)
 {
-    std::vector<std::string> f(26);
+    std::vector<std::string> f(kCsvColumnCount);
     f[kCsvColTime] = time;
     f[kCsvColAvgRunMs] = avg_ms;
     f[kCsvColBackendName] = backend;

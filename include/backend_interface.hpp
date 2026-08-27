@@ -133,6 +133,37 @@ public:
 
     virtual void GetTiming(std::array<double, 10> &timing) = 0;
 
+    /**
+     * Tensor transfer (CPU<->device) timing, average milliseconds per repeat.
+     *
+     * transfer_in_ms:  average time to move input tensors from the shared CPU
+     *                  buffers to the device (H2D upload / host->device).
+     * transfer_out_ms: average time to move output tensors back to CPU host
+     *                  memory (D2H download / device->host, including the
+     *                  memcpy into the snapshot buffers).
+     *
+     * Semantics differ per backend:
+     *  - Backends with explicit upload/download steps (MNN GPU, TFLite,
+     *    LiteRT, QNN SDK) measure the actual calls.
+     *  - NCNN: extract() is the synchronous inference call itself and already
+     *    includes the D2H copy internally; transfer_out only covers the
+     *    explicit snapshot memcpy, and the D2H part stays inside avg_run_ms.
+     *  - ONNX: inputs are wrapped zero-copy (CreateTensorWithDataAsOrtValue),
+     *    so there is no separate H2D step; the synchronous OrtRun() already
+     *    includes the device transfer for GPU EPs. transfer_in_ms stays 0
+     *    and transfer_out_ms covers the post-run memcpy into snapshots.
+     *  - CPU backends: both are ~0 (memcpy only, negligible).
+     *
+     * Both are averages over the repeat loop. Default no-op keeps existing
+     * backends source-compatible.
+     */
+    virtual void GetTransferTiming(double &transfer_in_ms,
+                                   double &transfer_out_ms)
+    {
+        transfer_in_ms = 0.0;
+        transfer_out_ms = 0.0;
+    }
+
     BackendId GetId() const { return id_; }
     void SetId(BackendId id) { id_ = id; }
 

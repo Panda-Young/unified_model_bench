@@ -10,16 +10,19 @@
 #include <string>
 #include <vector>
 
-/* CSV column indices of the 26-column schema written by result_collector.cpp.
+/* CSV column indices of the 29-column schema written by result_collector.cpp.
  * Keep in sync with kCsvHeader there. weight_mem_mb sits at column 7 (right
  * after the output shapes); the timing block was pushed down accordingly. */
 enum CsvCol {
     kCsvColTime = 1,        /* batch timestamp */
     kCsvColWeightMemMb = 7, /* weight memory (deployment info) */
     kCsvColAvgRunMs = 12,   /* avg_run_ms of a worker's own row */
-    kCsvColBackendName = 21,
-    kCsvColNotes = 25,
-    kCsvColumnCount = 26
+    kCsvColTransferInMs = 16,  /* avg H2D input transfer per repeat */
+    kCsvColTransferOutMs = 17, /* avg D2H output transfer per repeat */
+    kCsvColTransferTotalMs = 18, /* transfer_in + transfer_out */
+    kCsvColBackendName = 24,
+    kCsvColNotes = 28,
+    kCsvColumnCount = 29
 };
 
 /* Parse one CSV line (quote-aware, handles "" escapes) into fields. */

@@ -346,19 +346,38 @@ IBackend
 
 ### 5.5 CSV 输出与内存测量
 
-CSV 共 26 列：模型信息（`model_name` → `output_elements`）之后紧跟 `weight_mem_mb`，
+CSV 共 29 列：模型信息（`model_name` → `output_elements`）之后紧跟 `weight_mem_mb`，
 然后是运行配置与 timing/精度列（`warmup_runs` → `acceleration_vs_cpu`），
 内存实测列（`peak_mem_mb` / `resident_mem_mb`）与元数据（`backend_name` → `notes`）收尾。
 部署侧关键列：
 
 | 列 | 含义 |
 |----|------|
+| `transfer_in_ms` | 每轮平均 **H2D 输入搬运**（host→device upload），avg ms/repeat |
+| `transfer_out_ms` | 每轮平均 **D2H 输出搬运**（device→host download + 快照 memcpy），avg ms/repeat |
+| `transfer_total_ms` | `transfer_in_ms + transfer_out_ms` |
 | `max_output_diff` / `avg_output_diff` | 与基准输出逐元素差异（`max\|a-b\|` / `avg\|a-b\|`） |
 | `acceleration_vs_cpu` | 基准 avg / 本 backend avg（`baseline_ms / avg_ms`）；无基准时 `-` |
 | `weight_mem_mb` | 模型权重内存（ONNX 解析 initializer / NCNN 取 `.ncnn.bin` 大小 / TFLite 解析 flatbuffer Buffer 精确统计 / MNN·QNN 按文件大小近似），与 backend 无关 |
 | `peak_mem_mb` | 进程峰值工作集（Windows `PeakWorkingSetSize` / Linux `VmHWM`），单调递增 |
 | `resident_mem_mb` | run 结束后的常驻工作集（`WorkingSetSize` / `VmRSS`） |
-| `notes` | 初始化耗时明细、失败原因、worker 异常退出码等 |
+| `notes` | 初始化耗时明细、失败原因、worker 异常退出码等（含 `t_in=` / `t_out=` 摘要） |
+
+**搬运时间语义**（各 backend 差异，见 `IBackend::GetTransferTiming()`）：
+- **统一语义**：`avg_run_ms` 为**纯推理时间**（不含显式 H2D 输入上传与 D2H 输出下载；
+  显式搬运分别计入 `transfer_in_ms` / `transfer_out_ms`）。
+- **MNN / TFLite / LiteRT / QNN SDK**：有显式 upload/download 步骤，
+  `transfer_in`/`transfer_out` 实测搬运调用，且均**在 avg 计时之外**。
+- **NCNN**：`extract()` 即同步推理（含内部 D2H），无法拆分 → `avg_run_ms` 含 D2H；
+  `transfer_out` 仅统计 extract 后的快照 memcpy。
+- **ONNX**：输入为 `CreateTensorWithDataAsOrtValue` **零拷贝 wrap**（无独立 H2D），
+  `transfer_in` 保持 0；`transfer_out` 为 Run 后快照 memcpy。
+- **CPU backend**：`transfer_in`/`transfer_out` 接近 0（仅 memcpy，如 30 输出模型 ~1ms）。
+
+**注意**：GPU backend 的同步推理调用（ONNX `OrtRun`、TFLite `Invoke`、LiteRT
+`RunCompiledModel`）在返回时数据已在 CPU，`avg_run_ms` 隐含包含设备端搬运；
+MNN GPU 的 `runSession` 是异步提交，D2H 全部落在 `transfer_out`。因此
+跨后端对比 `avg_run_ms` 时，应结合 `transfer_*` 列判断"纯计算 vs 搬运"占比。
 
 测量语义：`peak`/`resident` 是**进程级**统计（含框架运行时/arena 开销，不含 GPU 显存）；
 per-process 架构下每 backend 独占进程，读数即该 backend 的部署值，无跨 backend 污染。

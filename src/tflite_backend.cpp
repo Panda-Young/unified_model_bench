@@ -76,6 +76,8 @@ public:
                       std::vector<std::array<size_t, MAX_DIMENSIONS>> &oshapes,
                       std::vector<size_t> &odims) override;
     void GetTiming(std::array<double, 10> &timing) override;
+    void GetTransferTiming(double &transfer_in_ms,
+                           double &transfer_out_ms) override;
 
 private:
     void Cleanup();
@@ -99,6 +101,13 @@ private:
     std::vector<bool> input_external_;
 
     double init_ms_ = 0;
+
+    /* Tensor transfer timing (avg ms per repeat).
+     * transfer_in_ms_  = feed() (NCHW->NHWC transpose + memcpy into input
+     *                    tensors; GPU delegates may stage on device)
+     * transfer_out_ms_ = CopyOutputToFloat snapshot memcpy (D2H for GPU) */
+    double transfer_in_ms_ = 0.0;
+    double transfer_out_ms_ = 0.0;
 };
 
 static TfLiteDelegate *CreateDelegate(BackendId id, int num_threads,
@@ -453,7 +462,13 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
     }
 
     for (int r = 0; r < repeat; ++r) {
+        /* Time input upload: feed() (NCHW->NHWC transpose + memcpy). */
+        auto t_in0 = std::chrono::high_resolution_clock::now();
         feed();
+        auto t_in1 = std::chrono::high_resolution_clock::now();
+        transfer_in_ms_ +=
+            std::chrono::duration<double, std::milli>(t_in1 - t_in0).count();
+
         auto t0 = std::chrono::high_resolution_clock::now();
         if (TfLiteInterpreterInvoke(interp_) != kTfLiteOk) {
             LOGE("TFLite: invoke failed at run %d", r);
@@ -463,9 +478,14 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         LOGD("TFLite: run %d took %.3f ms", r, ms);
 
+        /* Time output download: snapshot memcpy (D2H for GPU delegates). */
+        auto t_out0 = std::chrono::high_resolution_clock::now();
         for (size_t i = 0; i < num_outputs_; ++i) {
             CopyOutputToFloat(i, snaps[i].data(), output_elems_[i]);
         }
+        auto t_out1 = std::chrono::high_resolution_clock::now();
+        transfer_out_ms_ +=
+            std::chrono::duration<double, std::milli>(t_out1 - t_out0).count();
 
         total += ms;
         if (ms > maxv) {
@@ -501,6 +521,11 @@ bool TFLiteBackend::RunBenchmark(int warmup, int repeat, double &total,
         }
         odims[i] = output_shapes_[i].size();
     }
+    /* Normalize transfer time to avg ms per repeat. */
+    if (repeat > 0) {
+        transfer_in_ms_ /= (double)repeat;
+        transfer_out_ms_ /= (double)repeat;
+    }
     return true;
 }
 
@@ -508,6 +533,13 @@ void TFLiteBackend::GetTiming(std::array<double, 10> &timing)
 {
     timing.fill(0);
     timing[0] = init_ms_;
+}
+
+void TFLiteBackend::GetTransferTiming(double &transfer_in_ms,
+                                      double &transfer_out_ms)
+{
+    transfer_in_ms = transfer_in_ms_;
+    transfer_out_ms = transfer_out_ms_;
 }
 
 void TFLiteBackend::Cleanup()

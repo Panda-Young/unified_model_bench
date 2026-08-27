@@ -65,6 +65,8 @@ public:
                       std::vector<std::array<size_t, MAX_DIMENSIONS>> &oshapes,
                       std::vector<size_t> &odims) override;
     void GetTiming(std::array<double, 10> &timing) override;
+    void GetTransferTiming(double &transfer_in_ms,
+                           double &transfer_out_ms) override;
     const std::vector<std::string> &GetOutputNames() const override
     {
         return output_names_str_;
@@ -100,6 +102,13 @@ private:
 
     double init_ms_ = 0;
     double timing_[10] = {};
+
+    /* Tensor transfer timing (avg ms per repeat). For ONNX the inputs are
+     * wrapped zero-copy so transfer_in stays 0 (device upload happens inside
+     * the synchronous OrtRun for GPU EPs); transfer_out covers the post-run
+     * memcpy into the snapshot buffers. */
+    double transfer_in_ms_ = 0.0;
+    double transfer_out_ms_ = 0.0;
 
     /* EP Context cache for QNN backends */
     std::string ep_context_path_;
@@ -1047,6 +1056,11 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         LOGD("ONNX: run %d took %.3f ms", r, ms);
+        /* Time the output copy (device->host snapshot). For CPU EPs this is a
+         * pure memcpy; for GPU EPs (DML/OpenVINO) the synchronous OrtRun
+         * already includes the D2H transfer, so this only captures the
+         * explicit snapshot copy that the benchmark itself performs. */
+        auto t_out0 = std::chrono::high_resolution_clock::now();
         for (size_t i = 0; i < num_outputs_; ++i) {
             if (out[i]) {
                 float *fp = nullptr;
@@ -1057,6 +1071,9 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
                 }
             }
         }
+        auto t_out1 = std::chrono::high_resolution_clock::now();
+        transfer_out_ms_ +=
+            std::chrono::duration<double, std::milli>(t_out1 - t_out0).count();
         for (auto &v : in) {
             ort_->ReleaseValue(v);
         }
@@ -1073,6 +1090,12 @@ bool ONNXBackend::RunBenchmark(int warmup, int repeat, double &total, double &ma
         if (ms < minv) {
             minv = ms;
         }
+    }
+
+    /* Normalize transfer time to avg ms per repeat. */
+    if (repeat > 0) {
+        transfer_in_ms_ = 0.0; /* zero-copy input wrap: no explicit H2D */
+        transfer_out_ms_ /= (double)repeat;
     }
 
     odata.resize(num_outputs_);
@@ -1111,6 +1134,13 @@ void ONNXBackend::GetTiming(std::array<double, 10> &t)
         t[i] = timing_[i];
     }
     t[0] = init_ms_;
+}
+
+void ONNXBackend::GetTransferTiming(double &transfer_in_ms,
+                                    double &transfer_out_ms)
+{
+    transfer_in_ms = transfer_in_ms_;
+    transfer_out_ms = transfer_out_ms_;
 }
 
 void ONNXBackend::Cleanup()

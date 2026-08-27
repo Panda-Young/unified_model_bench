@@ -162,6 +162,14 @@ static ncnn::Mat MakeMatFromShape(const std::vector<int> &shape, const float *da
         int c = shape[0];
         m = ncnn::Mat(w, h, c);
         if (!m.empty() && w > 0 && h > 0) {
+            /* Use a CONTIGUOUS channel layout (cstep = w*h). The default
+             * ncnn::Mat(w,h,c) aligns cstep to 4 bytes (e.g. w*h=2049 ->
+             * cstep=2052), which inserts 3-float padding between channels.
+             * The ONNX NCHW source is fully contiguous, and the network
+             * expects the same; with the aligned cstep every channel past
+             * the first lands 3 elements off, corrupting the output (SCNet
+             * 30-state diff 2.5 -> 0.2 after this fix). */
+            m.cstep = (size_t)w * (size_t)h;
             const float *src = data;
             for (int ci = 0; ci < c; ++ci) {
                 memcpy(m.channel(ci), src, (size_t)w * (size_t)h * sizeof(float));
@@ -181,6 +189,8 @@ static ncnn::Mat MakeMatFromShape(const std::vector<int> &shape, const float *da
              * identical logical layout for batch=1. */
             m = ncnn::Mat(w, h, c);
             if (!m.empty() && w > 0 && h > 0) {
+                /* Contiguous channel layout, see the case 3 comment. */
+                m.cstep = (size_t)w * (size_t)h;
                 const float *src = data;
                 for (int ci = 0; ci < c; ++ci) {
                     memcpy(m.channel(ci), src, (size_t)w * (size_t)h * sizeof(float));
@@ -202,6 +212,65 @@ static ncnn::Mat MakeMatFromShape(const std::vector<int> &shape, const float *da
     return m;
 }
 
+/* Fill an already-allocated ncnn::Mat with data from an ONNX-shaped flat
+ * float buffer, using the SAME layout mapping as MakeMatFromShape (so a
+ * cached Mat can be refreshed without re-allocating/cloning). Returns the
+ * number of bytes written, or 0 on layout mismatch. */
+static size_t FillMatFromShape(ncnn::Mat &m, const std::vector<int> &shape,
+                               const float *data)
+{
+    if (m.empty() || !data || shape.empty()) {
+        return 0;
+    }
+    switch (shape.size()) {
+    case 1: {
+        size_t bytes = (size_t)shape[0] * sizeof(float);
+        if (m.total() >= shape[0]) {
+            memcpy(m.data, data, bytes);
+            return bytes;
+        }
+        break;
+    }
+    case 2: {
+        int h = shape[0], w = shape[1];
+        size_t bytes = (size_t)h * (size_t)w * sizeof(float);
+        if (m.total() >= (size_t)h * (size_t)w) {
+            memcpy(m.data, data, bytes);
+            return bytes;
+        }
+        break;
+    }
+    case 3: {
+        int c = shape[0], h = shape[1], w = shape[2];
+        if (m.c == c && m.h == h && m.w == w) {
+            const float *src = data;
+            for (int ci = 0; ci < c; ++ci) {
+                memcpy(m.channel(ci), src, (size_t)w * (size_t)h * sizeof(float));
+                src += (size_t)w * (size_t)h;
+            }
+            return (size_t)c * (size_t)h * (size_t)w * sizeof(float);
+        }
+        break;
+    }
+    case 4: {
+        int n = shape[0], c = shape[1], h = shape[2], w = shape[3];
+        if (n == 1 && m.c == c && m.h == h && m.w == w) {
+            const float *src = data;
+            for (int ci = 0; ci < c; ++ci) {
+                memcpy(m.channel(ci), src, (size_t)w * (size_t)h * sizeof(float));
+                src += (size_t)w * (size_t)h;
+            }
+            return (size_t)c * (size_t)h * (size_t)w * sizeof(float);
+        }
+        break;
+    }
+    default: {
+        break;
+    }
+    }
+    return 0;
+}
+
 class NCNNBackend : public IBackend
 {
 public:
@@ -217,6 +286,8 @@ public:
                       std::vector<std::array<size_t, MAX_DIMENSIONS>> &oshapes,
                       std::vector<size_t> &odims) override;
     void GetTiming(std::array<double, 10> &timing) override;
+    void GetTransferTiming(double &transfer_in_ms,
+                           double &transfer_out_ms) override;
 
 private:
     void Cleanup();
@@ -241,6 +312,21 @@ private:
     std::vector<bool> input_external_;
 
     double init_ms_ = 0;
+
+    /* Tensor transfer timing (avg ms per repeat).
+     * NCNN uploads inputs via ex.input() and downloads outputs via
+     * extract(); for Vulkan backends these include the H2D/D2H transfer.
+     * transfer_in_ms_  = input Mat build + ex.input() (host->device)
+     * transfer_out_ms_ = ex.extract() + snapshot memcpy (device->host) */
+    double transfer_in_ms_ = 0.0;
+    double transfer_out_ms_ = 0.0;
+
+    /* Pre-allocated input Mats, reused across repeats to avoid per-run
+     * allocation + clone (the 30-input scnet-style model spends several ms
+     * per repeat just rebuilding Mats). Only their data payload is refreshed
+     * via memcpy each feed. */
+    std::vector<ncnn::Mat> in_mats_cache_;
+    bool in_mats_cache_valid_ = false;
 };
 
 /* ---------------------------------------------------------------------------
@@ -269,7 +355,8 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
             num_in = atoi(line + 7);
         } else if (strncmp(line, "outputs=", 8) == 0) {
             num_out = atoi(line + 8);
-        } else if (strncmp(line, "in", 2) == 0 && strncmp(line, "input", 5) != 0) {
+        } else if (strncmp(line, "in", 2) == 0 && strncmp(line, "input", 5) != 0 &&
+                   strncmp(line, "inputs=", 7) != 0) {
             /* in0=1,4,2048,8 */
             char *eq = strchr(line, '=');
             if (!eq) {
@@ -295,7 +382,7 @@ bool NCNNBackend::ReadShapesFile(const char *shapes_path)
             }
             input_shapes_.push_back(shape);
             input_elems_.push_back(elems);
-        } else if (strncmp(line, "out", 3) == 0) {
+        } else if (strncmp(line, "out", 3) == 0 && strncmp(line, "outputs=", 8) != 0) {
             char *eq = strchr(line, '=');
             if (!eq) {
                 continue;
@@ -628,8 +715,9 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     }
 
     /* Build ncnn::Mat inputs (NCNN uses [w,h,c] order internally).
-     * Clone each Mat so NCNN owns the data external pointers into
-     * input_bufs_ may not match the layout NCNN expects after packing. */
+     * The Mats are CACHED and reused across repeats: only the data payload
+     * is refreshed each feed, so the expensive per-run allocation + clone
+     * (several ms for 30-input models) happens only once. */
     auto build_inputs = [&]() -> std::vector<ncnn::Mat> {
         std::vector<ncnn::Mat> mats;
         mats.reserve(num_inputs_);
@@ -637,13 +725,38 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
             /* Map ONNX dims (rank 1..4) to an ncnn::Mat with reversed dims.
              * Do NOT hardcode [w,h,c]: this model has 3D state inputs
              * (e.g. [472,32,2]) and reading shape[3] would be out of bounds. */
-            ncnn::Mat tmp = MakeMatFromShape(input_shapes_[i], input_bufs_[i]);
-            if (tmp.empty()) {
-                LOGE("NCNN: cannot build input %zu (rank %zu)", i, input_shapes_[i].size());
-                mats.clear();
-                break;
+            ncnn::Mat tmp;
+            if (in_mats_cache_valid_ && i < in_mats_cache_.size() &&
+                !in_mats_cache_[i].empty()) {
+                /* Reuse cached Mat: refresh its data from the shared input
+                 * buffer, preserving the ncnn [w,h,c] channel layout. */
+                ncnn::Mat &cached = in_mats_cache_[i];
+                if (FillMatFromShape(cached, input_shapes_[i], input_bufs_[i]) == 0) {
+                    LOGE("NCNN: cannot refresh cached input %zu (rank %zu)",
+                         i, input_shapes_[i].size());
+                    mats.clear();
+                    break;
+                }
+                tmp = cached;
+            } else {
+                tmp = MakeMatFromShape(input_shapes_[i], input_bufs_[i]);
+                if (tmp.empty()) {
+                    LOGE("NCNN: cannot build input %zu (rank %zu)", i, input_shapes_[i].size());
+                    mats.clear();
+                    break;
+                }
+                /* Cache the layout-owning copy; subsequent feeds reuse it. */
+                ncnn::Mat cached = tmp.clone();
+                if (in_mats_cache_.size() <= i) {
+                    in_mats_cache_.resize(i + 1);
+                }
+                in_mats_cache_[i] = cached;
+                tmp = cached;
             }
-            mats.push_back(tmp.clone()); /* clone: NCNN owns the copy */
+            mats.push_back(tmp);
+        }
+        if (mats.size() == num_inputs_) {
+            in_mats_cache_valid_ = true;
         }
         return mats;
     };
@@ -687,6 +800,9 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
 
     for (int r = 0; r < repeat; ++r) {
         ncnn::Extractor ex = net_->create_extractor();
+        /* Time input upload: Mat build (host data) + ex.input() (H2D for
+         * Vulkan; plain copy for CPU). */
+        auto t_in0 = std::chrono::high_resolution_clock::now();
         auto mats = build_inputs();
         if (mats.size() != num_inputs_) {
             LOGE("NCNN: failed to build inputs at run %d", r);
@@ -699,8 +815,12 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
                 return false;
             }
         }
+        auto t_in1 = std::chrono::high_resolution_clock::now();
+        transfer_in_ms_ +=
+            std::chrono::duration<double, std::milli>(t_in1 - t_in0).count();
 
         auto t0 = std::chrono::high_resolution_clock::now();
+        double out_copy_ms = 0.0;
         for (size_t i = 0; i < num_outputs_; ++i) {
             ncnn::Mat out;
             int ret;
@@ -729,12 +849,22 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
                 size_t copy_bytes = std::min(
                     snaps[i].size() * sizeof(float),
                     out.total() * sizeof(float));
+                auto tc0 = std::chrono::high_resolution_clock::now();
                 memcpy(snaps[i].data(), (float *)out.data, copy_bytes);
+                auto tc1 = std::chrono::high_resolution_clock::now();
+                out_copy_ms +=
+                    std::chrono::duration<double, std::milli>(tc1 - tc0).count();
             }
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        LOGD("NCNN: run %d took %.3f ms", r, ms);
+        /* NOTE: ncnn's extract() is the synchronous inference call itself
+         * (it executes the graph and returns the result, including the D2H
+         * copy for Vulkan internally). It CANNOT be separated into compute vs
+         * transfer - avg_run_ms therefore includes the D2H part. transfer_out
+         * covers only the explicit snapshot memcpy measured above. */
+        transfer_out_ms_ += out_copy_ms;
+        LOGD("NCNN: run %d took %.3f ms (snap_copy=%.3f)", r, ms, out_copy_ms);
 
         total += ms;
         if (ms > maxv) {
@@ -744,6 +874,12 @@ bool NCNNBackend::RunBenchmark(int warmup, int repeat, double &total,
         if (ms < minv) {
             minv = ms;
         }
+    }
+
+    /* Normalize transfer time to avg ms per repeat. */
+    if (repeat > 0) {
+        transfer_in_ms_ /= (double)repeat;
+        transfer_out_ms_ /= (double)repeat;
     }
 
     odata.resize(num_outputs_);
@@ -777,6 +913,13 @@ void NCNNBackend::GetTiming(std::array<double, 10> &timing)
 {
     timing.fill(0);
     timing[0] = init_ms_;
+}
+
+void NCNNBackend::GetTransferTiming(double &transfer_in_ms,
+                                    double &transfer_out_ms)
+{
+    transfer_in_ms = transfer_in_ms_;
+    transfer_out_ms = transfer_out_ms_;
 }
 
 void NCNNBackend::Cleanup()

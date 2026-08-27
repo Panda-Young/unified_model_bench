@@ -1,9 +1,10 @@
 /*============================================================================
  * test_result_collector.cpp - CSV schema regression tests
  *
- * Guards the exact 26-column layout written by AppendCsv - in particular the
- * weight_mem_mb position (column 7, right after the output shapes). A schema
- * drift here silently breaks csv_utils row lookups and csv_to_excel.py.
+ * Guards the exact 29-column layout written by AppendCsv - in particular the
+ * weight_mem_mb position (column 7, right after the output shapes) and the
+ * tensor-transfer block (columns 16-18). A schema drift here silently breaks
+ * csv_utils row lookups and csv_to_excel.py.
  *============================================================================*/
 #include "csv_utils.hpp"
 #include "result_collector.hpp"
@@ -35,6 +36,9 @@ BenchmarkRecord make_record()
     r.max_run_ms = 6.0;
     r.max_run_idx = 3;
     r.init_ms = 1.0;
+    r.transfer_in_ms = 0.5;
+    r.transfer_out_ms = 0.7;
+    r.transfer_total_ms = 1.2;
     r.max_output_diff = 0.0001;
     r.avg_output_diff = 0.00001;
     r.acceleration_vs_cpu = 2.5;
@@ -50,7 +54,7 @@ BenchmarkRecord make_record()
 
 } // namespace
 
-TEST_CASE("AppendCsv: 26 columns with weight_mem_mb at column 7")
+TEST_CASE("AppendCsv: 29 columns with weight_mem_mb at column 7")
 {
     std::remove(kTmpCsv);
     ResultCollector c;
@@ -67,19 +71,23 @@ TEST_CASE("AppendCsv: 26 columns with weight_mem_mb at column 7")
     auto flds = csv_parse_line(line);
     REQUIRE(flds.size() == (size_t)kCsvColumnCount);
     /* layout contract: shapes... output_elements(6), weight(7), config(8-10),
-     * timing(11-14), init/diff(15-18), peak/resident(19-20), meta(21-25) */
+     * timing(11-14), init(15), transfer(16-18), diff(19-20), accel(21),
+     * peak/resident(22-23), meta(24-28) */
     CHECK(flds[6] == "2");
     CHECK(flds[7] == "0.178");          /* weight_mem_mb right after shapes */
     CHECK(flds[8] == "1");              /* warmup_runs */
     CHECK(flds[kCsvColAvgRunMs] == "5.000");
-    CHECK(flds[19] == "100.000");       /* peak_mem_mb */
-    CHECK(flds[20] == "90.000");        /* resident_mem_mb */
+    CHECK(flds[16] == "0.500000");      /* transfer_in_ms */
+    CHECK(flds[17] == "0.700000");      /* transfer_out_ms */
+    CHECK(flds[18] == "1.200000");      /* transfer_total_ms */
+    CHECK(flds[22] == "100.000");       /* peak_mem_mb */
+    CHECK(flds[23] == "90.000");        /* resident_mem_mb */
     CHECK(flds[kCsvColBackendName] == "ONNX_CPU");
-    CHECK(flds[25] == "ok");            /* notes */
+    CHECK(flds[28] == "ok");            /* notes */
     std::remove(kTmpCsv);
 }
 
-TEST_CASE("AppendCsv: failed row keeps 26 columns with '-' placeholders")
+TEST_CASE("AppendCsv: failed row keeps 29 columns with '-' placeholders")
 {
     std::remove(kTmpCsv);
     ResultCollector c;
@@ -99,8 +107,11 @@ TEST_CASE("AppendCsv: failed row keeps 26 columns with '-' placeholders")
     CHECK(flds[7] == "-");              /* weight '-': no measurement */
     CHECK(flds[11] == "-");             /* total_run_ms */
     CHECK(flds[kCsvColAvgRunMs] == "-");
-    CHECK(flds[19] == "-");             /* peak_mem_mb */
-    CHECK(flds[20] == "-");             /* resident_mem_mb */
+    CHECK(flds[16] == "-");             /* transfer_in_ms */
+    CHECK(flds[17] == "-");             /* transfer_out_ms */
+    CHECK(flds[18] == "-");             /* transfer_total_ms */
+    CHECK(flds[22] == "-");             /* peak_mem_mb */
+    CHECK(flds[23] == "-");             /* resident_mem_mb */
     std::remove(kTmpCsv);
 }
 
@@ -114,7 +125,7 @@ TEST_CASE("AppendCsv: refuses to append to a misaligned existing CSV")
     {
         FILE *f = fopen(kTmpCsv, "w");
         REQUIRE(f != nullptr);
-        fputs("date,time,model_name,only4\n", f); /* 4 columns != 26 */
+        fputs("date,time,model_name,only4\n", f); /* 4 columns != 29 */
         fclose(f);
     }
     ResultCollector c;
