@@ -46,12 +46,27 @@ unified_model_bench/
 │   ├── VS_build_win_x86.bat        # Windows x86 VS 构建
 │   ├── onnx_convert.py             # ONNX → TFLite/NCNN/MNN 转换
 │   ├── gen_test_model.py           # 生成测试模型
-│   └── csv_to_excel.py             # CSV → Excel
+│   ├── csv_to_excel.py             # CSV → Excel
+│   ├── config/                     # QNN HTP 离线编译配置
+│   │   ├── htp_config.json             # 图/设备配置（graph_names、O:3、vtcm、hvx_threads…）
+│   │   └── backend_ext_config.json     # context binary generator 后端扩展配置
+│   └── utils/                      # 辅助脚本
+│       ├── gen_test_data_for_onnx.py   # 生成 --input-list 测试数据与列表
+│       ├── fill_htp_config.py          # 按设备 ro.soc.model 填 htp_config.json 的 soc_id/dsp_arch
+│       ├── check_braces.py             # 花括号规范检查（接入 CI，见 §3.7）
+│       ├── csv_summary.py              # CSV 结果汇总
+│       ├── analyze_bench_log.py        # 运行日志解析
+│       └── probe_ncnn_blob.py          # NCNN blob 探测
+├── tests/                      # doctest 单元测试（纯逻辑模块，见 §3.5）
+├── .github/
+│   ├── workflows/ci.yml        # GitHub Actions（Windows 全量 + Ubuntu 冒烟）
+│   └── copilot-instructions.md # 编码规范
 ├── docs/                       # 各模块调试记录（详见 §8）
 │   ├── ONNX_DEBUG_LOG.md
 │   ├── ONNX_CONVERT_DEBUG_LOG.md
 │   ├── TFLITE_NPU_DEBUG_LOG.md
 │   ├── NCNN_DEBUG_LOG.md
+│   ├── NCNN_DIFF_ANALYSIS.md
 │   ├── MNN_DEBUG_LOG.md
 │   ├── LiteRT_GPU_DEBUG_LOG.md
 │   ├── QNN_SDK_DEBUG_LOG.md
@@ -124,7 +139,11 @@ unified_model_bench/
 | NCNN_CPU | `NCNN_CPU` | ✅ | ✅ | CPU（基准） |
 | NCNN_CPU_FP16 | `NCNN_CPU_FP16` | ✅ | ✅ | CPU FP16（NEON） |
 | NCNN_CPU_BF16 | `NCNN_CPU_BF16` | ✅* | ✅* | CPU BF16（需 CPUID 支持 + trial 验证） |
-| NCNN_VK / _FP16 / _BF16 | `NCNN_Vulkan*` | ✅ | ❌* | Vulkan（Android NCNN 编译时无 Vulkan，报错不降级） |
+| NCNN_VK / _FP16 / _BF16 | `NCNN_VK` / `NCNN_VK_FP16` / `NCNN_VK_BF16` | ✅ | ❌* | Vulkan（Android NCNN 编译时无 Vulkan，报错不降级） |
+
+> **命名注意**：枚举常量名为 `NCNN_VK*`（`NCNN_VULKAN` 是 NCNN 库自身的平台检测宏，
+> 与本工具的 backend 名冲突，故改名）。`--backend` 走**精确匹配**（不区分大小写），
+> 写 `NCNN_Vulkan` 会被判为未知名称并跳过。
 
 **MNN（300–309）**：CPU / OpenCL / Vulkan / OpenGL，桌面与 Android 均支持（桌面默认关闭 `HAVE_MNN_BACKEND=OFF`）。
 
@@ -137,21 +156,40 @@ unified_model_bench/
 | QNN_CPU | `QNN_CPU` | ❌ | ✅ | 同一 context binary 在 CPU 执行 |
 
 > 模型格式为 **QNN context binary**（`.dlc`/`.serialized.bin`/`.bin`/`.so`），由 `qnn-context-binary-generator` 从 DLC 离线生成。仅 Android 且 `HAVE_QNN_SDK_BACKEND=ON` 时编译。
+### 2.3 平台可用性：以代码为准
 
+上表的"桌面/Android"列**由 `BackendConfig::platforms` 位掩码决定**（`PlatformMask`
+枚举，见 `include/backend_interface.hpp`），不再是散落在 `InitDefaults()` 里的
+`#if` 分支。因此：
+
+- 新增后端在 `cmake/backends.cmake` 风格的声明表里**写一行** `platforms` 即可
+- 运行时可用 `platform_supports(mask)` / `platform_mask_str(mask)` 查询，
+  无需人工维护本表
+- `--log-level 1` 启动时会打印每个已注册 backend 的可用平台，可用于核对本表
+- 未实现后端（如 `ONNX_CUDA` / `ONNX_TENSORRT` 占位枚举）的 `platforms` 为
+  `kPlatNone`，任何平台都不会注册
+
+> 编译期开关（`HAVE_*_BACKEND`）仍叠加在掩码之上：掩码决定"该平台是否**应该**有"，
+> 宏决定"这次构建是否**编进去了**"。两者都为真才会注册。
 ---
 
 ## 3. 构建系统
 
 ### 3.1 依赖与版本
 
-| 依赖 | 版本 | 桌面路径 | Android 路径 |
-|------|------|----------|--------------|
-| ONNX Runtime | 1.22.0 | `deps/onnxruntime/lib/win-x64/{cpu,dml,onednn,openvino}/` | `deps/onnxruntime/lib/android/arm64-v8a/` |
-| TensorFlow Lite | 2.18.0 | `deps/tflite/lib/win-x64/tensorflowlite_c.dll` | `deps/tflite/lib/android/arm64-v8a/*.so` |
-| LiteRT | — | `deps/litert/liteRT_runtime/windows_x86_64/` | `deps/litert/liteRT_runtime/android_arm64/` |
-| NCNN | 1.0.x | `deps/ncnn/lib/win-x64/ncnn.dll` | `deps/ncnn/lib/android/arm64-v8a/libncnn.so` |
-| MNN | — | `deps/mnn/lib/win-x64/MNN.dll` | `deps/mnn/lib/arm64-v8a/libMNN.so` |
-| QNN SDK | 2.48.40.260702 | — | `C:\Qualcomm\AIStack\QAIRT\2.48.40.260702` |
+| 依赖 | 版本 | Windows 路径 | Android 路径 | Linux 路径 |
+|------|------|--------------|--------------|------------|
+| ONNX Runtime | 1.22.0 | `deps/onnxruntime/lib/win-x64/{cpu,dml,onednn,openvino}/` | `deps/onnxruntime/lib/android/arm64-v8a/` | `deps/onnxruntime/lib/linux-x64/` |
+| TensorFlow Lite | 2.18.0 | `deps/tflite/lib/win-x64/tensorflowlite_c.dll` | `deps/tflite/lib/android/arm64-v8a/*.so` | — |
+| LiteRT | — | `deps/litert/liteRT_runtime/windows_x86_64/` | `deps/litert/liteRT_runtime/android_arm64/` | — |
+| NCNN | 1.0.x | `deps/ncnn/lib/win-x64/ncnn.dll` | `deps/ncnn/lib/android/arm64-v8a/libncnn.so` | `deps/ncnn/lib/linux-x64/libncnn.a` + glslang 静态库 |
+| MNN | — | `deps/mnn/lib/win-x64/MNN.dll` | `deps/mnn/lib/arm64-v8a/libMNN.so` | — |
+| QNN SDK | 2.48.40.260702 | — | `C:\Qualcomm\AIStack\QAIRT\2.48.40.260702` | — |
+
+> `deps/` 被 `.gitignore` 排除（体积大，需手动拷贝或按脚本获取），因此 **CI 上默认不
+> 存在**——这也是 CI 的 Ubuntu job 只做"编译冒烟"而非真机推理的原因（见 §3.6）。
+> Linux 桌面 NCNN 用官方 Ubuntu 预编译静态库，链接时需 `libgomp` + 附带的 glslang
+> 静态库（已在 `CMakeLists.txt` 中处理）。
 
 ### 3.2 CMake 选项
 
@@ -164,6 +202,7 @@ unified_model_bench/
 | `HAVE_LITERT_BACKEND` | OFF | LiteRT |
 | `HAVE_QNN_SDK_BACKEND` | OFF | 原生 QNN SDK 后端（仅 Android） |
 | `QNN_SDK_ROOT` | — | QNN SDK 路径（Android） |
+| `BUILD_TESTING` | ON | 构建 doctest 单元测试（`unified_bench_tests` + ctest） |
 
 ### 3.3 Windows x64 构建
 
@@ -174,6 +213,30 @@ cmake -B build/win-x64 -DHAVE_TFLITE_BACKEND=ON -DHAVE_LITERT_BACKEND=ON -DHAVE_
 cmake --build build/win-x64 --config Debug
 ```
 
+Windows x86 用 `tools\VS_build_win_x86.bat`（注意：x86 下 ONNX 仅注册 CPU/DML_GPU/DML_NPU，
+oneDNN 与 OpenVINO 无 32 位库）。
+
+### 3.3b Linux 桌面构建
+
+Linux 桌面已支持 **ONNX Runtime + NCNN** 两个后端（`ARCH_DIR=linux-x64`），产物为
+`build/linux-x64/unified_bench`：
+
+```bash
+# 依赖：cmake >= 3.16、g++/clang（C++17）、libgomp（NCNN 静态库需要）
+cmake -S . -B build/linux-x64 \
+  -DHAVE_ONNX_BACKEND=ON \
+  -DHAVE_NCNN_BACKEND=ON
+cmake --build build/linux-x64 -j"$(nproc)"
+
+# 运行前把 ONNX Runtime 的 .so 加入搜索路径
+LD_LIBRARY_PATH=deps/onnxruntime/lib/linux-x64 ./build/linux-x64/unified_bench test_model.onnx --repeat 10
+```
+
+**前置条件**：`deps/onnxruntime/lib/linux-x64/libonnxruntime.so` 与
+`deps/ncnn/lib/linux-x64/libncnn.a`（含 glslang 静态库）需自行放置——`deps/` 不入库。
+其余后端（TFLite / MNN / LiteRT / QNN SDK）在 Linux 桌面**尚未接入**（无对应
+linux-x64 预编译库与链接规则）。
+
 ### 3.4 Android NDK 构建 + 部署
 
 ```bat
@@ -182,6 +245,87 @@ tools\NDK_build_Android_auto.bat
 ```
 
 脚本自动完成：配置 → 编译 → `adb push` 可执行文件与全部 `.so` → 按 `ro.soc.model` 自动选 Hexagon 版本并推送 Stub/Skel → 运行基准 → 回拉 CSV。
+
+### 3.5 单元测试
+
+纯逻辑模块（不依赖任何推理框架与 `deps/`）由 **doctest** 单测守护，可在**任意平台**
+离线运行：
+
+```bash
+cmake -S . -B build -DBUILD_TESTING=ON
+cmake --build build
+ctest --test-dir build --output-on-failure      # 或直接跑 ./build/unified_bench_tests
+```
+
+| 测试文件 | 覆盖模块 |
+|---|---|
+| `tests/test_csv_utils.cpp` | CSV 行解析/引用、按 backend 名精确回查、notes 合并 |
+| `tests/test_scheduler.cpp` | backend 过滤（白/黑名单）、QNN context binary 后端筛选 |
+| `tests/test_cmd_args.cpp` | CLI 解析（`--backend`、`--threads` 下界等） |
+| `tests/test_model_loader.cpp` | 模型变体发现、`estimate_weight_mb`（ONNX/NCNN/TFLite 精确统计） |
+| `tests/test_input_provider.cpp` | 确定性输入生成（seed 一致性） |
+| `tests/test_result_collector.cpp` | CSV schema、失败哨兵 `-1` / 无基准哨兵 `-2` |
+
+设计要点：测试目标通过 `-U HAVE_*_BACKEND` **取消所有后端宏**，以"空注册表"编译
+被测单元，从而不链接任何第三方库（见 `CMakeLists.txt` 的 `BUILD_TESTING` 块）。
+其中 3 个依赖真实模型的用例仅在仓库存在 `test_model.onnx` 时编译（CI 上自动跳过）。
+
+### 3.6 持续集成（GitHub Actions）
+
+`.github/workflows/ci.yml` 在 push/PR 到 `main` 时触发，两个 job：
+
+| Job | 平台 | 内容 |
+|---|---|---|
+| `build-windows` | `windows-latest` | 全量构建（ONNX + NCNN）+ `ctest` + 花括号规范检查 |
+| `build-ubuntu` | `ubuntu-latest` | **纯逻辑模块编译冒烟**：所有 `HAVE_*_BACKEND=OFF`，仍编译 7 个测试源文件并跑 ctest |
+
+Ubuntu job 刻意关掉全部后端：`deps/` 不入 git，CI 镜像没有预编译库。即便如此仍能
+守住 Linux 专有编译问题（典型如 glibc `clock_gettime`/`CLOCK_MONOTONIC` 可见性）。
+真机推理（ONNX/NCNN/QNN）仍在本地验证。
+
+### 3.7 代码规范检查
+
+```bash
+python tools/utils/check_braces.py        # 无参 = 扫 src/ 与 include/
+```
+
+强制所有 `if/else/for/while/do/switch/case` 带花括号。退出码 `0`=合规、`1`=有违规、
+`2`=**扫描未完成**（路径不存在 / 一个文件都没扫到 / 读取失败）。**只有 0 才算通过**——
+历史上该脚本默认路径硬编码到不存在的目录，长期打印 `TOTAL: 0` 却零文件扫描，
+属假绿灯，现已修复并接入 CI。
+
+### 3.8 新增后端：改哪里
+
+后端相关的构建配置集中在 `cmake/backends.cmake` 的**一张表**里（此前分散在
+`CMakeLists.txt` 的 6 处）。新增一个后端只需：
+
+1. `include/backend_interface.hpp` — `BackendId` 枚举 + `is_xxx_backend()` 范围函数
+2. `src/xxx_backend.cpp` — 实现 `IBackend` + `CreateXxxBackend` 工厂
+3. `src/backend_registry.cpp` — `extern` 声明（`#ifdef` 包裹）+ `InitDefaults()` 注册
+4. `cmake/backends.cmake` — 加一条 `ub_row(XXX ...)`（含 SOURCES / DEFINITION /
+   各平台 LIBS / Windows DLLS）
+5. `README.md` — §2 后端矩阵表
+
+`cmake/backends.cmake` 分两阶段执行，这是必需的：`add_definitions()` /
+`include_directories()` 是**目录作用域**，必须在 `add_executable()` **之前**调用；
+而 `target_link_libraries()` / `add_custom_command(POST_BUILD)` 需要目标**已存在**。
+故 `CMakeLists.txt` 中 `ub_backends_phase1(UB_BACKEND_SOURCES)` 在前、
+`ub_backends_phase2()` 在后。
+
+> **重构安全性**：该表是纯重构，解析后的构建配置与原内联代码逐项一致。验证方式：
+> ```bash
+> cmake -S . -B build/a -DUB_DUMP_BUILD_CONFIG=ON [选项...] > before.txt
+> cmake -S . -B build/b -DUB_DUMP_BUILD_CONFIG=ON [选项...] > after.txt
+> diff before.txt after.txt      # 应仅有耗时/目录名差异
+> ```
+> `cmake/dump_config.cmake` 会打印目标解析后的 SOURCES / INCLUDE_DIRECTORIES /
+> COMPILE_DEFINITIONS / LINK_LIBRARIES 以及目录级属性与 POST_BUILD DLL 清单。
+> 改动后端表后请跑一次对比，确认没有意外改变构建结果。
+
+> 例外项（有意留在 `CMakeLists.txt` 内联，不进表）：
+> - `deps/onnxruntime/include`：**无条件**加入（与 `HAVE_ONNX_BACKEND` 无关，历史行为）
+> - QNN TFLite delegate 库：TFLite 后端的附加条件库，非主链接行
+> - LiteRT 的 DXC 探测：Windows SDK 版本搜索 + fallback 链，不是简单的库清单
 
 ---
 
@@ -192,7 +336,7 @@ unified_bench <model_path> [选项]
 
 选项：
   --model <path>       模型路径（也支持位置参数）
-  --input-list <path>  输入列表文件（见下），由 tools/generate_test_data_for_onnx.py 生成
+  --input-list <path>  输入列表文件（见下），由 tools/utils/gen_test_data_for_onnx.py 生成
   --input-format <fmt> 输入数据格式：auto|float32|uint8（默认 auto，按文件大小探测）
   --backend <name,...> 指定 backend（逗号分隔，缺省=全部可用）
   --no-backend <name,...> 排除 backend（黑名单，可与 --backend 组合，先白名单后排除）
@@ -230,16 +374,18 @@ unified_bench.exe test_model.ncnn.bin --backend NCNN_CPU,NCNN_CPU_BF16 --repeat 
 
 ### 使用外部输入（--input-list）
 
-通过 `tools/generate_test_data_for_onnx.py` 生成模型测试数据与输入列表：
+通过 `tools/utils/gen_test_data_for_onnx.py` 生成模型测试数据与输入列表：
 
 ```bash
-# 生成 float32（+可选 uint8）输入与 input_list 文件
-python tools/generate_test_data_for_onnx.py
-#   交互式输入模型路径；或直接用函数：
-python -c "import sys; sys.path.insert(0,'tools'); \
-  from generate_test_data_for_onnx import generate_test_data; \
+# 交互式（无参运行会提示输入模型路径）
+python tools/utils/gen_test_data_for_onnx.py
+#   或直接用函数：
+python -c "import sys; sys.path.insert(0,'tools/utils'); \
+  from gen_test_data_for_onnx import generate_test_data; \
   generate_test_data('test_model.onnx','data','relative',gen_uint8=True)"
 ```
+
+> 依赖 `numpy` + `onnxruntime`（pip 安装，见 `requirements.txt`）。
 
 生成的 `input_list_<model>_float32.txt` 格式（每行一个 .bin，`#` 为注释）：
 
@@ -283,9 +429,25 @@ adb shell "cd /data/local/tmp/bench_test && LD_LIBRARY_PATH=.:./qnn ADSP_LIBRARY
   ./unified_bench test_model.onnx --backend litert_npu --repeat 1 --warmup 0"
 ```
 
-### backend 命名（不区分大小写）
+### backend 命名（不区分大小写，**精确匹配**）
 
-`ONNX_CPU`, `ONNX_DML_GPU`, `ONNX_OpenVINO_GPU_FP16`, `ONNX_QNN_Htp`, `TFLITE_XNNPACK`, `TFLITE_NPU`, `LiteRT_CPU`, `LiteRT_GPU`, `LiteRT_NPU`, `NCNN_CPU`, `NCNN_Vulkan`, `NCNN_CPU_BF16`, `MNN_OpenCL` 等。
+`--backend` / `--no-backend` 通过 `BackendRegistry::FindByName()` 做**整串精确匹配**
+（仅忽略大小写），不是子串匹配——写错一个字符就会被判为未知名称并跳过
+（`LOGW: Unknown backend name: xxx`）。可用名称以 `src/backend_registry.cpp` 的
+注册为准：
+
+| 框架 | 名称 |
+|------|------|
+| ONNX | `ONNX_CPU`, `ONNX_oneDNN`, `ONNX_DML_GPU`, `ONNX_DML_NPU`, `ONNX_OpenVINO_CPU`, `ONNX_OpenVINO_GPU`, `ONNX_OpenVINO_GPU_FP16`, `ONNX_OpenVINO_NPU`, `ONNX_NNAPI`, `ONNX_XNNPACK`, `ONNX_QNN_CPU`, `ONNX_QNN_GPU`, `ONNX_QNN_HTP` |
+| TFLite | `TFLITE_CPU`, `TFLITE_XNNPACK`, `TFLITE_XNNPACK_FP16`, `TFLITE_NNAPI`, `TFLITE_GPU`, `TFLITE_GPU_FP16`, `TFLITE_NPU` |
+| LiteRT | `LiteRT_CPU`, `LiteRT_GPU`, `LiteRT_GPU_FP16`, `LiteRT_NPU`, `LiteRT_NPU_FP16` |
+| NCNN | `NCNN_CPU`, `NCNN_CPU_FP16`, `NCNN_CPU_BF16`, `NCNN_VK`, `NCNN_VK_FP16`, `NCNN_VK_BF16` |
+| MNN | `MNN_CPU`, `MNN_OpenCL`, `MNN_OpenCL_FP16`, `MNN_OpenCL_BF16`, `MNN_VULKAN`, `MNN_VULKAN_FP16`, `MNN_VULKAN_BF16`, `MNN_OPENGL`, `MNN_NN` |
+| QNN SDK | `QNN_SDK_CPU`, `QNN_SDK_GPU`, `QNN_SDK_HTP` |
+
+> 注意大小写不敏感，故 `ncnn_vk`、`onnx_qnn_htp`、`litert_npu` 同样有效。
+> 各平台上实际注册的子集见 §2（`FindByName` 只认已注册的条目，未编译/非本平台的
+> 后端同样报未知名称）。
 
 ---
 
@@ -305,10 +467,10 @@ flowchart TD
         F --> G["回收退出码<br/>合并 notes / 清理临时文件"]
     end
 
-    E -.并行.-> BW["基准 worker<br/>(--dump-output)"]
-    F -.并行.-> W1["测试 worker 1"]
-    F -.并行.-> W2["测试 worker 2"]
-    F -.并行.-> WN["测试 worker N"]
+    E -.串行.-> BW["基准 worker<br/>(--dump-output)"]
+    F -.串行.-> W1["测试 worker 1"]
+    F -.串行.-> W2["测试 worker 2"]
+    F -.串行.-> WN["测试 worker N"]
 
     BW -->|"输出 baseline 文件"| BL["baseline 文件 + .avg"]
 
@@ -335,6 +497,22 @@ flowchart TD
   写共享 CSV（append），日志直通终端；父进程按退出码区分：`0`=成功、`1`=预期失败（worker 已自写
   失败行）、其他=异常崩溃（退出码合并进该行 `notes`）
 - 每个 variant 跑完后调度器删除 baseline 临时文件（`<base>_<backend>.out` + `.avg`）
+
+> **worker 是严格串行的，不是并行的**（`spawn_process()` 内部
+> `WaitForSingleObject(..., INFINITE)` / `waitpid()` 阻塞等待子进程结束，
+> 再由 `RunPerProcess()` 循环 spawn 下一个）。这是有意的取舍：
+>
+> | | 串行（当前） | 并行 |
+> |---|---|---|
+> | 内存测量 | ✅ 独占机器，`peak_mem_mb`/`resident_mem_mb` 干净可比 | ❌ 多进程同时驻留，读数互相污染 |
+> | 延迟测量 | ✅ 独占 CPU/GPU/NPU，`avg_run_ms` 不受争用影响 | ❌ 多后端抢同一 NPU/GPU，测的是争用下的吞吐而非单后端延迟 |
+> | 崩溃隔离 | ✅ 保持 | ✅ 保持 |
+> | 总耗时 | ❌ 各后端耗时**累加** | ✅ 取最大值 |
+>
+> 本工具的产出是"每后端的部署级指标"（延迟、内存、精度），**测量可信度优先于
+> 跑批速度**，故选串行。代价是总墙钟时间 = Σ(每后端 warmup+repeat 耗时 + 进程启动开销)；
+> backend 多、repeat 大时（如 `--repeat 1000` 跑 10 个后端）会明显偏慢，属预期行为。
+> 若只关心快速冒烟，用 `--backend` 限定范围 + 小 `--repeat`。
 
 ### 5.2 后端抽象（`backend_interface.hpp`）
 
@@ -420,6 +598,12 @@ per-process 架构下每 backend 独占进程，读数即该 backend 的部署�
 | Android：NCNN BF16/FP16 硬失败 | 指令/权重不支持时直接 `return false`，绝不静默降级 | `docs/NCNN_DEBUG_LOG.md` |
 | Windows：LiteRT GPU 需新版 DXC | CMake post-build 自动复制 Windows SDK 新版 `dxcompiler.dll`/`dxil.dll` | `docs/LiteRT_GPU_DEBUG_LOG.md` |
 | Android：QNN 版本严格匹配 | Stub/Skel 同 SDK；定制 ORT-QNN 构建；dispatch 与设备库版本一致 | `docs/TFLITE_NPU_DEBUG_LOG.md`、`docs/QNN_SDK_DEBUG_LOG.md` |
+| 调度器 worker 命令行重建 | `--repeat 2` 等**空格写法**的值曾被误判为位置参数顶替模型路径（worker 报 "No model variants found"）；现由 `takes_value_arg()` 识别全部带值选项并原样透传（2026-08-29 修复，见 §5.1） | `src/scheduler.cpp`、`tests/test_scheduler.cpp` |
+
+> **注意（2026-08-29 修复前的行为）**：由于上述命令行重建缺陷，`--repeat N`、
+> `--warmup N`、`--threads N` 等**空格写法**在调度器模式下会把数值当成模型路径传给
+> worker，导致该 backend 直接失败。当时只有 `--opt=value` 等号写法能正常工作，
+> 而 README 与 `--help` 给出的示例恰恰都是空格写法。现已修复并有回归测试守护。
 
 ---
 

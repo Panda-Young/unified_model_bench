@@ -3,6 +3,11 @@
 > 评估日期：2026-08-14 ｜ 评估人：AI 辅助（基于代码/文档/git 历史/真机实测证据）
 > 统计修订：2026-08-20（代码量/文档量/架构描述同步到当前，评分结论未重评）
 > 统计修订 2：2026-08-28（经代码核查，tests/ 下 doctest 单测套件已落地且接入 CMake/ctest，初评 D6"无单测"为滞后结论，已修正 D6 评分与总分；CI 仍缺失，见 D7）
+> **重评：2026-08-28（第二次）**——CI 已落地（`.github/workflows/ci.yml`，Windows 全量构建 +
+> ctest + 花括号检查，Ubuntu 纯逻辑编译冒烟），原 D7"无持续集成"失效，**D7 3.5→4.3**；
+> 同批修正花括号检查脚本的**假绿灯**缺陷（默认路径指向不存在目录，长期零文件扫描却报
+> TOTAL: 0），并修正 README 与代码间 4 处文档漂移。基线统计同步到 89 commits。
+> **当前总分：4.49 / 5（90/100，A-）**
 
 ---
 
@@ -40,19 +45,26 @@
 
 ---
 
-## 2. 项目实测基线（2026-08-14，统计修订 2026-08-20，单测修订 2026-08-28）
+## 2. 项目实测基线（2026-08-14，统计修订 2026-08-20，单测修订 2026-08-28，重评 2026-08-28）
 
 | 指标 | 数值 |
 |---|---|
-| 源码量 | `src/` ≈ **9204 行 / 20 文件**（最大：qnn_backend 1944、onnx_backend 1156、benchmark_runner 627 + scheduler 530 + csv_utils 198） |
-| 头文件量 | `include/` ≈ **1055 行 / 12 文件** |
+| 源码量 | `src/` ≈ **9108 行 / 20 文件**（最大：qnn_backend 1868、onnx_backend 1138、ncnn_backend 905、litert_backend 735、benchmark_runner 587） |
+| 头文件量 | `include/` ≈ **1033 行 / 14 文件** |
+| 测试量 | `tests/` ≈ **634 行 / 7 文件**（doctest） |
 | 支持框架 | ONNX Runtime（18 EP 位）/ TFLite / LiteRT / NCNN / MNN / QNN SDK 原生 |
-| 目标平台 | Windows x86/x64 / Linux / Android arm64；MSVC、MinGW、GCC、Clang |
-| 文档规模 | `docs/` 7 篇 ≈ **2474 行**（QNN_SDK_DEBUG_LOG 1043 行） |
-| git 历史 | **73 commits**（近 20+ 条为 QNN HTP 优化/文档/勘误） |
-| 单元测试 | **已有 doctest 套件**（tests/ 7 文件，BUILD_TESTING 默认 ON，已接入 CMake/ctest）；**无 CI 自动执行**（单测仅在本地手动跑） |
-| 静态检查 | `tools/utils/check_braces.py`（当前 TOTAL: 0） |
+| 目标平台 | Windows x86/x64 / **Linux x64（ONNX+NCNN）** / Android arm64；MSVC、MinGW、GCC、Clang |
+| 文档规模 | `docs/` **10 篇 ≈ 2186 行**（QNN_SDK_DEBUG_LOG 777 行） |
+| git 历史 | **89 commits**（近 20+ 条为 QNN HTP 优化/文档/勘误） |
+| 单元测试 | **已有 doctest 套件**（tests/ 7 文件，BUILD_TESTING 默认 ON，已接入 CMake/ctest）；**CI 已自动执行**（Windows job 跑 ctest） |
+| CI | **GitHub Actions**（`.github/workflows/ci.yml`）：`build-windows`（ONNX+NCNN 全量构建 + ctest + 花括号检查）、`build-ubuntu`（全后端 OFF 的纯逻辑编译冒烟 + ctest） |
+| 静态检查 | `tools/utils/check_braces.py`（传入文件列表实测 TOTAL: 0 / 34 文件；2026-08-28 修复"零文件扫描却报 0"的假绿灯，现以退出码区分合规/违规/扫描未完成，并接入 CI） |
 | 真机实测亮点 | QNN model.so exec 13.7→7.2ms；ORT QNN HTP 稳态 11.2ms；FP16 pop 47.5→5.9ms；QNN SDK 反超 ORT |
+
+> **数值修订说明（2026-08-28）**：早期统计的 src 9204 行 / include 1055 行（12 文件）/
+> docs 2474 行（7 篇）/ 73 commits 与实测不符，实为 9108 / 1033（14 文件）/ 2186
+> （10 篇）/ 89 commits。此前数字可能含未入库的临时状态或统计口径差异，现以
+> `Get-Content | Measure-Object -Line` 实测为准。
 
 > 2026-08-20 架构演进（统计修订时点）：工具改为**每 backend 独立进程调度**（唯一模式，
 > 调度器 spawn worker，跨进程 baseline dump 对比 diff/accel，同批同 time 戳）；
@@ -105,25 +117,45 @@
 - ✅ 结论性经验标注日期，避免重复排查（如\"DML 图融合必须关闭\"\"vtcm 用 MAX\"）
 - ⚠️ 文档量大，缺少检索索引/交叉引用目录（目前靠 README §8 手动索引）
 
-### D6 测试与验证 —— **4.0 / 5**（权重 10%）
+### D6 测试与验证 —— **4.2 / 5**（权重 10%）
 
 > 修订：初评（2026-08-14）记为"无单测框架"，系当时未注意到已落地的 doctest 套件（或评估早于其合入）。经代码核查，tests/ 下已有 7 个文件、覆盖 csv_utils / scheduler / cmd_args / model_loader / input_provider / result_collector 的纯逻辑模块，且含针对真实 bug 的回归用例（如 csv_has_backend_record 的"子串误匹配"陷阱、AppendCsv 拒绝向列数不对的 CSV 追加的"warmup_runs-gets-weight_mem_mb 错位"污染）。故上调。
+>
+> 二次修订（2026-08-28）：CI 已自动执行 ctest（见 D7），删除原"无 CI 自动执行"扣分项，4.0→4.2。
+> 未给更高分的保留项：无自动化精度回归、Linux/Ubuntu 侧仅编译冒烟。
 
 **得分证据**：
 - ✅ 真机验证体系扎实：CSV 基线、`max_diff` 精度比对、重复/预热控制、失败标记语义
 - ✅ 场景化验证充分（多模型、多后端、多 SoC 自适应）
 - ✅ **已有 doctest 单测套件**（BUILD_TESTING 默认 ON，已接入 CMake/ctest），纯逻辑模块离线可跑，且守护了已被踩过的真实坑
 - ✅ model_loader 单测用仓库自带 test_model 的 onnx/ncnn/tflite 三格式交叉校验权重字节数一致性
-- ❌ **无 CI 自动执行**：单测仅在开发者本地手动跑，回归保护未真正生效
+- ✅ **CI 已自动执行单测**（2026-08-28 确认）：`build-windows` job 跑 `ctest`；
+  测试目标用 `-U HAVE_*_BACKEND` 以空注册表编译，不依赖 `deps/`，故 CI 可离线跑；
+  依赖真实模型的 3 个用例在模型缺失时自动跳过（"环境自适应"而非硬失败）
 - ❌ 无自动化精度回归（模型输出 diff 靠人工看 CSV）
 - ⚠️ 真机验证依赖设备在场，缺少可离线跑的最小端到端验证集
+- ⚠️ 仅 Windows CI 跑全量；Ubuntu job 为编译冒烟（后端全 OFF，无真机推理验证）
 
-### D7 工具链与 CI —— **3.5 / 5**（权重 5%）
+### D7 工具链与 CI —— **4.3 / 5**（权重 5%）
+
+> **重评（2026-08-28）**：初评 3.5 分的首要依据是"无持续集成"。经代码核查
+> `.github/workflows/ci.yml` 已入库并推送到 `origin/main`（commits `7731fd0` 引入、
+> `4c36fd8` 修 CI 单测、`edefaa3` 升级 actions/checkout v5），原结论失效，上调至 4.3。
+> 未给满分的原因见下方 ⚠️（无 Android job、无静态分析/覆盖率）。
+> 本维度在两次评估间出现了"文档落后于代码"的典型情况，已在 §5 补记教训。
 
 **得分证据**：
-- ✅ 构建/转换/部署脚本齐全（NDK 自动 push 库、VS 脚本、onnx 转换、CSV→Excel、check_braces）
-- ⚠️ **无持续集成**（无 GitHub Actions/流水线）；构建与检查靠本地手动跑
-- ⚠️ 无静态分析（clang-tidy/ASan/UBSan）与覆盖率
+- ✅ **已有 GitHub Actions CI**（push/PR 到 `main` 触发），两个 job 各司其职：  - `build-windows`：ONNX+NCNN 全量构建（Release）→ `ctest` → `check_braces.py`
+  - `build-ubuntu`：全后端 OFF 的纯逻辑编译冒烟 + `ctest`；刻意如此是因为 `deps/`
+    被 gitignore、CI 镜像无预编译库，但仍能守住 Linux 专有编译问题
+    （实际已捕获 glibc `clock_gettime`/`CLOCK_MONOTONIC` 可见性问题）
+- ✅ 构建/转换/部署脚本齐全（NDK 自动 push 库 + 按 `ro.soc.model` 选 Hexagon 版本、
+  VS x64/x86 脚本、onnx 转换、CSV→Excel、`fill_htp_config.py` 填 soc_id/dsp_arch）
+- ✅ 规范检查接入 CI，且脚本本身经加固：扫描零文件或读取失败时**退出码 2 报错**，
+  杜绝"什么都没扫却显示通过"的假绿灯（2026-08-28 修复）
+- ⚠️ **无 Android job**：arm64 构建依赖 NDK + 真机与 QNN 库，CI 上不可行（可接受，
+  但意味着 Android 侧无自动化回归）
+- ⚠️ 无静态分析（clang-tidy / ASan / UBSan）与覆盖率统计
 
 ---
 
@@ -136,15 +168,39 @@
 | D3 跨平台支持 | 15% | 4.5 | 0.68 |
 | D4 性能与优化 | 15% | 4.8 | 0.72 |
 | D5 文档与可维护性 | 15% | 4.7 | 0.71 |
-| D6 测试与验证 | 10% | 4.0 | 0.40 |
-| D7 工具链与 CI | 5% | 3.5 | 0.18 |
-| **总计** | 100% | **4.45 / 5** | **89 / 100（A-）** |
+| D6 测试与验证 | 10% | **4.2** ↑ | 0.42 |
+| D7 工具链与 CI | 5% | **4.3** ↑ | 0.22 |
+| **总计** | 100% | **4.49 / 5** | **90 / 100（A-）** |
 
-**评级结论：A-（89/100）** —— 工程化水平优秀：架构清晰、跨平台与文档纪律出色、性能优化扎实且全部有实测背书、纯逻辑模块已有 doctest 回归守护。
-**主要短板（按优先级）**：
-1. **D7 CI**：接入 GitHub Actions 三平台构建 + 自动跑现有 doctest 单测 + check_braces（单测已写好却无 CI 执行，回归保护未生效；无需真机也能每天回归纯逻辑模块）
-2. **D6 精度回归**：补最小离线端到端验证集（模型输出 diff 目前靠人工看 CSV）
-3. **D1 规模**：qnn_backend/onnx_backend 按职责拆文件，提升可维护性
+**评级结论：A-（90/100，较初评 87 → 修订 89 → 现 90）** —— 工程化水平优秀：架构清晰、
+跨平台与文档纪律出色、性能优化扎实且全部有实测背书、纯逻辑模块有 doctest 回归守护
+**且已由 CI 自动执行**。
+
+**主要短板（按优先级，2026-08-28 重排）**：
+1. **D6 精度回归**：补最小离线端到端验证集（模型输出 diff 目前靠人工看 CSV）——
+   CI 已解决"能否编译/逻辑是否正确"，尚未解决"推理结果是否仍然正确"
+2. **D3 规模**：`qnn_backend.cpp`(1868) / `onnx_backend.cpp`(1138) 按职责拆文件
+3. **D7 静态分析**：补 clang-tidy / ASan / UBSan 与覆盖率（目前只有花括号规范检查）
+4. ~~D1 扩展性：CMake 后端逻辑散落 6 处~~ ✅ 已解决（2026-08-29，见下）
+5. ~~D7 CI~~ ✅ 已解决（2026-08-28）
+
+**2026-08-29 改进批次**（评分未重算，属"打磨期"改进，不改变上述排名）：
+- **D1 扩展性**：`CMakeLists.txt` 后端逻辑抽到 `cmake/backends.cmake` 声明式表格
+  （新增后端 6 处改动 → 1 行），并配 `cmake/dump_config.cmake` 做重构安全性 diff；
+  实测默认配置与全后端（5 个）配置下解析结果逐项一致
+- **D1 扩展性**：`BackendConfig` 新增 `platforms` 位掩码，注册改为数据驱动单点
+  （原先 Android/Desktop 两套 `#if` 分支各写一遍 → 单一声明表按掩码过滤），
+  "平台可用性"现可运行时查询，README 矩阵不再靠人工维护
+- **D6 测试**：新增 `tests/test_platform_mask.cpp`（5 例）与命令行重建回归测试（2 例），
+  测试总数 33 → 40，断言 150,751 → 150,771
+- **修复真实 bug**：调度器 `build_child_cmdline()` 未识别 `--repeat`/`--warmup`/
+  `--threads` 等带值选项（只跳过 `--backend`/`--no-backend`/`--model`），导致
+  `--repeat 2` 空格写法的数值被当成模型路径传给 worker，该 backend 直接失败
+  （报 "No model variants found"）。README 与 `--help` 的示例恰都是空格写法。
+  已由 `takes_value_arg()` 修复并有回归测试守护
+
+**分数趋势**：87（初评 08-14，误记无单测）→ 89（08-28 修正 D6）→ 90（08-28 修正 D7）
+—— 两次修订均源于"文档/评估滞后于代码"，而非代码本身变化，见 §5 教训。
 
 ---
 
@@ -154,3 +210,50 @@
 2. 按 D1–D7 逐维打分，**每条分数必须附证据**（文件/行号/实测数据），禁止无依据给分
 3. 总分为加权和；`<3.0` 优先补 D6/D7，`3.0–4.0` 优先补 D5/D1，`>4.0` 进入打磨期
 4. 每季度重评一次，记录分数变化趋势（比绝对分数更有意义）
+
+---
+
+## 6. 评估方法论教训（2026-08-28）
+
+本项目两次上调总分（87→89→90）**都不是因为代码变好，而是因为评估本身错了**。
+这些教训比分数本身更值得记录：
+
+### 6.1 "没看到"≠"没有"——扣分前必须证伪而非默认
+
+D6 初评写"无单测框架"、D7 初评写"无 GitHub Actions"，实际两者都已存在且已推到
+`origin/main`。根因是**评估时以 README/记忆为准，未对仓库做穷举核查**
+（`tests/` 在目录树里、`ci.yml` 在 `.github/` 里，都不在 README 正文中）。
+
+**改进**：给"缺失类"扣分前，先执行证伪动作再下笔——
+`git ls-files | grep <关键词>`、`ls tests/ .github/workflows/`、
+`grep -r "add_test\|ctest" CMakeLists.txt`。**扣分项的举证责任在评估者。**
+
+### 6.2 警惕"绿灯工具"——验证工具本身必须先被验证
+
+`check_braces.py` 长期输出 `TOTAL: 0`，被 README、编码规范、历次验证记录反复引用为
+"合规证据"。实际它**一个文件都没扫**（默认 `ROOTS` 硬编码到不存在的
+`d:\WorkSpace\unified_bench`，且传入目录会因 `PermissionError` 被吞掉后仍然打印
+`TOTAL: 0`）。代码本身确实是合规的（传文件列表重跑为 0），但**这个"0"在修复前
+不构成任何证据**。
+
+**改进**：
+- 任何"检查/校验"类脚本，必须区分**通过**与**未执行**，用退出码而非 stdout 表达
+  （本例：0=合规 / 1=有违规 / 2=扫描未完成）
+- 引用检查结果前先做**注入测试**：故意塞一个已知违规样例，确认工具能报出来。
+  本次即用 `if (x) return 1;` 探针验证检测器有效，才敢确认"0"是真的
+- 绝对路径硬编码是此类缺陷的高发源，应改为相对 `__file__` 推导
+
+### 6.3 文档漂移的三种典型形态
+
+本轮在 README 中发现 4 处与代码不符，归为三类，后续应针对性防范：
+
+| 形态 | 本例 | 防范 |
+|---|---|---|
+| **名称漂移**（代码改了文档没跟） | backend 名 `NCNN_Vulkan*` → 实为 `NCNN_VK*`（因与 NCNN 库宏冲突改名），用户照抄会被静默跳过 | 名称类清单应标明"以 `backend_registry.cpp` 为准"，或由代码生成 |
+| **语义夸大**（文档描述强于实现） | 流程图标"并行"，实际 `spawn_process()` 内阻塞等待、严格串行 | 描述机制时回链具体函数/行号；本例已回链 `scheduler.cpp:52-86` |
+| **路径漂移**（文件移动后引用未更新） | `tools/check_braces.py`、`tools/generate_test_data_for_onnx.py` → 实际均在 `tools/utils/`；且程序 `--help` 与源码注释同样写错 | 文档+代码+`--help` 三处同步改；可用 `grep -r` 全仓校验 |
+
+### 6.4 结论
+
+> **文档落后于代码是常态，不是异常。** 评估价值取决于是否做了代码级核查，
+> 而非文档读起来是否自洽。每次重评应把"上轮结论是否仍成立"作为独立检查项。
