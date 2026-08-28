@@ -40,10 +40,21 @@ public:
 private:
     void Cleanup();
 
+    /* Verify the session really executes on the requested forward type.
+     * MNN's ScheduleConfig defaults backupType to MNN_FORWARD_CPU, so a backend
+     * that cannot be created (no Vulkan/OpenGL driver, no NNAPI, unsupported
+     * precision) silently degrades to CPU: createSession() still succeeds and
+     * returns plausible CPU timings under a GPU backend name. That violates the
+     * tool's "unsupported = report failure, never silently degrade" rule.
+     * Returns false (and fills last_error_) when the outputs do not live on the
+     * requested backend. */
+    bool VerifyActualForwardType();
+
     std::shared_ptr<MNN::Interpreter> interp_;
     MNN::Session *session_ = nullptr;
     MNN::ScheduleConfig sched_;
     MNN::BackendConfig bcfg_;
+    MNNForwardType requested_type_ = MNN_FORWARD_CPU;
 
     size_t num_inputs_ = 0;
     size_t num_outputs_ = 0;
@@ -135,9 +146,22 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
 
     /* Always set backendConfig for all modes to apply Memory_High/Power_High */
     sched_.backendConfig = &bcfg_;
+    requested_type_ = sched_.type;
 
-    LOGI("MNN: forward=%d threads=%d precision=%d",
-         sched_.type, num_threads, (int)bcfg_.precision);
+    /* NO SILENT FALLBACK (tool-wide rule: unsupported => report failure).
+     *
+     * ScheduleConfig::backupType defaults to MNN_FORWARD_CPU and MNN uses it
+     * whenever the requested backend cannot be created. That turns "Vulkan is
+     * unavailable" into "run on CPU and label it MNN_VULKAN" - the CSV row
+     * looks normal, so a CPU number gets compared as if it were a GPU number.
+     *
+     * Setting backupType to the requested type makes MNN fail instead of
+     * degrading. Verified by VerifyActualForwardType() below, which also
+     * catches any other path that could land the session on CPU. */
+    sched_.backupType = sched_.type;
+
+    LOGI("MNN: forward=%d threads=%d precision=%d backup=%d",
+         sched_.type, num_threads, (int)bcfg_.precision, (int)sched_.backupType);
 
     interp_ = std::shared_ptr<MNN::Interpreter>(
         MNN::Interpreter::createFromFile(model_path));
@@ -149,9 +173,20 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
 
     session_ = interp_->createSession(sched_);
     if (!session_) {
-        LOGE("MNN: createSession failed");
+        LOGE("MNN: createSession failed (backend unusable, no fallback)");
         interp_ = nullptr;
-        last_error_ = "MNN: createSession failed";
+        last_error_ = "MNN: createSession failed - requested backend unavailable "
+                      "(no silent fallback to CPU)";
+        return false;
+    }
+
+    /* NOTE: VerifyActualForwardType() runs further down, after the I/O tensors
+     * are discovered - it needs output_tensors_[0]. */
+    if (!session_) {
+        LOGE("MNN: createSession failed (backend unusable, no fallback)");
+        interp_ = nullptr;
+        last_error_ = "MNN: createSession failed - requested backend unavailable "
+                      "(no silent fallback to CPU)";
         return false;
     }
 
@@ -206,11 +241,99 @@ bool MNNBackend::Initialize(const char *model_path, int num_threads)
     num_inputs_ = input_tensors_.size();
     num_outputs_ = output_tensors_.size();
 
+    /* Confirm the session really executes on the requested backend BEFORE
+     * accepting it. Runs here (not right after createSession) because it
+     * inspects output_tensors_[0], which is only discovered above. */
+    if (!VerifyActualForwardType()) {
+        LOGE("MNN: session does not run on the requested backend - "
+             "reporting failure instead of degrading to CPU");
+        interp_->releaseSession(session_);
+        session_ = nullptr;
+        interp_ = nullptr;
+        return false;
+    }
+
     init_ms_ = std::chrono::duration<double, std::milli>(
                    std::chrono::high_resolution_clock::now() - t0)
                    .count();
 
     LOGI("MNN: init complete (%.1f ms), %zu in, %zu out", init_ms_, num_inputs_, num_outputs_);
+    return true;
+}
+
+/* ---------------------------------------------------------------------------
+ * Backend verification
+ *
+ * MNN's ScheduleConfig::backupType defaults to MNN_FORWARD_CPU, so a backend
+ * that cannot be created (no Vulkan/OpenGL driver, no NNAPI, unsupported
+ * precision) silently degrades: createSession() succeeds and returns CPU
+ * timings under a GPU backend name. That breaks the tool's core rule
+ * ("unsupported => report failure, never silently degrade").
+ *
+ * Detection: the output tensor's halide_buffer_t tells us where the data
+ * lives. For a HOST (CPU) tensor both `device` and `device_interface` are
+ * zero/null; for a DEVICE tensor MNN sets them. So:
+ *   requested CPU  -> outputs must have no device handle
+ *   requested !CPU -> outputs must have a device handle
+ *
+ * This inspects only Tensor.hpp (vendored) - Backend.hpp is NOT shipped in
+ * deps/mnn/include, so Backend::type() cannot be used, and comparing Backend
+ * pointers is useless because MNN creates a separate Backend per session
+ * (a CPU reference session's Backend differs from another CPU session's).
+ * -------------------------------------------------------------------------*/
+bool MNNBackend::VerifyActualForwardType()
+{
+    if (num_outputs_ == 0 || !output_tensors_[0]) {
+        LOGE("MNN: no output tensor to verify the backend against");
+        last_error_ = "MNN: no output tensor to verify the backend against";
+        return false;
+    }
+
+    const halide_buffer_t &buf = output_tensors_[0]->buffer();
+    /* Measured on MNN 3.6.0 (Windows, this model):
+     *   CPU session  -> device == 1 (sentinel), host != nullptr
+     *   OpenCL       -> device == a real device address (>1), host == nullptr
+     * So `device > 1` distinguishes device-resident from host-resident.
+     * `device != 0` alone does NOT work: CPU tensors carry the sentinel 1. */
+    const bool on_device = (buf.device > 1);
+    const bool want_device = (requested_type_ != MNN_FORWARD_CPU);
+
+    /* Cross-check every output: a partially degraded session would otherwise
+     * slip through on the strength of its first tensor. */
+    size_t on_device_cnt = 0;
+    for (size_t i = 0; i < num_outputs_; ++i) {
+        if (!output_tensors_[i]) {
+            continue;
+        }
+        const halide_buffer_t &b = output_tensors_[i]->buffer();
+        if (b.device > 1) {
+            ++on_device_cnt;
+        }
+    }
+
+    LOGI("MNN: backend check requested=%d want_device=%d outputs_on_device=%zu/%zu",
+         (int)requested_type_, (int)want_device, on_device_cnt, num_outputs_);
+
+    if (want_device && on_device_cnt == 0) {
+        /* Every output lives in host memory: the session runs on CPU even
+         * though a device backend was requested - a silent fallback. */
+        last_error_ = "MNN: requested a non-CPU backend but every output tensor "
+                      "is host-resident - the session degraded to CPU "
+                      "(no silent fallback: reporting failure)";
+        return false;
+    }
+    if (!want_device && on_device_cnt > 0) {
+        /* Requested CPU yet the data is on a device: the timing semantics this
+         * backend assumes (host-resident I/O) would not hold. */
+        last_error_ = "MNN: requested CPU but output tensors are device-resident "
+                      "(unexpected session configuration)";
+        return false;
+    }
+
+    if (want_device && on_device_cnt < num_outputs_) {
+        LOGW("MNN: only %zu/%zu outputs are device-resident - partial device "
+             "execution", on_device_cnt, num_outputs_);
+    }
     return true;
 }
 
@@ -286,9 +409,9 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
     }
 
     /* Pre-allocate float host tensors for GPU output (reused across repeats) */
-    bool is_gpu = (sched_.type != MNN_FORWARD_CPU);
+    const bool is_device = (requested_type_ != MNN_FORWARD_CPU);
     std::vector<MNN::Tensor *> gpu_out_tensors;
-    if (is_gpu) {
+    if (is_device) {
         gpu_out_tensors.resize(num_outputs_, nullptr);
         for (size_t i = 0; i < num_outputs_; ++i) {
             if (output_tensors_[i]) {
@@ -301,7 +424,7 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
 
     /* Pre-allocate float host tensors for GPU input (reused across feeds) */
     std::vector<MNN::Tensor *> gpu_in_tensors;
-    if (is_gpu) {
+    if (is_device) {
         gpu_in_tensors.resize(num_inputs_, nullptr);
         for (size_t i = 0; i < num_inputs_; ++i) {
             MNN::Tensor *t = interp_->getSessionInput(session_, input_names_[i].c_str());
@@ -321,7 +444,7 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
             }
             size_t n = input_elems_[i];
             float *host = t->host<float>();
-            if (host && !is_gpu) {
+            if (host && !is_device) {
                 memcpy(host, input_bufs_[i], n * sizeof(float));
                 continue;
             }
@@ -365,14 +488,30 @@ bool MNNBackend::RunBenchmark(int warmup, int repeat, double &total,
             LOGE("MNN: run %d failed", r);
             return false;
         }
+        /* MNN device backends execute ASYNCHRONOUSLY: runSession() only
+         * enqueues the work and returns immediately. Timed alone it measures
+         * command submission, not inference - on this model that reported
+         * ~5 ms "avg_run_ms" while the real cost (~220 ms) landed in
+         * transfer_out_ms, because copyToHostTensor() is what actually blocks.
+         *
+         * That made avg_run_ms meaningless and inflated transfer_out_ms by the
+         * entire GPU compute time. Force the sync INSIDE the timed window so
+         * avg_run_ms is the true inference time and transfer_out_ms is the
+         * download alone. */
+        if (is_device) {
+            for (size_t i = 0; i < num_outputs_; ++i) {
+                if (i < gpu_out_tensors.size() && gpu_out_tensors[i]) {
+                    output_tensors_[i]->copyToHostTensor(gpu_out_tensors[i]);
+                }
+            }
+        }
         auto t1 = std::chrono::high_resolution_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         LOGD("MNN: run %d took %.3f ms", r, ms);
 
-        /* Time the device->host output download (copyToHostTensor +
-         * snapshot memcpy). Kept OUTSIDE avg_run_ms so the avg column is the
-         * pure inference time (MNN GPU runSession is async: the D2H sync
-         * happens in copyToHostTensor below). */
+        /* Now time the remaining host-side work: the D2H copy the sync above
+         * already produced (cached, so this is the memcpy into our snapshots)
+         * plus the snapshot memcpy itself. */
         auto t_out0 = std::chrono::high_resolution_clock::now();
         for (size_t i = 0; i < num_outputs_; ++i) {
             MNN::Tensor *t = output_tensors_[i];

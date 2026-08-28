@@ -1,84 +1,182 @@
 # MNN Backend 修复记录
 
-> **日期**: 2026-08-20
+> **日期**: 2026-08-20（§1）；**2026-08-29 追加 §2 / §3**（静默降级与计时错位，Windows 桌面实测）
 > **范围**: `src/mnn_backend.cpp`
-> **环境**: Android（MNN 3.6.0，vendored 于 `deps/mnn/`）
+> **环境**: Android（MNN 3.6.0，vendored 于 `deps/mnn/`）；§2/§3 为 Windows x64 + Intel Iris Xe
 
 ---
 
-## 1. Vulkan 后端 NaN：MNN_VULKAN / MNN_VULKAN_BF16 输出 NaN，MNN_VULKAN_FP16 正常
+## 2. 静默降级：6 个后端挂着 GPU 名字跑 CPU（2026-08-29 修复）
 
-### 1.1 现象
+### 2.1 现象
 
-同一模型（`test_model.mnn`，2 输入 1 输出，含 `BinaryOp add` + `Softmax`）在 Android 真机上：
-
-| Backend | 配置（`mnn_backend.cpp:99-113`） | 结果 |
-|---------|----------------------------------|------|
-| `MNN_VULKAN` | `MNN_FORWARD_VULKAN` + `Precision_High`（fp32） | **NaN** |
-| `MNN_VULKAN_FP16` | `MNN_FORWARD_VULKAN` + `Precision_Low`（fp16） | ✅ 正常 |
-| `MNN_VULKAN_BF16` | `MNN_FORWARD_VULKAN` + `Precision_Low_BF16`（bf16） | **NaN** |
-
-输入输出转换路径（`RunBenchmark` 的 `copyFromHostTensor`/`copyToHostTensor`）对三个
-后端完全一致——NaN 不在 IO 层，而在 MNN 算子计算层，由精度配置差异引起。
-
-### 1.2 根因（MNN 官方硬件/精度支持矩阵）
-
-MNN 官方 README 的「Architecture / Precision」支持矩阵（当前 master 持续维护）：
+Windows 桌面跑 `tfc_tdf_...`（22 in / 22 out）全后端，9 个 MNN 后端的
+`max_output_diff` 出现**逐位相同**的分组（不是近似，是完全相等）：
 
 ```
-Architecture / Precision   Normal(FP32)  FP16  BF16  Int8
-GPU Vulkan                 A            A     C     A
-GPU OpenCL                 A            S     C     S
-CPU ARMv8                  S            S(ARMv8.2) S(ARMv8.6)  S
-
-S = 深度优化推荐 ｜ A = 可用但未深度优化（known issues）｜ C = 不支持
+0.00002384 : MNN_OpenCL, MNN_OpenCL_BF16              <- 真实 GPU
+0.00002640 : MNN_CPU, MNN_VULKAN, MNN_VULKAN_FP16,
+             MNN_VULKAN_BF16, MNN_OPENGL, MNN_NN      <- 全部与 CPU bit-identical
+0.16594648 : MNN_OpenCL_FP16                          <- 真实 GPU（FP16 精度损失）
 ```
 
-#### `MNN_VULKAN_BF16` → NaN（决定性根因）
+Vulkan FP16、Vulkan BF16、OpenGL、NN 四个后端不可能与 CPU 产生 bit-identical 结果，
+**唯一解释是它们都没在各自设备上执行**。三条独立证据互相印证：
 
-**MNN 的 Vulkan 后端不支持 BF16（矩阵标 `C`）**。Vulkan shader 原生无 bf16
-（`VK_KHR_shader_float16_int8` 只覆盖 fp16），`Precision_Low_BF16` 在 Vulkan 上
-没有可用内核 → 调度走错误映射/fallback 路径 → 中间张量格式错乱 → NaN。
-**这是"不支持却硬跑"，不是精度损失**。同理 `MNN_OPENCL_BF16`（OpenCL 的 BF16 也是
-`C`）预期同样 NaN。
+| 证据 | 降级的 6 个 | 真实的 3 个 OpenCL |
+|---|---|---|
+| `load_lib` | 88~110 ms（无 GPU 上下文建立） | **37164~44087 ms**（真在编译 kernel） |
+| `peak_mem_mb` | 412 MB（≈ MNN_CPU 的 412.586） | **498~611 MB**（GPU 额外内存） |
+| `avg_run_ms` | 417~480 ms（≈ CPU 的 401） | 修复后 197~269 ms |
 
-#### `MNN_VULKAN`（Precision_High/fp32）→ NaN
+### 2.2 根因
 
-Vulkan 的 FP32 是 `A` 级——可用但已知有 computation 问题（MNN 3.4.0 release notes
-明确写 *"fixed multiple OpenCL/Vulkan/Metal computation and stability issues"*，
-且 FP32 只给 A 不给 S）。机制：MNN Vulkan 后端大量用 **fp16 纹理存中间张量**
-（image 模式 `VK_FORMAT_R16G16B16A16_SFLOAT`），`Precision_High` 名义 fp32 但中间
-结果仍落 fp16 → **混合精度路径**在数值敏感算子（`BinaryOp add`、`Softmax` 的
-exp/除法）上中间值于 fp16 边界溢出 → inf → NaN；fp32↔fp16 转换点也是精度重灾区。
+`deps/mnn/include/MNN/Interpreter.hpp:63`：
 
-#### `MNN_VULKAN_FP16` → 正常
+```cpp
+/** backup backend used to create execution when desinated backend do NOT support any op */
+MNNForwardType backupType = MNN_FORWARD_CPU;
+```
 
-FP16 是 Vulkan **全链路原生自洽**：输入先转 fp16、所有算子走 fp16 内核（Softmax
-等有 fp16 安全实现，max-subtraction 防溢出）、输出转回 fp32。数值路径从头到尾一致，
-无"fp32 名义 + fp16 中间"的错配，故不出 NaN。
+MNN 在请求的后端不可用时**自动退到 `backupType`**，`createSession()` 依然成功返回。
+而 `mnn_backend.cpp` 只设置了 `sched_.type` 和 `backendConfig`，**从未碰 `backupType`**——
+降级通道一直敞开。
 
-### 1.3 结论与建议
+这违反项目核心信条。对比同一项目的正确做法：
 
-- **Android 上 MNN 取正确数值**：用 `MNN_CPU`（官方 S 级）或 `MNN_VULKAN_FP16`；
-  **避免 `MNN_VULKAN`（FP32，A 级已知坑）与 `MNN_VULKAN_BF16`（官方 C = 不支持）**
-- 若要在工具层拦截（参照 NCNN BF16 的提前报错模式），可在 `MNN_VULKAN_BF16`
-  初始化时直接 `return false` 并给明确原因（"MNN Vulkan does not support BF16"），
-  避免 NaN 结果污染 CSV 对比
-- 升级 MNN 版本大概率救不了 BF16（支持矩阵是架构级限制，非版本 bug）
+| 后端 | 修复前行为 |
+|---|---|
+| `NCNN_CPU_BF16` | ✅ 报错 "NCNN: CPU lacks BF16 support"，CSV 打 `-` |
+| `ONNX_DML_NPU` / `OpenVINO_NPU` | ✅ 报错，CSV 打 `-` |
+| `MNN_VULKAN/OPENGL/NN` 等 6 个 | ❌ **报 CPU 的数字，挂 GPU 的名字** |
 
-### 1.4 排查工具 / 验证方式
+危害是具体的：这 6 行看起来"成功且正常"，会被直接用于跨后端对比。若据此得出
+"MNN_OPENGL 比 MNN_OpenCL 慢 100 倍"就完全错了——实际 OpenCL 快得多，那 6 个根本没跑起来。
 
-- MNN 官方 README 支持矩阵：`github.com/alibaba/MNN`（README 中 Architecture /
-  Precision 表）
-- 真机 A/B：同一 `.mnn` 模型分别以 `--backend MNN_VULKAN` /
-  `MNN_VULKAN_FP16` / `MNN_VULKAN_BF16` 单跑，对比 `max_diff`（NaN 行 diff 会异常）
+### 2.3 修复
+
+**(a) 堵住降级通道**（`Initialize`）：
+
+```cpp
+sched_.backupType = sched_.type;   // 请求什么就必须用什么，不可用即失败
+```
+
+`createSession()` 因此失败 → 走既有 `return false` 路径 → CSV 打 `-` + notes 写明原因。
+
+**(b) 加"实际执行后端"验证**（`VerifyActualForwardType()`）：
+
+仅堵 `backupType` 只防这一种路径。补充检查输出张量是否真在设备上。
+
+判据（**MNN 3.6.0 实测标定，勿凭直觉改**）：输出张量 `halide_buffer_t::device` 字段：
+
+| session | `device` 值 | `host` 指针 |
+|---|---|---|
+| CPU | `1`（哨兵） | 有效 |
+| OpenCL | 真实设备地址（>1，如 `2577890888992`） | `nullptr` |
+
+故判据为 **`device > 1`**。两个错误尝试（均已实测否决，勿重犯）：
+- `device != 0` —— CPU 张量带哨兵 `1`，会全部误判为设备
+- 比较 `getBackend()` 返回的 Backend **指针相等性** —— MNN 为**每个 session 创建独立
+  Backend 实例**，CPU 参考 session 与另一 CPU session 的指针也不同
+
+> `Backend::type()` 不可用：`deps/mnn/include/MNN/` 只 vendored 了 5 个头文件
+> （AutoTime/ErrorCode/ImageProcess/Interpreter/Tensor），**没有 `Backend.hpp`**。
+
+### 2.4 结果
+
+修复后（repeat=20，同一模型）：
+
+| Backend | 修复前 | 修复后 |
+|---|---|---|
+| MNN_VULKAN / _FP16 / _BF16 | 误报 417~430 ms | **失败**（`createSession failed - requested backend unavailable`） |
+| MNN_OPENGL | 误报 452.590 ms | **失败**（同上） |
+| MNN_NN | 误报 480.248 ms | **失败**（同上） |
+| MNN_OpenCL 系列 | 见 §3 | ✅ 真实 GPU，数值修正 |
+
+即：**这台机器上 MNN 只有 CPU + OpenCL 可用，Vulkan/OpenGL/NN 不可用**——
+修复前这个事实被完全掩盖了。
 
 ---
 
-## 2. 经验总结
+## 3. 计时错位：avg_run_ms 测的是"命令提交"，不是推理（2026-08-29 修复）
 
-| 问题 | 教训 |
-|------|------|
-| Vulkan BF16 NaN | 先查框架官方精度支持矩阵再启用低精度后端；BF16 在 MNN 仅 CPU（ARMv8.2+）与 x86-AVX512 支持 |
-| Vulkan FP32 NaN | GPU 后端"名义 FP32"可能含 fp16 中间纹理，混合精度路径对数值敏感模型不稳；要稳定数值用全链路 fp16 或 CPU |
-| FP16 反而稳定 | 全链路单一精度（输入/算子/输出一致）比"高精度名义 + 低精度中间"的混合路径更可靠 |
+### 3.1 现象
+
+`MNN_OpenCL` 报 `avg_run_ms=4.137`，而同 GPU 经 OpenVINO/DML 是 91~190 ms。
+集成显卡（Iris Xe）不可能比同 GPU 的其他路径快 22 倍。
+
+反算搬运带宽即可证伪：输出 14,155,776 元素 = **54.0 MB**，而 `t_out=217.8 ms`
+意味着有效带宽仅 **0.26 GB/s**（正常 10~20 GB/s）。所以 `t_out` 里装的不是搬运。
+
+### 3.2 根因
+
+MNN 设备后端的 `runSession()` 是**异步提交**，立即返回。`copyToHostTensor()` 才是
+真正阻塞等待 GPU 完成的调用。原代码的计时窗口：
+
+```
+t0 = now()
+runSession()            <- 只入队，微秒级
+t1 = now()
+avg_run_ms += t1 - t0   <- 测的是"提交"，不是推理
+
+t_out0 = now()
+copyToHostTensor()      <- GPU 计算在这里才被等待
+t_out1 = now()
+transfer_out_ms += ...  <- 整个 GPU 计算时间混进来
+```
+
+总量守恒：`4.1 + 4.5 + 217.8 ≈ 226 ms` 才是真实单次成本，其中 ~222 ms 的 GPU 计算
+被错误地记入了 `transfer_out_ms`。
+
+### 3.3 修复
+
+把同步移进计时窗口，让 `avg_run_ms` 是真实推理时间、`transfer_out_ms` 是纯搬运：
+
+```cpp
+t0 = now()
+runSession()
+if (is_device) {                       // 强制同步，计入 avg_run_ms
+    for (each output) output_tensors_[i]->copyToHostTensor(gpu_out_tensors[i]);
+}
+t1 = now()
+avg_run_ms += t1 - t0                  // 真推理时间（含 GPU 计算）
+
+t_out0 = now()
+/* 快照 memcpy（copyToHostTensor 结果已缓存，此处只剩 memcpy） */
+t_out1 = now()
+transfer_out_ms += t1 - t0             // 真搬运时间
+```
+
+### 3.4 结果
+
+| Backend | avg_before | avg_after | t_out_before | t_out_after |
+|---|---|---|---|---|
+| MNN_OpenCL | 4.137 | **259.908** | 217.806 | **11.833** |
+| MNN_OpenCL_FP16 | 3.415 | **197.559** | 164.420 | **20.452** |
+| MNN_OpenCL_BF16 | 4.633 | **269.089** | 227.463 | **11.919** |
+
+`max_diff` 全部不变（0.00002384 / 0.16594648 / 0.00002384）——**精度数据本来就正确**，
+错的只是时间归位。修复后 `t_out` 落在 11~20 ms，对应 54 MB 约 2.7~4.9 GB/s，
+符合集成显卡 D2H 的真实带宽。
+
+### 3.5 结论性经验
+
+> **GPU/异步后端的 `run()` 返回 ≠ 计算完成。** 计时前必须确认同步点在哪；
+> 否则"延迟"会退化成"命令提交延迟"，而真实的设备时间会跑到搬运列里去。
+> 判据：若 `transfer_out_ms` 远高于「输出字节数 / 内存带宽」，几乎一定是同步点错位。
+>
+> 本工具中 MNN 是唯一有此问题的后端：ONNX/TFLite/LiteRT 的同步推理调用返回时
+> 数据已在 CPU；NCNN 的 `extract()` 本身即同步（其 D2H 无法拆分，已在 README §5.5 说明）。
+
+---
+
+## 4. 其他
+
+- `kernel.errors.txt` 是 MNN OpenCL 后端的运行产物（Intel Graphics Compiler 的 CISA
+  kernel 诊断：寄存器区间重叠、隐式/显式参数顺序）。它是 **`load_lib` 高达 40 秒**的
+  伴随现象（kernel 反复编译重试），但**不影响正确性**——§3.4 显示 OpenCL 的
+  `max_diff` 正常且是真实 GPU 执行。已加入 `.gitignore`。
+- `notes` 列不再重复 `t_in=`/`t_out=`：`transfer_in_ms`/`transfer_out_ms`/
+  `transfer_total_ms` 已是独立的 CSV 列（16-18，6 位小数），notes 里的 3 位小数摘要纯属冗余。
+
+---

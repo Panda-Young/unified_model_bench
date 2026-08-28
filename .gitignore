@@ -42,6 +42,10 @@ __pycache__/
 deps/
 *.pyc
 
+# MNN runtime artifact (GPU kernel compile diagnostics, e.g. CISA errors from
+# the Intel Graphics Compiler). Written to the CWD by the MNN OpenCL backend.
+kernel.errors.txt
+
 # IDE
 .vscode/
 .idea/

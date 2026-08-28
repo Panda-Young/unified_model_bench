@@ -145,7 +145,28 @@ unified_model_bench/
 > 与本工具的 backend 名冲突，故改名）。`--backend` 走**精确匹配**（不区分大小写），
 > 写 `NCNN_Vulkan` 会被判为未知名称并跳过。
 
-**MNN（300–309）**：CPU / OpenCL / Vulkan / OpenGL，桌面与 Android 均支持（桌面默认关闭 `HAVE_MNN_BACKEND=OFF`）。
+**MNN（300–309）**
+
+| Backend | 名称 | 桌面 | Android | 说明 |
+|---------|------|:----:|:-------:|------|
+| MNN_CPU | `MNN_CPU` | ✅ | ✅ | CPU（基准） |
+| MNN_OpenCL | `MNN_OpenCL` | ✅ | ✅ | OpenCL FP32 |
+| MNN_OpenCL_FP16 | `MNN_OpenCL_FP16` | ✅ | ✅ | OpenCL FP16 |
+| MNN_OpenCL_BF16 | `MNN_OpenCL_BF16` | ⚠️ | ⚠️ | OpenCL BF16（详见下） |
+| MNN_VULKAN / _FP16 / _BF16 | `MNN_VULKAN*` | ⚠️ | ⚠️ | Vulkan（需驱动支持，否则报错） |
+| MNN_OPENGL | `MNN_OPENGL` | ⚠️ | ⚠️ | OpenGL |
+| MNN_NN | `MNN_NN` | ⚠️ | ⚠️ | NNAPI / CoreML |
+
+> **MNN 无静默降级（2026-08-29 起）**：`ScheduleConfig::backupType` 默认为
+> `MNN_FORWARD_CPU`，MNN 会在请求后端不可用时**自动退到 CPU** 且 `createSession()`
+> 仍返回成功——此前这导致 6 个后端挂着 GPU 名字输出 CPU 的数字（输出与 `MNN_CPU`
+> 逐位相同，可据此识别）。现已设置 `backupType = type` 并加
+> `VerifyActualForwardType()` 校验：不可用即报错，CSV 打 `-`。详见
+> `docs/MNN_DEBUG_LOG.md` §2。
+>
+> 因此上表 ⚠️ 项**依赖实际环境**：在 Intel Iris Xe 的 Windows 桌面上，Vulkan /
+> OpenGL / NN 均不可用（报 `createSession failed - requested backend unavailable`），
+> 只有 CPU + OpenCL 能跑。请以实测 CSV 为准，不要假定设备一定支持。
 
 **QNN SDK（500–503，Android）**
 
@@ -563,13 +584,20 @@ CSV 共 29 列：模型信息（`model_name` → `output_elements`）之后紧�
 | `weight_mem_mb` | 模型权重内存（ONNX 解析 initializer / NCNN 取 `.ncnn.bin` 大小 / TFLite 解析 flatbuffer Buffer 精确统计 / MNN·QNN 按文件大小近似），与 backend 无关 |
 | `peak_mem_mb` | 进程峰值工作集（Windows `PeakWorkingSetSize` / Linux `VmHWM`），单调递增 |
 | `resident_mem_mb` | run 结束后的常驻工作集（`WorkingSetSize` / `VmRSS`） |
-| `notes` | 初始化耗时明细、失败原因、worker 异常退出码等（含 `t_in=` / `t_out=` 摘要） |
+| `notes` | 初始化耗时明细（`load_lib=` 等）、失败原因、worker 异常退出码等 |
+
+> **`notes` 不再重复 `t_in=`/`t_out=`**：搬运时间已有独立的
+> `transfer_in_ms` / `transfer_out_ms` / `transfer_total_ms` 列（6 位小数），
+> notes 里的 3 位小数摘要属冗余，已于 2026-08-29 移除。
 
 **搬运时间语义**（各 backend 差异，见 `IBackend::GetTransferTiming()`）：
 - **统一语义**：`avg_run_ms` 为**纯推理时间**（不含显式 H2D 输入上传与 D2H 输出下载；
   显式搬运分别计入 `transfer_in_ms` / `transfer_out_ms`）。
 - **MNN / TFLite / LiteRT / QNN SDK**：有显式 upload/download 步骤，
   `transfer_in`/`transfer_out` 实测搬运调用，且均**在 avg 计时之外**。
+  （**MNN 注意**：设备后端的 `runSession()` 是异步提交，同步点为 `copyToHostTensor()`。
+  本工具把该同步**放在 `avg_run_ms` 计时窗口内**，否则 avg 会退化成"命令提交延迟"、
+  而真实 GPU 时间会混入 `transfer_out`。详见 `docs/MNN_DEBUG_LOG.md` §3。）
 - **NCNN**：`extract()` 即同步推理（含内部 D2H），无法拆分 → `avg_run_ms` 含 D2H；
   `transfer_out` 仅统计 extract 后的快照 memcpy。
 - **ONNX**：输入为 `CreateTensorWithDataAsOrtValue` **零拷贝 wrap**（无独立 H2D），

@@ -565,12 +565,9 @@ bool BenchmarkRunner::TestBackend(const BackendConfig &bcfg,
     } else {
         notes << "load_lib=" << timing[0];
     }
-    /* Tensor transfer (avg ms per repeat) - see CSV columns 16-18. */
-    {
-        double t_in = 0.0, t_out = 0.0;
-        backend->GetTransferTiming(t_in, t_out);
-        notes << ",t_in=" << t_in << ",t_out=" << t_out;
-    }
+    /* Transfer timing is NOT repeated here: transfer_in_ms / transfer_out_ms /
+     * transfer_total_ms are already dedicated CSV columns (16-18) with full
+     * precision. The old "t_in=/t_out=" summary duplicated them at 3 decimals. */
 
     /* Record */
     BenchmarkRecord rec;
