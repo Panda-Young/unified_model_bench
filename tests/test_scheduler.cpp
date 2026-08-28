@@ -161,3 +161,41 @@ TEST_CASE("write/load_output_file: empty payload and missing file")
 
     CHECK_FALSE(load_output_file("ut_no_such_file.out", out));
 }
+
+/* ---------------------------------------------------------------------------
+ * build_child_cmdline option classification
+ * -------------------------------------------------------------------------*/
+TEST_CASE("takes_value_arg: every option with a separate value is recognised")
+{
+    /* Regression: the scheduler previously only skipped the value of
+     * --backend/--no-backend/--model. The value of any OTHER value-taking
+     * option (--repeat 2, --threads 8, ...) was treated as a positional
+     * argument and replaced the model path, so the worker ran with the model
+     * path "2" and failed with "no model variants found". */
+    const char *const value_opts[] = {
+        "--model", "--backend", "--no-backend", "--input-list",
+        "--input-format", "--repeat", "--warmup", "--threads",
+        "--csv", "--log-level", "--output-dir"};
+    for (const char *o : value_opts) {
+        CHECK_MESSAGE(takes_value_arg(o), "should take a value: " << o);
+    }
+}
+
+TEST_CASE("takes_value_arg: flags and --opt=value forms are not value options")
+{
+    /* Boolean flags take no separate value. */
+    CHECK_FALSE(takes_value_arg("--no-csv"));
+    CHECK_FALSE(takes_value_arg("--worker"));
+    CHECK_FALSE(takes_value_arg("--help"));
+    CHECK_FALSE(takes_value_arg("--version"));
+
+    /* "--opt=value" is a single token: there is no separate value to skip, and
+     * treating it as a value option would wrongly consume the NEXT argument. */
+    CHECK_FALSE(takes_value_arg("--repeat=2"));
+    CHECK_FALSE(takes_value_arg("--threads=8"));
+
+    /* A positional argument is not an option at all. */
+    CHECK_FALSE(takes_value_arg("test_model.onnx"));
+    CHECK_FALSE(takes_value_arg("2"));
+    CHECK_FALSE(takes_value_arg(""));
+}

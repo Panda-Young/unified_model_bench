@@ -29,6 +29,17 @@ void apply_backend_blacklist(std::vector<BackendConfig> &backends,
 void filter_backends_by_user(std::vector<BackendConfig> &backends,
                              const BenchConfig &cfg);
 
+/* Whether a command-line option takes a separate value argument
+ * ("--repeat 2" as opposed to "--no-csv" / "--repeat=2").
+ *
+ * The scheduler must carry such values over to the worker command line AND
+ * skip them in the positional-argument logic, otherwise the value is mistaken
+ * for the model path: "--repeat 2" used to produce a worker running with model
+ * path "2", failing as "no model variants found". Only --backend/--no-backend/
+ * --model were skipped before, so every other option with a value was broken.
+ * Exposed for unit testing. */
+bool takes_value_arg(const std::string &opt);
+
 /* QNN context binaries are offline-compiled and backend-specific: keep
  * QNN_SDK_HTP only. A model.so (lib{base}.so) is runtime-composed and runs
  * on all QNN backends (CPU/GPU/HTP), so it keeps the full list. */

@@ -95,6 +95,26 @@ static int spawn_process(const std::string &cmdline, std::string &err_out)
  * model variant + --worker --backend <name>. The scheduler appends
  * --batch-time and the baseline flags (--dump-output / --baseline-file /
  * --baseline-ms) after this. */
+/* Options that take a separate value argument, i.e. "--opt value" (as opposed
+ * to "--opt" flags or "--opt=value"). Their value must be carried over to the
+ * child command line verbatim AND skipped by the positional-argument logic,
+ * otherwise the value is mistaken for the model path (the first bare token
+ * replaces the model path) - e.g. "--repeat 2" used to make the worker run
+ * with model path "2", which failed as "no model variants found". */
+bool takes_value_arg(const std::string &opt)
+{
+    static const char *const kValueOpts[] = {
+        "--model", "--backend", "--no-backend", "--input-list",
+        "--input-format", "--repeat", "--warmup", "--threads",
+        "--csv", "--log-level", "--output-dir"};
+    for (const char *o : kValueOpts) {
+        if (opt == o) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static std::string build_child_cmdline(const std::string &exe,
                                        const std::string &model_path,
                                        const std::string &backend_name,
@@ -105,7 +125,16 @@ static std::string build_child_cmdline(const std::string &exe,
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--backend" || a == "--no-backend" || a == "--model") {
-            ++i; /* skip the option's value */
+            ++i; /* skip the option's value - replaced below */
+            continue;
+        }
+        /* Carry over "value" of any other value-taking option untouched, and
+         * do not let it look like a positional argument. */
+        if (takes_value_arg(a)) {
+            cmd += " " + a;
+            if (i + 1 < argc) {
+                cmd += " \"" + std::string(argv[++i]) + "\"";
+            }
             continue;
         }
         if (!a.empty() && a[0] != '-') {
