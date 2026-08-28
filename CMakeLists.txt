@@ -8,12 +8,27 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ---- Options ----
+# Every backend macro is listed here so the unit-test target can undefine them
+# all (see cmake/backends.cmake, UB_TEST_UNDEF_FLAGS).
+set(UB_ALL_BACKEND_OPTIONS
+    HAVE_ONNX_BACKEND
+    HAVE_TFLITE_BACKEND
+    HAVE_NCNN_BACKEND
+    HAVE_MNN_BACKEND
+    HAVE_LITERT_BACKEND
+    HAVE_QNN_SDK_BACKEND)
+
 option(HAVE_ONNX_BACKEND  "Build ONNX Runtime backend"  ON)
 option(HAVE_TFLITE_BACKEND "Build TFLite backend"       OFF)
 option(HAVE_NCNN_BACKEND  "Build NCNN backend"          ON)
 option(HAVE_MNN_BACKEND   "Build MNN backend"           OFF)
 option(HAVE_LITERT_BACKEND "Build LiteRT backend"       OFF)
 option(HAVE_QNN_SDK_BACKEND "Build native QNN SDK backend" OFF)
+
+# Pull in the backend table (cmake/backends.cmake). It only defines the tables
+# and the two phase functions at this point; they are invoked further down.
+# backends.cmake needs ARCH_DIR / DEPS_DIR / *_INC, hence it is included after
+# those are computed (a little below).
 
 # ---- Architecture detection ----
 if(ANDROID)
@@ -73,44 +88,21 @@ if(ANDROID AND (HAVE_TFLITE_BACKEND OR HAVE_QNN_SDK_BACKEND))
     endif()
 endif()
 
+include("${CMAKE_SOURCE_DIR}/cmake/backends.cmake")
+
+# Always included, independent of HAVE_ONNX_BACKEND (historical behaviour,
+# preserved by this refactor: the ONNX headers do not pull in any library).
 include_directories(${INC_DIR} ${ONNX_INC})
-if(HAVE_TFLITE_BACKEND)
-    include_directories(${TFLITE_INC})
-endif()
-if(HAVE_NCNN_BACKEND)
-    include_directories(${NCNN_INC})
-endif()
-if(HAVE_MNN_BACKEND)
-    include_directories(${MNN_INC})
-endif()
-if(HAVE_LITERT_BACKEND)
-    include_directories(${LITERT_INC})
-endif()
 
 # ---- Compile definitions ----
 add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX)
-if(HAVE_ONNX_BACKEND)
-    add_definitions(-DHAVE_ONNX_BACKEND)
-endif()
-if(HAVE_TFLITE_BACKEND)
-    add_definitions(-DHAVE_TFLITE_BACKEND)
-endif()
-if(HAVE_NCNN_BACKEND)
-    add_definitions(-DHAVE_NCNN_BACKEND)
-    if(NOT WIN32)
-        # Android / Linux: NCNN statically linked, no __declspec
-        add_definitions(-DNCNN_STATIC_DEFINE)
-    endif()
-endif()
-if(HAVE_MNN_BACKEND)
-    add_definitions(-DHAVE_MNN_BACKEND)
-endif()
-if(HAVE_LITERT_BACKEND)
-    add_definitions(-DHAVE_LITERT_BACKEND)
-endif()
-if(HAVE_QNN_SDK_BACKEND AND ANDROID AND HAVE_QNN_DELEGATE)
-    add_definitions(-DHAVE_QNN_SDK_BACKEND)
-endif()
+
+# ---- Backend phase 1 ----
+# Directory-scoped side effects (per-backend -D flags and include dirs) plus
+# collection of the backend sources. Uses add_definitions()/include_directories()
+# exactly like the previous inline code did, so the resolved configuration is
+# unchanged. Returns the list of backend .cpp files into UB_BACKEND_SOURCES.
+ub_backends_phase1(UB_BACKEND_SOURCES)
 
 # ---- NEON FP16 conversion (arm64) ----
 # qnn_backend.cpp uses vcvt_f16_f32 / vcvt_f32_f16 for fast FP16 I/O
@@ -142,28 +134,8 @@ set(SRC_FILES
     # Shared QNN SoC detection, used by both the ORT QNN EP path and the
     # native QNN SDK backend; standalone (no QNN SDK headers needed).
     "${CMAKE_SOURCE_DIR}/src/qnn_soc.cpp"
+    ${UB_BACKEND_SOURCES}
 )
-if(HAVE_ONNX_BACKEND)
-    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/onnx_backend.cpp")
-endif()
-if(HAVE_TFLITE_BACKEND)
-    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/tflite_backend.cpp")
-endif()
-if(HAVE_NCNN_BACKEND)
-    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/ncnn_backend.cpp")
-endif()
-if(HAVE_MNN_BACKEND)
-    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/mnn_backend.cpp")
-endif()
-if(HAVE_LITERT_BACKEND)
-    # Qualcomm options stubs are only needed by the LiteRT backend (Android).
-    list(APPEND SRC_FILES
-        "${CMAKE_SOURCE_DIR}/src/litert_backend.cpp"
-        "${CMAKE_SOURCE_DIR}/src/litert_qualcomm_stubs.cpp")
-endif()
-if(HAVE_QNN_SDK_BACKEND)
-    list(APPEND SRC_FILES "${CMAKE_SOURCE_DIR}/src/qnn_backend.cpp")
-endif()
 
 # ---- Executable ----
 add_executable(unified_bench_${TARGET_SUFFIX} ${SRC_FILES})
@@ -203,86 +175,45 @@ if(HAVE_NCNN_BACKEND)
     endif()
 endif()
 
-if(HAVE_MNN_BACKEND)
-    if(WIN32)
-        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-            "${DEPS_DIR}/mnn/lib/${ARCH_DIR}/MNN.lib")
-    else()
-        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-            "${DEPS_DIR}/mnn/lib/arm64-v8a/libMNN.so")
-    endif()
-endif()
-
-if(HAVE_TFLITE_BACKEND)
-    if(WIN32)
-        # On Windows, libLiteRt.dll also exports the full TFLite C API
-        # (TfLiteModelCreate, TfLiteInterpreterCreate, etc.) which works
-        # correctly.  We link libLiteRt.lib to get basic TFLite symbols and
-        # dynamically load XNNPACK/GPU delegates from tensorflowlite_c.dll
-        # at runtime to avoid the buggy XNNPACK in libLiteRt.
-        # Do NOT link tensorflowlite_c.dll.if.lib — it conflicts with
-        # libLiteRt.lib for TfLite* symbols.
-        if(HAVE_LITERT_BACKEND)
-            message(STATUS "TFLite + LiteRT coexistence: TFLite symbols from libLiteRt.lib, "
-                           "XNNPACK from tensorflowlite_c.dll (dynamic)")
-        endif()
-    else()
-        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-            "${DEPS_DIR}/tflite/lib/${ARCH_DIR}/libtensorflowlite_c.so"
-            "${DEPS_DIR}/tflite/lib/${ARCH_DIR}/libtensorflowlite_gpu_delegate.so")
-        if(HAVE_QNN_DELEGATE)
-            target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-                "${QNN_SDK_ROOT}/lib/aarch64-android/libQnnTFLiteDelegate.so")
-        endif()
-    endif()
-endif()
-
-if(HAVE_LITERT_BACKEND)
-    if(WIN32)
-        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-            "${DEPS_DIR}/litert/liteRT_runtime/windows_x86_64/libLiteRt.lib")
-    else()
-        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-            "${DEPS_DIR}/litert/liteRT_runtime/android_arm64/libLiteRt.so")
-    endif()
-endif()
-
 # ---- Post-build: copy dependency DLLs to output dir (Windows only) ----
+# Every DLL copied here is recorded in UB_POST_BUILD_DLLS so the resolved build
+# configuration can be dumped (and diffed across refactors) - see
+# cmake/dump_config.cmake.
+set(UB_POST_BUILD_DLLS "")
 if(WIN32)
-set(OUT_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>")
-if(HAVE_NCNN_BACKEND)
-    add_custom_command(TARGET unified_bench_${TARGET_SUFFIX} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/ncnn.dll"
-            "${OUT_DIR}/"
-        COMMENT "Copying ncnn.dll")
+    set(OUT_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>")
 endif()
-if(HAVE_MNN_BACKEND)
-    add_custom_command(TARGET unified_bench_${TARGET_SUFFIX} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${DEPS_DIR}/mnn/lib/${ARCH_DIR}/MNN.dll"
-            "${OUT_DIR}/"
-        COMMENT "Copying MNN.dll")
-endif()
-if(HAVE_TFLITE_BACKEND)
-    # Always copy tensorflowlite_c.dll — it's loaded dynamically for
-    # XNNPACK/GPU delegates on Windows (to avoid libLiteRt's buggy copy).
-    add_custom_command(TARGET unified_bench_${TARGET_SUFFIX} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${DEPS_DIR}/tflite/lib/${ARCH_DIR}/tensorflowlite_c.dll"
-            "${OUT_DIR}/"
-        COMMENT "Copying tensorflowlite_c.dll (dynamic load)")
-endif()
-if(HAVE_LITERT_BACKEND)
-    add_custom_command(TARGET unified_bench_${TARGET_SUFFIX} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${DEPS_DIR}/litert/liteRT_runtime/windows_x86_64/libLiteRt.dll"
-            "${DEPS_DIR}/litert/liteRT_runtime/windows_x86_64/libLiteRtWebGpuAccelerator.dll"
-            "${OUT_DIR}/"
-        COMMENT "Copying LiteRT DLLs")
 
-    # LiteRT GPU accelerator uses Dawn/WebGPU which requires DXC (DirectX Shader Compiler)
-    # at runtime for D3D12 shader compilation.  Search Windows SDK for matching DLLs.
+# ---- Backend phase 2 ----
+# Link libraries (all platforms) and POST_BUILD DLL copies (Windows). Kept
+# separate from phase 1 because both need the executable target to exist.
+ub_backends_phase2()
+
+# TFLite + LiteRT symbol coexistence note (Windows): libLiteRt.dll also exports
+# the full TFLite C API (TfLiteModelCreate, TfLiteInterpreterCreate, ...), and
+# we link libLiteRt.lib for the basic TFLite symbols while dynamically loading
+# the XNNPACK/GPU delegates from tensorflowlite_c.dll (to avoid libLiteRt's
+# buggy XNNPACK). Do NOT link tensorflowlite_c.dll.if.lib - it conflicts with
+# libLiteRt.lib for TfLite* symbols.
+if(HAVE_TFLITE_BACKEND AND HAVE_LITERT_BACKEND AND WIN32)
+    message(STATUS "TFLite + LiteRT coexistence: TFLite symbols from libLiteRt.lib, "
+                   "XNNPACK from tensorflowlite_c.dll (dynamic)")
+endif()
+
+# QNN TFLite delegate (Android only): not part of the backend table because it
+# is an extra conditional library rather than the backend's primary link line.
+if(HAVE_TFLITE_BACKEND AND NOT WIN32 AND HAVE_QNN_DELEGATE)
+    target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
+        "${QNN_SDK_ROOT}/lib/aarch64-android/libQnnTFLiteDelegate.so")
+endif()
+
+# LiteRT DXC probe (Windows only): the LiteRT GPU accelerator uses Dawn/WebGPU,
+# which needs DXC (DirectX Shader Compiler) at runtime for D3D12 shader
+# compilation. This searches the installed Windows SDKs for a recent enough
+# dxcompiler.dll/dxil.dll and copies them next to the executable.
+# Kept outside the backend table: it is an SDK version search with a fallback
+# chain, not a simple per-backend library list.
+if(WIN32 AND HAVE_LITERT_BACKEND)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         set(DXC_ARCH "x64")
     else()
@@ -293,6 +224,9 @@ if(HAVE_LITERT_BACKEND)
         set(DXC_DIR "C:/Program Files (x86)/Windows Kits/10/bin/${sdk_ver}/${DXC_ARCH}")
         if(EXISTS "${DXC_DIR}/dxcompiler.dll")
             message(STATUS "Found DXC DLLs in: ${DXC_DIR}")
+            list(APPEND UB_POST_BUILD_DLLS
+                "${DXC_DIR}/dxcompiler.dll"
+                "${DXC_DIR}/dxil.dll")
             add_custom_command(TARGET unified_bench_${TARGET_SUFFIX} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                     "${DXC_DIR}/dxcompiler.dll"
@@ -302,7 +236,6 @@ if(HAVE_LITERT_BACKEND)
             break()
         endif()
     endforeach()
-endif()
 endif()
 
 # ---- Unit tests (doctest, single-header) ----
@@ -319,6 +252,7 @@ if(BUILD_TESTING)
         tests/test_cmd_args.cpp
         tests/test_input_provider.cpp
         tests/test_result_collector.cpp
+        tests/test_platform_mask.cpp
         # Units under test (no backend macros -> registry stays empty)
         src/csv_utils.cpp
         src/scheduler.cpp
@@ -361,4 +295,11 @@ if(BUILD_TESTING)
             -UHAVE_MNN_BACKEND -UHAVE_LITERT_BACKEND -UHAVE_QNN_SDK_BACKEND)
     endif()
     add_test(NAME unit_tests COMMAND unified_bench_tests)
+endif()
+
+# ---- Optional: dump the resolved build config for refactor-safety diffing ----
+# Enabled with -DUB_DUMP_BUILD_CONFIG=ON; see cmake/dump_config.cmake.
+option(UB_DUMP_BUILD_CONFIG "Print the resolved build configuration" OFF)
+if(UB_DUMP_BUILD_CONFIG)
+    include("${CMAKE_SOURCE_DIR}/cmake/dump_config.cmake")
 endif()

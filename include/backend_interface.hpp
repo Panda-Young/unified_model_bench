@@ -97,6 +97,54 @@ enum class BackendId {
 inline int bid(BackendId id) { return static_cast<int>(id); }
 
 /* ---------------------------------------------------------------------------
+ * Platform availability mask
+ *
+ * Which platforms a backend is available on used to be encoded only in the
+ * #if/#ifdef branches of BackendRegistry::InitDefaults(), which meant:
+ *   - the README backend matrix had to be maintained by hand and drifted
+ *   - "is backend X available here?" could not be answered at runtime
+ *
+ * BackendConfig now carries the mask as DATA, and InitDefaults() registers a
+ * single list of declarations filtered by the mask. Compile-time gating
+ * (HAVE_*_BACKEND, __ANDROID__) still applies on top - the mask only replaces
+ * the hand-written per-platform duplication.
+ * -------------------------------------------------------------------------*/
+enum PlatformMask : unsigned {
+    kPlatNone = 0,
+    kPlatWin = 1u << 0,    /* Windows desktop (x86 / x64) */
+    kPlatLinux = 1u << 1,  /* Linux desktop (x64) */
+    kPlatAndroid = 1u << 2 /* Android (arm64) */
+};
+
+/* Mask of the platform this binary was built for. */
+inline constexpr unsigned current_platform()
+{
+#if defined(__ANDROID__) || defined(__android__)
+    return kPlatAndroid;
+#elif defined(_WIN32)
+    return kPlatWin;
+#elif defined(__linux__)
+    return kPlatLinux;
+#else
+    return kPlatNone;
+#endif
+}
+
+inline bool platform_supports(unsigned mask) { return (mask & current_platform()) != 0; }
+
+/* Short names used when printing an availability summary. */
+inline std::string platform_mask_str(unsigned mask)
+{
+    std::string s;
+    if (mask & kPlatWin) { s += "Win,"; }
+    if (mask & kPlatLinux) { s += "Linux,"; }
+    if (mask & kPlatAndroid) { s += "Android,"; }
+    if (s.empty()) { return "-"; }
+    s.pop_back(); /* trailing comma */
+    return s;
+}
+
+/* ---------------------------------------------------------------------------
  * BackendConfig - describes a backend variant
  * -------------------------------------------------------------------------*/
 struct BackendConfig {
@@ -105,6 +153,10 @@ struct BackendConfig {
     std::string name;
     std::string output_suffix;
     bool is_cpu_baseline = false;
+    /* Platforms this backend is available on (PlatformMask bits).
+     * kPlatNone = never registered on any platform (e.g. placeholder enum
+     * values that were never implemented, like ONNX_CUDA). */
+    unsigned platforms = kPlatNone;
 };
 
 /* ---------------------------------------------------------------------------
