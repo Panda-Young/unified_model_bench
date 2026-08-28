@@ -39,6 +39,13 @@ jobs:
         run: ctest --test-dir build --build-config Release --output-on-failure
         shell: pwsh
 
+      # Style gate: no unbraced if/else/for/while/do/switch/case bodies.
+      # The script exits 0 only when it actually scanned files and found no
+      # violations, so a broken/empty scan fails the job instead of passing.
+      - name: Brace style check
+        run: python tools/utils/check_braces.py
+        shell: pwsh
+
   # ---------------------------------------------------------------------------
   # ubuntu-latest: source-compilability smoke test. The vendored Linux desktop
   # prebuilt libraries (deps/onnxruntime/lib/linux-x64, deps/ncnn/lib/linux-x64)

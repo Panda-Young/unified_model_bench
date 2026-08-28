@@ -2,13 +2,22 @@
 lacks braces, in the project's own source files (src/, include/).
 Recursive scanner: descends into braced blocks, so nested statements are found.
 
-Usage: python tools/check_braces.py [path...]
+Usage: python tools/utils/check_braces.py [path...]
 Output: file:line [keyword] body ; TOTAL: N  (0 = compliant)
+
+Exit code: 0 = compliant, 1 = violations found, 2 = scan error (nothing was
+actually checked). A scan error is reported loudly instead of printing a
+misleading "TOTAL: 0": scanning zero files used to look identical to a clean
+codebase (the ROOTS below once pointed at a stale absolute path).
 """
 import os
 import sys
 
-ROOTS = [r"d:\WorkSpace\unified_bench\src", r"d:\WorkSpace\unified_bench\include"]
+# Resolved relative to this script (tools/utils/ -> repo root), so the check
+# works on any machine / checkout path instead of a hardcoded absolute dir.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.abspath(os.path.join(_HERE, os.pardir, os.pardir))
+ROOTS = [os.path.join(_REPO_ROOT, "src"), os.path.join(_REPO_ROOT, "include")]
 EXTS = (".cpp", ".hpp", ".h", ".cc", ".cxx")
 
 
@@ -380,28 +389,78 @@ def find_issues(path):
     return sc.issues
 
 
+def expand_paths(argv_paths):
+    """Turn CLI args into a file list: directories are walked, files used as-is.
+
+    Directories must be expanded here (instead of leaving them to os.walk in
+    main) so that a non-directory/unreadable arg is reported as an error
+    rather than silently contributing zero files.
+    """
+    paths = []
+    errors = []
+    for p in argv_paths:
+        if os.path.isdir(p):
+            for dirpath, _, files in os.walk(p):
+                for fn in files:
+                    if fn.endswith(EXTS):
+                        paths.append(os.path.join(dirpath, fn))
+        elif os.path.isfile(p):
+            paths.append(p)
+        else:
+            errors.append(f"no such file or directory: {p}")
+    return paths, errors
+
+
 def main():
-    paths = sys.argv[1:] if len(sys.argv) > 1 else []
-    if not paths:
+    argv_paths = sys.argv[1:] if len(sys.argv) > 1 else []
+    if argv_paths:
+        paths, arg_errors = expand_paths(argv_paths)
+    else:
+        arg_errors = []
+        paths = []
         for root in ROOTS:
+            if not os.path.isdir(root):
+                arg_errors.append(f"default source dir not found: {root}")
+                continue
             for dirpath, _, files in os.walk(root):
                 for fn in files:
                     if fn.endswith(EXTS):
                         paths.append(os.path.join(dirpath, fn))
+
     total = 0
+    scanned = 0
     for p in sorted(paths):
         try:
             issues = find_issues(p)
         except Exception as e:
+            # Never swallow a read failure: an unscanned file must not be
+            # treated as a clean file.
             print(f"ERROR {p}: {e}")
+            arg_errors.append(f"could not scan {p}: {e}")
             continue
+        scanned += 1
         if issues:
             print(f"\n=== {p} ===")
             for ln, kw, body in issues:
                 print(f"  L{ln:4d} [{kw:6s}] {body}")
             total += len(issues)
-    print(f"\nTOTAL: {total} unbraced statements")
+
+    if arg_errors:
+        print(f"\nSCAN INCOMPLETE - {len(arg_errors)} error(s):")
+        for e in arg_errors:
+            print(f"  {e}")
+        print(f"\nTOTAL: {total} unbraced statements (scanned {scanned} file(s))")
+        return 2
+
+    if scanned == 0:
+        print("SCAN INCOMPLETE - no source files found.")
+        print(f"  looked in: {', '.join(ROOTS) if not argv_paths else ', '.join(argv_paths)}")
+        print(f"\nTOTAL: {total} unbraced statements (scanned 0 files)")
+        return 2
+
+    print(f"\nTOTAL: {total} unbraced statements (scanned {scanned} file(s))")
+    return 1 if total else 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

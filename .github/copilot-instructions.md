@@ -110,7 +110,12 @@ ONNX Runtime / MNN / NCNN / TFLite / LiteRT / QNN SDK 等）的 Copilot 编码�
   返回值的含义要在头文件注释中说明。
 - **b. 所有 `if/else/for/while/switch/case` 都必须加花括号 `{}`**，包括每个
   `case/default` 分支体；`else if` 保持链式但 if 体必须加括号。
-  合规性检查：`python tools/check_braces.py`（输出 `TOTAL: 0` 即合规）。
+  合规性检查：`python tools/utils/check_braces.py`（无参运行默认扫 `src/` 与
+  `include/`，即仓库根目录执行即可）。退出码 `0`=合规、`1`=有违规、`2`=**扫描未
+  完成**（路径不存在/无文件扫到/读取失败）。**只有退出码 0 才算通过**——输出
+  `TOTAL: 0` 但退出码为 2 表示"什么都没扫到"，是假绿灯，不得视为合规（历史上
+  该脚本的默认路径硬编码到不存在的目录，长期打印 `TOTAL: 0` 却一个文件都没扫）。
+  已接入 CI（`.github/workflows/ci.yml` 的 "Brace style check" 步骤）。
 - **c. 命名与 const 正确性**：变量/函数用 `snake_case`，类型/类用 `PascalCase`，
   宏用 `UPPER_SNAKE_CASE`；避免魔法数字（用 `constexpr` 命名常量）；能用
   `const`/`constexpr` 的地方必须用；头文件加 `#pragma once`。
