@@ -226,3 +226,89 @@ OpenCL 失败是**无害的 INFO 级别日志**，推理实际使用 D3D12 路�
 | `deps/litert/liteRT_runtime/windows_x86_64/` | LiteRT 运行时 DLL |
 | `build/win-x64/Release/dxcompiler.dll` | DXC 运行时（由 CMake 自动复制） |
 | `build/win-x64/Release/dxil.dll` | DXIL 运行时（由 CMake 自动复制） |
+
+
+---
+
+## 9. LiteRT_CPU 数值错误：缺失 NCHW -> NHWC 转置（2026-08-31）
+
+> 本节记录 `LiteRT_CPU`（非 GPU）的一个数值正确性 bug。虽然本篇以 GPU 为主，
+> 但同属 `src/litert_backend.cpp`，故记在此处。
+
+### 9.1 现象
+
+同一个 `.tflite` 文件（22-in/22-out 的 `tfc_tdf_...` 模型），两个后端差异巨大：
+
+| 后端 | max_output_diff | avg_output_diff |
+|---|---|---|
+| `TFLITE_CPU` | 0.00002742 | 0.00000035 |
+| `LiteRT_CPU` | **3.66572148** | **0.11408538** |
+
+相差约 13 万倍，且 **max/avg ≈ 32**——误差集中在部分元素，不是均匀的精度损失
+（后者 max/avg 通常 1~3）。这个分布特征说明"部分数据错了"，而非"整体精度低"。
+
+同时 `transfer_in_ms` 也异常：LiteRT 20.9 ms vs TFLite 43.5 ms。
+
+### 9.2 根因
+
+**LiteRT 后端缺少 NCHW -> NHWC 转置。**
+
+- `InputProvider` 生成的共享输入按 **ONNX 模型的 NCHW** 顺序排列；
+- `.tflite` 模型被 LiteRT 消费时按 **NHWC** 解释；
+- `tflite_backend.cpp` 在 `feed()` 里处理了这一点（注释：
+  *"Shared inputs are in NCHW; TFLite expects NHWC"*）；
+- `LiteRTBackend::SetSharedInput()` 只保存了指针，`create_input_buffers()`
+  直接 `memcpy` 到输入 buffer——**元素个数对，但顺序错**。
+
+因为元素总数一致，模型能正常跑完、不报任何错误，只是结果错。这正是最难发现的一类
+bug：无崩溃、无警告、输出看起来合理。
+
+### 9.3 修复
+
+在拷贝进输入 buffer 时对 4D 输入做与 TFLite 后端**完全一致**的转置
+（`input_shapes_[i]` 是模型侧的 NHWC `[N,H,W,C]`，源是 NCHW `[N,C,H,W]`）：
+
+```cpp
+dst[n*H*W*C + h*W*C + w*C + c] = src[n*C*H*W + c*H*W + h*W + w];
+```
+
+非 4D 输入（rank 1/2/3）保持原样 `memcpy`。
+
+### 9.4 顺带修复：输入 buffer 不足时不再静默截断
+
+原代码：
+
+```cpp
+size_t copy_bytes = input_elems_[i] * sizeof(float);
+if (copy_bytes > buffer_size) { copy_bytes = buffer_size; }   // 静默截断
+```
+
+截断后尾部是 `_aligned_malloc` 的**未初始化内存**，模型会在垃圾数据上运算。
+本次排查中该分支**没有触发**（不是本次 bug 的成因），但按项目"绝不静默降级"的
+规则，已改为显式报错：
+
+```
+LiteRT: input N needs X bytes but the compiled model only provides Y
+```
+
+### 9.5 验证
+
+修复后 `max_output_diff` **3.66572148 -> 0.00002919**，与 TFLite 的 0.00002742
+同一量级。
+
+### 9.6 为什么转置逻辑保持重复（未提取公共函数）
+
+项目里有三处布局转换，语义**并不相同**，强行统一会引入错误：
+
+| 位置 | 变换 | 说明 |
+|---|---|---|
+| `tflite_backend.cpp` | NCHW -> NHWC | 4D 逐元素置换 |
+| `litert_backend.cpp` | NCHW -> NHWC | 与上者**逐字符相同** |
+| `ncnn_backend.cpp` | `[1,C,H,W]` -> `Mat(w,h,c)` | **折叠 batch + 按通道分块 memcpy**，是 CHW 平面布局，**不是 NHWC** |
+
+因此只有 TFLite / LiteRT 两处理论上可合并，NCNN 必须独立。考虑到仅两处、且
+转置只有 12 行，当前选择保持重复 + 明确注释，避免"看起来统一实则语义不同"的坑。
+
+另：`tools/onnx_convert.py` 有第四处独立的 NCHW<->NHWC 逻辑（`L = [0,3,1,2]`、
+`nhwc_perm()`、`nhwc_axis()`），用于给 onnx2tf 生成参数替换文件。它与 C++ 侧是
+同一套数学的独立实现——**改一处不会自动同步另一处**，修改时需两边都看。

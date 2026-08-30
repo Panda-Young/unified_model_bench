@@ -514,15 +514,63 @@ bool LiteRTBackend::RunBenchmark(int warmup, int repeat, double &total,
                 cleanup_bufs(bufs, i);
                 return false;
             }
-            /* Copy input data into the aligned buffer */
+            /* Copy input data into the aligned buffer.
+             *
+             * LAYOUT: the shared inputs produced by InputProvider follow the
+             * ONNX model's NCHW order, while a .tflite model consumed by
+             * LiteRT expects NHWC - exactly the same situation the TFLite
+             * backend handles in its feed() helper (tflite_backend.cpp).
+             * Without this transpose the element COUNT is right but the ORDER
+             * is wrong, so the model runs without any error and returns
+             * plausible-looking but incorrect numbers. Measured on the
+             * 22-in/22-out tfc_tdf model: max_output_diff 3.6657 with the
+             * direct memcpy vs 0.000027 for the same .tflite via TFLite.
+             *
+             * input_shapes_[i] is the model's own (NHWC) shape, i.e.
+             * [N, H, W, C]; the source buffer is NCHW [N, C, H, W]. */
             size_t copy_bytes = input_elems_[i] * sizeof(float);
             if (copy_bytes > buffer_size) {
-                copy_bytes = buffer_size;
+                LOGE("LiteRT: input %zu needs %zu bytes but the compiled model "
+                     "only provides %zu - refusing to silently truncate "
+                     "(would run on uninitialized memory)",
+                     i, copy_bytes, buffer_size);
+                cleanup_bufs(bufs, i);
+#if defined(_WIN32)
+                _aligned_free(host_mem);
+#else
+                free(host_mem);
+#endif
+                last_error_ = "LiteRT: input buffer too small for input " +
+                              std::to_string(i) + " (" +
+                              std::to_string(copy_bytes) + " > " +
+                              std::to_string(buffer_size) + ")";
+                return false;
             }
-            memcpy(host_mem, input_bufs_[i], copy_bytes);
+            if (input_shapes_[i].size() == 4) {
+                /* NCHW -> NHWC, same index math as the TFLite backend. */
+                const int N = input_shapes_[i][0];
+                const int H = input_shapes_[i][1];
+                const int W = input_shapes_[i][2];
+                const int C = input_shapes_[i][3];
+                const float *src = input_bufs_[i];
+                float *dst = (float *)host_mem;
+                for (int n = 0; n < N; n++) {
+                    for (int h = 0; h < H; h++) {
+                        for (int w = 0; w < W; w++) {
+                            for (int c = 0; c < C; c++) {
+                                dst[n * H * W * C + h * W * C + w * C + c] =
+                                    src[n * C * H * W + c * H * W + h * W + w];
+                            }
+                        }
+                    }
+                }
+            } else {
+                memcpy(host_mem, input_bufs_[i], copy_bytes);
+            }
 
             /* Create ranked tensor type from cached shape info */
             LiteRtRankedTensorType ttype;
+            /* The model is float32 here; keep the explicit type for the buffer. */
             ttype.element_type = kLiteRtElementTypeFloat32;
             ttype.layout.rank = (unsigned)input_shapes_[i].size();
             ttype.layout.has_strides = false;

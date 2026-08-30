@@ -42,6 +42,11 @@ __pycache__/
 deps/
 *.pyc
 
+# Local scratch / one-off analysis artifacts (never commit)
+_commit_messages_backup.txt
+_peek*.py
+_an.py
+
 # MNN runtime artifact (GPU kernel compile diagnostics, e.g. CISA errors from
 # the Intel Graphics Compiler). Written to the CWD by the MNN OpenCL backend.
 kernel.errors.txt
