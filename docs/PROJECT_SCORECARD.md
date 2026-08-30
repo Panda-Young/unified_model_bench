@@ -139,8 +139,10 @@
 ### D7 工具链与 CI —— **4.3 / 5**（权重 5%）
 
 > **重评（2026-08-28）**：初评 3.5 分的首要依据是"无持续集成"。经代码核查
-> `.github/workflows/ci.yml` 已入库并推送到 `origin/main`（commits `7731fd0` 引入、
-> `4c36fd8` 修 CI 单测、`edefaa3` 升级 actions/checkout v5），原结论失效，上调至 4.3。
+> `.github/workflows/ci.yml` 已入库并推送到 `origin/main`（`c26c13e` 引入、
+> `ffbd6df` 修 CI 单测、`d6cc306` 升级 actions/checkout v5），原结论失效，上调至 4.3。
+> 注：这三个 hash 是 2026-08-31 重写 commit message 之后的新值；原 `7731fd0` /
+> `4c36fd8` / `edefaa3` 已失效（历史被 rebase，非 fast-forward）。
 > 未给满分的原因见下方 ⚠️（无 Android job、无静态分析/覆盖率）。
 > 本维度在两次评估间出现了"文档落后于代码"的典型情况，已在 §5 补记教训。
 
