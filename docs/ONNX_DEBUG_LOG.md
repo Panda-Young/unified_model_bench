@@ -413,3 +413,101 @@ tensor::value_type layout::group() const {
 | MNN_OpenCL | 11ms / 0.94x | MNN GPU |
 
 **结论**：ONNX_OpenVINO_GPU/GPU_FP16 对本模型不可用，是 OpenVINO GPU 插件对 H=1 group 转置卷积的编译 bug。用 ONNX_OpenVINO_CPU 或 ONNX_DML_GPU/MNN_OpenCL 替代。
+
+
+---
+
+## 7. OpenVINO 升级评估：2025.1.0 → 2026.3.1（2026-08-31）
+
+### 7.1 背景
+
+工程当前依赖是 **ORT 1.22.0 + OpenVINO 2025.1.0**（2025-04 发布），
+位于 `deps/onnxruntime/lib/win-x64/openvino/`。
+本节评估升级到 **OpenVINO 2026.3.1**（2026-08-26 发布，相隔约 16 个月 /
+5 个大版本）是否有收益。
+
+**重要前提：OpenVINO 不是可独立替换的依赖。** 它是 ORT 的 OpenVINO EP
+自带的运行时，`onnxruntime_providers_openvino.dll` 与特定 OpenVINO 版本有
+ABI 绑定。直接替换 `openvino*.dll` 会导致 EP 加载失败或运行崩溃。要升级
+OpenVINO，必须升级整个 ONNX Runtime，而这会影响所有 ONNX 后端
+（DML / oneDNN / CPU 全部需要重新验证）。
+
+### 7.2 验证方法
+
+用 `C:\Users\16411\WorkSpace\Algo\MSS\models` 下的真实模型实测：
+
+* **2025.1**：工程本身（`ONNX_OpenVINO_GPU`）——即当前依赖
+* **2026.3.1**：单独安装 OpenVINO 2026.3.1，Python API 编译/推理同一批模型
+
+条件：GPU FP32、repeat=3、warmup=1。注意两侧输入数据不同（工程用
+seed=42 的确定性输入，Python 侧用随机值），所以性能数字是**参考值**
+而非严格同输入对比；但数量级与快慢方向足以支撑结论。
+
+### 7.3 结论一：6.x 记录的 scnet GPU 编译失败**没有修复，反而更糟**
+
+| 模型 | 2025.1.0（当前） | 2026.3.1（最新） |
+|---|---|---|
+| `scnet_convert_474frame_sdr_9.43dB_ft.onnx` | ❌ 明确报错<br>`[GPU] Failed to select implementation for` | ❌ **LLVM fatal error**<br>`AdaptorCM: could not load FEWrapper: clangFEWrapper.dll` |
+
+两者的**故障性质完全不同**：
+
+* 2025.1 是**干净的失败**——OpenVINO EP 报错，工具按既有规则把该后端
+  标记为失败（CSV 打 `-`），其他后端照常跑完（符合"崩溃隔离"设计）。
+* 2026.3.1 是 **LLVM ERROR**，属于进程级致命错误，**直接终止整个进程**。
+  一批测试里只要有一个这类模型，后面的后端就全跑不了。
+
+已确认 `clangFEWrapper.dll` **不在 2026.3.1 的 Windows 分发包里**
+（完整 zip 与 pip wheel 都搜索过，均无此文件）。这是 2026.3.1 Windows
+包的问题。
+
+> 补充：最初怀疑是 pip wheel 打包不全，改用完整 toolkit（解压 +
+> `setupvars.bat`）后仍报同样的错——两条路径都缺这个组件。
+
+### 7.4 结论二：性能收益不一致，有得有失
+
+| 模型 | 2025.1 | 2026.3.1 | 变化 |
+|---|---|---|---|
+| `tfc_tdf_..._8frame.onnx`（810 nodes, 21 group conv） | 142.0 ms | **117.2 ms** | **快 17%** ✅ |
+| `epoch213_causal_8frame_state.onnx`（0 group conv） | 19.4 ms | **15.7 ms** | **快 19%** ✅ |
+| `bandscnet_1frame.onnx`（2838 nodes, 5 group conv） | 26.6 ms | **37.8 ms** | **慢 42%** ❌ |
+
+编译时间大致相当（tfc_tdf：2025.1 约 9.3 s vs 2026.3.1 约 10.3 s）。
+
+`bandscnet` 慢 42% 的幅度远超噪声，说明 **2026.3.1 并非全面更快**，
+净收益取决于模型构成。
+
+### 7.5 结论：**不建议升级**
+
+理由（按权重）：
+
+1. **scnet 从"明确失败"退化成"崩溃进程"**，直接损害崩溃隔离，风险高于收益
+2. **性能不一致**——2 个模型快 17~19%，1 个慢 42%，净收益不确定
+3. **升级方式重**——必须升整个 ORT，影响所有 ONNX 后端，需全量回归
+4. **历史数据不可比**——CSV 中所有 `ONNX_*` 行都是 ORT 1.22 + OV 2025.1
+   测出来的，升级后无法直接比较
+
+**维持现状（ORT 1.22 + OpenVINO 2025.1.0）。**
+
+需要跑 scnet 时，用 `ONNX_OpenVINO_CPU`（见 6.5）或 `ONNX_DML_GPU` /
+`MNN_OpenCL` 替代。
+
+### 7.6 若将来要重新评估
+
+按下面顺序，避免在无法回退的地方浪费时间：
+
+1. 先单独安装目标 OpenVINO 的**完整 toolkit**（不要只用 pip wheel），
+   确认 `clangFEWrapper.dll` 已随包提供——可用 `scnet_convert_474frame_*`
+   做探针，它能立刻暴露该组件缺失
+2. 确认后，再查哪个 ORT 版本内置了该 OpenVINO，升级 ORT
+3. 全量重跑所有后端，新数据用新时间戳，不要与旧数据混在同一批对比
+
+### 7.7 与 4.x（DirectML）的同类教训
+
+这与 §4.3 / §4.7 的 DirectML 版本问题属于**同一类**：
+
+* `ep.dml.disable_graph_fusion` 在 DirectML < 1.15 被**静默忽略**
+* OpenVINO EP 与 OpenVINO runtime 之间有**版本绑定**，不能单独换 DLL
+
+**通用判据：本工程里"某个后端开关看起来无效"时，先怀疑依赖库版本，
+再怀疑代码。** 这类问题不会报错，只会表现为"两条路径执行完全相同"
+或"EP 加载/编译失败"。
