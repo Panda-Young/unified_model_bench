@@ -54,6 +54,7 @@ unified_model_bench/
 │       ├── gen_test_data_for_onnx.py   # 生成 --input-list 测试数据与列表
 │       ├── fill_htp_config.py          # 按设备 ro.soc.model 填 htp_config.json 的 soc_id/dsp_arch
 │       ├── check_braces.py             # 花括号规范检查（接入 CI，见 §3.7）
+│       ├── check_bat_parens.py         # bat 块内 echo 括号转义检查（接入 CI）
 │       ├── csv_summary.py              # CSV 结果汇总
 │       ├── analyze_bench_log.py        # 运行日志解析
 │       └── probe_ncnn_blob.py          # NCNN blob 探测
@@ -267,6 +268,30 @@ tools\NDK_build_Android_auto.bat
 
 脚本自动完成：配置 → 编译 → `adb push` 可执行文件与全部 `.so` → 按 `ro.soc.model` 自动选 Hexagon 版本并推送 Stub/Skel → 运行基准 → 回拉 CSV。
 
+**增量推送**：模型文件与第三方 `.so` 若设备上**已存在则跳过**（避免每次重复传输大文件）。
+需要强制覆盖时用 `--force-push`：
+
+```bat
+tools\NDK_build_Android_auto.bat --model "C:\...\model.onnx" --force-push
+```
+
+> 注意：本地**重新生成**了同名模型（如重新导出 `test_model.onnx`）时，设备上的旧文件
+> 不会被自动替换，必须加 `--force-push`。
+
+**编写构建脚本时注意 cmd 的括号陷阱**：在 `if (...)` / `for (...) do (...)` **块内**，
+`echo` 行里未转义的括号会被当成块语法解析，导致整个脚本在**解析阶段**就崩：
+
+```bat
+if "%FORCE_PUSH%"=="1" (
+    echo Pushing custom model (forced)...   :: 错！`)` 提前闭合块，`...` 被当命令
+    echo Pushing custom model ^(forced^)... :: 对，用 ^ 转义（或加引号）
+)
+```
+
+报错为 `此时不应有 ...。` / `... was unexpected at this time.`，且**即便该分支未进入
+也会触发**（cmd 按块整体解析）。`REM` / `::` / `title` 行内的括号是安全的，只有 `echo`
+受影响。仓库用 `python tools/utils/check_bat_parens.py` 做静态拦截（已接入 CI）。
+
 ### 3.5 单元测试
 
 纯逻辑模块（不依赖任何推理框架与 `deps/`）由 **doctest** 单测守护，可在**任意平台**
@@ -297,7 +322,7 @@ ctest --test-dir build --output-on-failure      # 或直接跑 ./build/unified_b
 
 | Job | 平台 | 内容 |
 |---|---|---|
-| `build-windows` | `windows-latest` | 全量构建（ONNX + NCNN）+ `ctest` + 花括号规范检查 |
+| `build-windows` | `windows-latest` | 全量构建（ONNX + NCNN）+ `ctest` + 花括号规范检查 + bat 括号检查 |
 | `build-ubuntu` | `ubuntu-latest` | **纯逻辑模块编译冒烟**：所有 `HAVE_*_BACKEND=OFF`，仍编译 7 个测试源文件并跑 ctest |
 
 Ubuntu job 刻意关掉全部后端：`deps/` 不入 git，CI 镜像没有预编译库。即便如此仍能
@@ -306,13 +331,18 @@ Ubuntu job 刻意关掉全部后端：`deps/` 不入 git，CI 镜像没有预编
 
 ### 3.7 代码规范检查
 
+> 完整编码约定见 `.github/copilot-instructions.md`（Copilot 会自动加载该文件）。
+
 ```bash
 python tools/utils/check_braces.py        # 无参 = 扫 src/ 与 include/
+python tools/utils/check_bat_parens.py    # 无参 = 扫仓库根下 .bat/.cmd
 ```
 
-强制所有 `if/else/for/while/do/switch/case` 带花括号。退出码 `0`=合规、`1`=有违规、
-`2`=**扫描未完成**（路径不存在 / 一个文件都没扫到 / 读取失败）。**只有 0 才算通过**——
-历史上该脚本默认路径硬编码到不存在的目录，长期打印 `TOTAL: 0` 却零文件扫描，
+`check_braces.py` 强制所有 `if/else/for/while/do/switch/case` 带花括号。
+`check_bat_parens.py` 拦截 bat 块内 `echo` 行未转义的括号（详见 §3.4 的
+"cmd 括号陷阱"）。两者退出码语义一致：`0`=合规、`1`=有违规、`2`=**扫描未完成**
+（路径不存在 / 一个文件都没扫到 / 读取失败）。**只有 0 才算通过**——历史上
+`check_braces.py` 默认路径硬编码到不存在的目录，长期打印 `TOTAL: 0` 却零文件扫描，
 属假绿灯，现已修复并接入 CI。
 
 ### 3.8 新增后端：改哪里

@@ -46,6 +46,14 @@ jobs:
         run: python tools/utils/check_braces.py
         shell: pwsh
 
+      # Batch-file gate: no unescaped parens in echo lines inside a ( )
+      # block. Such a paren is parsed as block syntax and kills the whole
+      # script at PARSE time with "... was unexpected at this time." - even
+      # when the offending branch is never taken.
+      - name: Batch paren check
+        run: python tools/utils/check_bat_parens.py
+        shell: pwsh
+
   # ---------------------------------------------------------------------------
   # ubuntu-latest: source-compilability smoke test. The vendored Linux desktop
   # prebuilt libraries (deps/onnxruntime/lib/linux-x64, deps/ncnn/lib/linux-x64)

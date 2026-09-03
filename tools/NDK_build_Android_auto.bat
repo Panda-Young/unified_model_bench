@@ -56,15 +56,19 @@ REM ---- Command-line options ----
 REM   clean | rebuild      : full rebuild (delete build dir)
 REM   build-only | build   : compile only, skip device push/test
 REM   --model <path>       : use a custom model (e.g. --model "C:\...\model.onnx")
+REM   force-push | --force-push : always overwrite device files (disable skip-if-exists)
 set "CLEAN_BUILD=0"
 set "RUN_TEST=1"
 set "MODEL_ARG="
+set "FORCE_PUSH=0"
 :parse_args
 if "%~1"=="" goto :args_done
 if /i "%~1"=="clean" set "CLEAN_BUILD=1"
 if /i "%~1"=="rebuild" set "CLEAN_BUILD=1"
 if /i "%~1"=="build-only" set "RUN_TEST=0"
 if /i "%~1"=="build" set "RUN_TEST=0"
+if /i "%~1"=="force-push" set "FORCE_PUSH=1"
+if /i "%~1"=="--force-push" set "FORCE_PUSH=1"
 if /i "%~1"=="--model" (
     if not "%~2"=="" (
         set "MODEL_ARG=%~2"
@@ -194,22 +198,50 @@ echo Pushing to device...
 adb wait-for-device
 adb shell "mkdir -p /data/local/tmp/bench_test/qnn 2>/dev/null"
 adb push "%BUILD_DIR%\unified_bench" /data/local/tmp/bench_test/
+
+REM --- Push model files (skip if already on device; use --force-push to overwrite) ---
 if defined MODEL_ARG (
-    echo Pushing custom model...
-    adb push "%MODEL_ARG%" /data/local/tmp/bench_test/ || (
-        echo ERROR: Failed to push model %MODEL_ARG%
-        exit /b 1
+    if "%FORCE_PUSH%"=="1" (
+        echo Pushing custom model ^(forced^)...
+        adb push "%MODEL_ARG%" /data/local/tmp/bench_test/ || (
+            echo ERROR: Failed to push model %MODEL_ARG%
+            exit /b 1
+        )
+    ) else (
+        adb shell "test -f /data/local/tmp/bench_test/%MODEL_NAME%" >nul 2>&1
+        if errorlevel 1 (
+            echo Pushing custom model...
+            adb push "%MODEL_ARG%" /data/local/tmp/bench_test/ || (
+                echo ERROR: Failed to push model %MODEL_ARG%
+                exit /b 1
+            )
+        ) else ( echo Model %MODEL_NAME% already on device, skip. )
     )
 ) else (
-    adb push "%ROOT%\test_model.onnx" /data/local/tmp/bench_test/ 2>nul
-    adb push "%ROOT%\test_model.tflite" /data/local/tmp/bench_test/ 2>nul
-    adb push "%ROOT%\test_model.ncnn.param" /data/local/tmp/bench_test/ 2>nul
-    adb push "%ROOT%\test_model.ncnn.bin"   /data/local/tmp/bench_test/ 2>nul
-    adb push "%ROOT%\test_model_fp16.ncnn.bin" /data/local/tmp/bench_test/ 2>nul
-    adb push "%ROOT%\test_model.shapes" /data/local/tmp/bench_test/ 2>nul
-    adb push "%ROOT%\test_model.mnn" /data/local/tmp/bench_test/ 2>nul
-    adb push "%ROOT%\libtest_model.so" /data/local/tmp/bench_test/ 2>nul
-    adb push "%ROOT%\test_model.serialized.bin" /data/local/tmp/bench_test/ 2>nul
+    for %%F in (
+        "test_model.onnx"
+        "test_model.tflite"
+        "test_model.ncnn.param"
+        "test_model.ncnn.bin"
+        "test_model_fp16.ncnn.bin"
+        "test_model.shapes"
+        "test_model.mnn"
+        "libtest_model.so"
+        "test_model.serialized.bin"
+    ) do (
+        if exist "%ROOT%\%%~F" (
+            if "%FORCE_PUSH%"=="1" (
+                echo Pushing %%~F ^(forced^)...
+                adb push "%ROOT%\%%~F" /data/local/tmp/bench_test/ 2>nul
+            ) else (
+                adb shell "test -f /data/local/tmp/bench_test/%%~F" >nul 2>&1
+                if errorlevel 1 (
+                    echo Pushing %%~F...
+                    adb push "%ROOT%\%%~F" /data/local/tmp/bench_test/ 2>nul
+                ) else ( echo %%~F already on device, skip. )
+            )
+        )
+    )
 )
 
 REM --- Push .so files (skip if already on device) ---

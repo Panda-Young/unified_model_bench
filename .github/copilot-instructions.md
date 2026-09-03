@@ -116,6 +116,13 @@ ONNX Runtime / MNN / NCNN / TFLite / LiteRT / QNN SDK 等）的 Copilot 编码�
   `TOTAL: 0` 但退出码为 2 表示"什么都没扫到"，是假绿灯，不得视为合规（历史上
   该脚本的默认路径硬编码到不存在的目录，长期打印 `TOTAL: 0` 却一个文件都没扫）。
   已接入 CI（`.github/workflows/ci.yml` 的 "Brace style check" 步骤）。
+- **d. 批处理脚本（.bat/.cmd）禁止在块内 `echo` 未转义的括号**：在
+  `if (...)` / `for (...) do (...)` **块内**，`echo` 行里的裸 `(`/`)` 会被 cmd 当成
+  块语法解析，导致脚本在**解析阶段**直接崩溃（`此时不应有 ...。`），且**该分支未进入
+  也会触发**。必须写成 `^( ... ^)` 或加引号。`REM`/`::`/`title` 行不受影响。
+  合规性检查：`python tools/utils/check_bat_parens.py`（无参运行默认扫仓库根下的
+  `.bat`/`.cmd`），退出码语义同上（`0`=通过、`1`=违规、`2`=扫描未完成）。
+  已接入 CI（`.github/workflows/ci.yml` 的 "Batch paren check" 步骤）。
 - **c. 命名与 const 正确性**：变量/函数用 `snake_case`，类型/类用 `PascalCase`，
   宏用 `UPPER_SNAKE_CASE`；避免魔法数字（用 `constexpr` 命名常量）；能用
   `const`/`constexpr` 的地方必须用；头文件加 `#pragma once`。
