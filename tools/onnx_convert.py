@@ -6,13 +6,20 @@ Usage:
   python onnx_convert.py <model.onnx> --to ncnn                # NCNN only
   python onnx_convert.py <model.onnx> --to mnn   [--fp16]      # MNN only
   python onnx_convert.py <model.onnx> --to tflite               # TFLite only
-  python onnx_convert.py <model.onnx> --to all                  # all three
+  python onnx_convert.py <model.onnx> --to all                  # text + ncnn + mnn + tflite
   python onnx_convert.py <model.onnx> --to ncnn,mnn             # multiple
   python onnx_convert.py <model.onnx> --to ncnn --no-dual       # FP32 only
+  python onnx_convert.py <model.onnx> --to text                 # ONNX structure only
+  python onnx_convert.py <model.onnx> --to all,text             # convert + structure
 
 Shared flags:
   --no-verify        Skip numerical accuracy verification
-  --no-cleanup       Keep intermediate files
+  --no-cleanup       Skip intermediate files
+
+Text export:
+  --to text          Export ONNX model structure to '<model>.onnx.text'
+  --show-weights     Also print weight values in the text report
+  -t, --output-text  Custom output path for the .text report
 
 NCNN-specific:
   --fp16             Use FP16 weights/storage (default: FP32)
@@ -1438,6 +1445,259 @@ def convert_tflite(model_path: Path, args) -> int:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# ONNX structure exporter (merged from onnx_to_text.py)
+# ──────────────────────────────────────────────────────────────────────
+
+def _format_shape(dims) -> str:
+    """Format TensorShapeProto dimensions into a readable tuple string.
+
+    Static dimensions are shown as integers, symbolic dynamic dimensions keep
+    their name (dim_param), and unknown ones are shown as 'dynamic'.
+    """
+    parts = []
+    for d in dims:
+        if d.dim_param:
+            parts.append(d.dim_param)
+        elif d.dim_value != 0:
+            parts.append(str(d.dim_value))
+        else:
+            parts.append("dynamic")
+    return "(" + ", ".join(parts) + ")"
+
+
+def _format_attr(attr) -> str:
+    """Format an attribute together with its type and value."""
+    type_name = onnx.AttributeProto.AttributeType.Name(attr.type)
+    try:
+        value = onnx.helper.get_attribute_value(attr)
+    except Exception as e:
+        value = f"<unreadable: {e}>"
+    text = repr(value)
+    if len(text) > 500:
+        text = text[:500] + " ... (truncated)"
+    return f"{type_name} {attr.name} = {text}"
+
+
+def _dtype_itemsize(elem_type: int) -> int:
+    """Return the byte size of a single element for an ONNX tensor dtype."""
+    try:
+        np_dtype = onnx.helper.tensor_dtype_to_np_dtype(elem_type)
+    except Exception:
+        try:
+            np_dtype = onnx.mapping.TENSOR_TYPE_TO_NP_TYPE[elem_type]
+        except Exception:
+            return 0
+    return np_dtype.itemsize
+
+
+def onnx_to_text(model_path: str, show_weights: bool = False) -> str:
+    """Convert an ONNX model into a detailed, human-readable text string."""
+    model = onnx.load(model_path)
+    graph = model.graph
+    lines = []
+
+    file_size = os.path.getsize(model_path)
+
+    # ================= Model-level metadata =================
+    lines.append("=" * 72)
+    lines.append("ONNX MODEL REPORT")
+    lines.append("=" * 72)
+    lines.append(f"IR version            : {model.ir_version}")
+    lines.append(
+        f"Producer              : {model.producer_name or '(unknown)'} (v{model.producer_version or '?'})"
+    )
+    lines.append(f"Domain                : {model.domain or '(none)'}")
+    lines.append(f"Model version         : {model.model_version}")
+    lines.append(f"Model doc_string      : {model.doc_string or '(none)'}")
+    lines.append(
+        f"File size on disk     : {file_size} bytes ({file_size / 1024 / 1024:.3f} MB)"
+    )
+    lines.append("")
+
+    # Opset imports
+    lines.append("--- Opset Imports ---")
+    if model.opset_import:
+        for op in model.opset_import:
+            lines.append(f"  domain='{op.domain or ''}' version={op.version}")
+    else:
+        lines.append("  (none)")
+    lines.append("")
+
+    # Metadata props
+    lines.append("--- Metadata Props ---")
+    if model.metadata_props:
+        for prop in model.metadata_props:
+            lines.append(f"  {prop.key} = {prop.value}")
+    else:
+        lines.append("  (none)")
+    lines.append("")
+
+    # Graph info
+    lines.append("--- Graph ---")
+    lines.append(f"  Name      : {graph.name or '(unnamed)'}")
+    lines.append(f"  doc_string: {graph.doc_string or '(none)'}")
+    lines.append("")
+
+    # Local functions
+    lines.append(f"--- Local Functions ({len(model.functions)} total) ---")
+    if model.functions:
+        for fn in model.functions:
+            lines.append(f"  [{fn.name}] domain='{fn.domain or ''}'")
+            lines.append(f"      inputs : {list(fn.input)}")
+            lines.append(f"      outputs: {list(fn.output)}")
+            lines.append(f"      attrs  : {list(fn.attribute)}")
+            lines.append(f"      opsets : {[(o.domain, o.version) for o in fn.opset_import]}")
+            lines.append(f"      nodes  : {len(fn.node)}")
+    else:
+        lines.append("  (none)")
+    lines.append("")
+
+    # ================= Inputs =================
+    lines.append("--- Inputs ---")
+    initializer_names = {init.name for init in graph.initializer}
+    for inp in graph.input:
+        tensor = inp.type.tensor_type
+        shape = _format_shape(tensor.shape.dim)
+        dtype = onnx.TensorProto.DataType.Name(tensor.elem_type)
+        kind = "weight" if inp.name in initializer_names else "data"
+        lines.append(f"  {inp.name}: {dtype}{shape}  [{kind}]")
+        if inp.doc_string:
+            lines.append(f"      doc: {inp.doc_string}")
+    if not graph.input:
+        lines.append("  (none)")
+    lines.append("")
+
+    # ================= Outputs =================
+    lines.append("--- Outputs ---")
+    for out in graph.output:
+        tensor = out.type.tensor_type
+        shape = _format_shape(tensor.shape.dim)
+        dtype = onnx.TensorProto.DataType.Name(tensor.elem_type)
+        lines.append(f"  {out.name}: {dtype}{shape}")
+        if out.doc_string:
+            lines.append(f"      doc: {out.doc_string}")
+    if not graph.output:
+        lines.append("  (none)")
+    lines.append("")
+
+    # ================= Value info (intermediate shapes) =================
+    lines.append(
+        f"--- Value Info / Intermediate Tensors ({len(graph.value_info)} total) ---"
+    )
+    for vi in graph.value_info:
+        tensor = vi.type.tensor_type
+        shape = _format_shape(tensor.shape.dim)
+        dtype = onnx.TensorProto.DataType.Name(tensor.elem_type)
+        lines.append(f"  {vi.name}: {dtype}{shape}")
+    if not graph.value_info:
+        lines.append("  (none)")
+    lines.append("")
+
+    # ================= Nodes =================
+    lines.append(f"--- Nodes ({len(graph.node)} total) ---")
+    op_counter = {}
+    for i, node in enumerate(graph.node):
+        op_counter[node.op_type] = op_counter.get(node.op_type, 0) + 1
+        lines.append(
+            f"  [{i}] name='{node.name or ''}' op_type={node.op_type} domain='{node.domain or ''}'"
+        )
+        lines.append(f"      inputs : {list(node.input)}")
+        lines.append(f"      outputs: {list(node.output)}")
+        if node.doc_string:
+            lines.append(f"      doc    : {node.doc_string}")
+        if node.attribute:
+            lines.append("      attributes:")
+            for attr in node.attribute:
+                lines.append(f"         {_format_attr(attr)}")
+        lines.append("")
+    lines.append(
+        f"  Op-type histogram (desc): {dict(sorted(op_counter.items(), key=lambda x: -x[1]))}"
+    )
+    lines.append("")
+
+    # ================= Initializers (weights) =================
+    lines.append(f"--- Initializers / Weights ({len(graph.initializer)} total) ---")
+    total_elements = 0
+    total_bytes = 0
+    for init in graph.initializer:
+        dtype = onnx.TensorProto.DataType.Name(init.data_type)
+        shape = tuple(init.dims)
+        elem_count = 1
+        for d in init.dims:
+            elem_count *= d
+        total_elements += elem_count
+
+        byte_size = len(init.raw_data)
+        if byte_size == 0:
+            byte_size = elem_count * _dtype_itemsize(init.data_type)
+        total_bytes += byte_size
+
+        loc = onnx.TensorProto.DataLocation.Name(init.data_location) if init.data_location else "DEFAULT"
+        lines.append(
+            f"  {init.name}: {dtype}{shape}  elements={elem_count}  bytes={byte_size}  location={loc}"
+        )
+        if show_weights:
+            try:
+                arr = onnx.numpy_helper.to_array(init)
+                flat = arr.flatten()
+                if arr.size <= 10:
+                    lines.append(f"      values: {arr}")
+                else:
+                    lines.append(f"      first 10 values: {flat[:10]} ...")
+            except Exception as e:
+                lines.append(f"      values: <cannot load: {e}>")
+    if not graph.initializer:
+        lines.append("  (none)")
+    lines.append("")
+
+    # ================= Summary =================
+    lines.append("--- Summary ---")
+    lines.append(f"  Total inputs          : {len(graph.input)}")
+    lines.append(f"  Total outputs         : {len(graph.output)}")
+    lines.append(f"  Total nodes           : {len(graph.node)}")
+    lines.append(f"  Total initializers    : {len(graph.initializer)}")
+    lines.append(f"  Distinct op types     : {len(op_counter)}")
+    lines.append(f"  Total weight elements : {total_elements}")
+    lines.append(
+        f"  Estimated weight bytes: {total_bytes} ({total_bytes / 1024 / 1024:.3f} MB)"
+    )
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def convert_text(model_path: Path, args) -> int:
+    """Export the ONNX model structure to a human-readable text file.
+
+    Output defaults to '<model_path>.text' unless --output-text is given.
+    """
+    print("\n" + "=" * 60)
+    print(" [4/4] ONNX Text Export")
+    print("=" * 60)
+
+    out_path = getattr(args, 'output_text', None)
+    if out_path:
+        out_path = parse_path(out_path) if isinstance(out_path, str) else out_path
+    else:
+        # Match onnx_to_text.py convention: '<model_path>.text' (append to the
+        # full filename, e.g. test_model.onnx.text), not a suffix replacement.
+        out_path = Path(str(model_path) + ".text")
+
+    try:
+        text = onnx_to_text(str(model_path), show_weights=getattr(args, 'show_weights', False))
+    except Exception as e:
+        msg = str(e).split('\n')[0] if str(e) else str(type(e).__name__)
+        print(f"  Text export failed: {msg}")
+        return (False, f"text export failed: {msg}")
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    print(f"  Model structure saved to: {out_path}")
+    return (True, None)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1451,11 +1711,11 @@ def main():
     ensure_common_deps()
 
     parser = argparse.ArgumentParser(
-        description="Unified ONNX → NCNN / MNN / TFLite converter")
+        description="Unified ONNX → NCNN / MNN / TFLite converter + text exporter")
     parser.add_argument("model", type=parse_path,
                         help="Path to input .onnx model")
     parser.add_argument("--to", type=str, default="all",
-                        help="Target format(s): ncnn, mnn, tflite, all (comma-separated)")
+                        help="Target format(s): ncnn, mnn, tflite, text, all (all = text+ncnn+mnn+tflite)")
 
     # Shared
     parser.add_argument("--no-verify", action="store_true",
@@ -1482,6 +1742,12 @@ def main():
     parser.add_argument("--keep-temp", action="store_true",
                         help="TFLite: keep onnx2tf temp artifacts")
 
+    # Text export
+    parser.add_argument("-t", "--output-text", type=str, default=None,
+                        help="Text: custom output path for the .text report")
+    parser.add_argument("--show-weights", action="store_true",
+                        help="Text: also print weight values in the report")
+
     args = parser.parse_args()
 
     model_path: Path = args.model
@@ -1494,12 +1760,13 @@ def main():
 
     targets = [t.strip().lower() for t in args.to.split(",")]
     if "all" in targets:
-        targets = ["ncnn", "mnn", "tflite"]
+        targets = ["text", "ncnn", "mnn", "tflite"]
 
     converters = {
         "ncnn":   convert_ncnn,
         "mnn":    convert_mnn,
         "tflite": convert_tflite,
+        "text":   convert_text,
     }
 
     errors = 0
@@ -1572,12 +1839,15 @@ def main():
     tflite_out = parse_path(args.output_tflite) if args.output_tflite else model_path.with_suffix(".tflite")
     _fmt_file("TFLite", tflite_out)
 
+    text_out = parse_path(args.output_text) if args.output_text else Path(str(model_path) + ".text")
+    _fmt_file("Text",   text_out)
+
     shapes_f = model_path.with_suffix(".shapes")
     if shapes_f.exists():
         print(f"\n[Shapes]  {shapes_f}")
 
     # Collect tips for missing formats
-    missing = [t for t in ("ncnn", "mnn", "tflite")
+    missing = [t for t in ("ncnn", "mnn", "tflite", "text")
                if results.get(t) and not results[t][0]]
     if missing:
         print(f"\n[Tips]  Tips for failed targets:")
@@ -1588,6 +1858,8 @@ def main():
             print(f"   MNN:    ensure MNNConvert is in tools/mnn_convert/ or PATH")
         if "ncnn" in missing:
             print(f"   NCNN:   ensure pnnx.exe is in tools/ or PATH")
+        if "text" in missing:
+            print(f"   Text:   ensure 'onnx' is installed (pip install onnx)")
 
     return 1 if errors else 0
 

@@ -22,6 +22,7 @@ bench_bins/
 
 # Test models (user-provided)
 *.onnx
+*.onnx.text
 *.tflite
 *.bin
 *.param
