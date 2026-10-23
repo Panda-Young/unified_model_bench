@@ -194,6 +194,13 @@ namespace BackendRegistry
              kPlatDesktop64, CreateOnnxBackend},
             {BackendId::ONNX_OPENVINO_NPU, BackendType::ONNX_EP, "ONNX_OpenVINO_NPU", false,
              kPlatDesktop64, CreateOnnxBackend},
+            /* CUDA / TensorRT: available on Linux & Windows with the GPU-enabled
+             * ORT build. On Jetson linux (this repo's aarch64 setup) we stage the
+             * NVIDIA GPU build and exercise both EPs (CUDA + TensorRT). */
+            {BackendId::ONNX_CUDA, BackendType::ONNX_EP, "ONNX_CUDA", false,
+             kPlatWin | kPlatLinux, CreateOnnxBackend},
+            {BackendId::ONNX_TENSORRT, BackendType::ONNX_EP, "ONNX_TensorRT", false,
+             kPlatWin | kPlatLinux, CreateOnnxBackend},
             {BackendId::ONNX_NNAPI, BackendType::ONNX_EP, "ONNX_NNAPI", false,
              kPlatAndroid, CreateOnnxBackend},
             {BackendId::ONNX_XNNPACK, BackendType::ONNX_EP, "ONNX_XNNPACK", false,

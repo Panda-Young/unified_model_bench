@@ -31,6 +31,9 @@ typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_D
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_Dnnl)(OrtSessionOptions *options, int use_arena);
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_OpenVINO)(OrtSessionOptions *options, const char *device_type);
 typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_Nnapi)(OrtSessionOptions *options, int use_nnapi);
+/* TensorRT EP is exposed as a loadable function in ORT's GPU build (not part of
+ * the OrtApi struct), matching the upstream appender symbol. */
+typedef OrtStatus *(ORT_API_CALL *PFN_OrtSessionOptionsAppendExecutionProvider_Tensorrt)(OrtSessionOptions *options, int device_id);
 
 /* ---------------------------------------------------------------------------
  * ORT status helper: every ORT C API call returns an OrtStatus*; a non-null
@@ -303,6 +306,49 @@ bool ONNXBackend::ConfigureEP()
         }
         return true;
     }
+    case BackendId::ONNX_CUDA: {
+        /* CUDA EP (GPU). ORT 1.19 uses the V2 options API (OrtCUDAProviderOptions*),
+         * NOT the legacy (opts, device_id) signature that crashed when passed an
+         * int. Create options with default steps, append, release. */
+        OrtCUDAProviderOptionsV2 *cupo = nullptr;
+        OrtStatus *cst = ort_->CreateCUDAProviderOptions(&cupo);
+        if (!OrOk(ort_, cst, "CreateCUDAProviderOptions", last_error_)) {
+            return false;
+        }
+        if (!OrOk(ort_, ort_->SessionOptionsAppendExecutionProvider_CUDA_V2(opts_, cupo),
+                  "CUDA append", last_error_)) {
+            ort_->ReleaseCUDAProviderOptions(cupo);
+            return false;
+        }
+        ort_->ReleaseCUDAProviderOptions(cupo);
+        /* Do not silently fall back to CPU when an op can't run on CUDA. */
+        if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, "session.disable_cpu_ep_fallback", "1"),
+                  "AddSessionConfigEntry(disable_cpu_ep_fallback)", last_error_)) {
+            return false;
+        }
+        LOGI("ONNX: CUDA EP configured");
+        return true;
+    }
+    case BackendId::ONNX_TENSORRT: {
+        /* TensorRT EP (GPU). The provider stores a validated engine generated on
+         * first load; device_id 0 = the Jetson nvgpu. */
+        auto pfnTrt = (PFN_OrtSessionOptionsAppendExecutionProvider_Tensorrt)
+            load_function(lib_handle_, "OrtSessionOptionsAppendExecutionProvider_Tensorrt");
+        if (!pfnTrt) {
+            LOGE("ONNX: TensorRT EP function not found in library");
+            last_error_ = "ONNX: TensorRT EP function not found";
+            return false;
+        }
+        if (!OrOk(ort_, pfnTrt(opts_, 0), "TensorRT append", last_error_)) {
+            return false;
+        }
+        if (!OrOk(ort_, ort_->AddSessionConfigEntry(opts_, "session.disable_cpu_ep_fallback", "1"),
+                  "AddSessionConfigEntry(disable_cpu_ep_fallback)", last_error_)) {
+            return false;
+        }
+        LOGI("ONNX: TensorRT EP configured");
+        return true;
+    }
     case BackendId::ONNX_NNAPI: {
 #if defined(__ANDROID__) || defined(__android__)
         auto pfnNnapi = (PFN_OrtSessionOptionsAppendExecutionProvider_Nnapi)
@@ -542,10 +588,15 @@ bool ONNXBackend::Initialize(const char *model_path, int num_threads)
         lib_handle_ = load_library(dll_name.c_str());
     }
 #elif defined(__linux__)
-    /* Linux desktop: official prebuilt lays the .so flat under
-       deps/onnxruntime/lib/linux-x64/ (no cpu/ subdir). Linux has no DML/
-       OpenVINO EP builds, so every desktop backend here maps to the CPU .so. */
+    /* Linux: official prebuilt lays the .so flat under deps/onnxruntime/lib/
+       (no cpu/ subdir). Linux has no DML/OpenVINO EP builds, so every desktop/
+       arm64 backend here maps to the CPU .so. The arm64 lib lives under
+       linux-aarch64/, the x64-compatible lib under linux-x64/. */
+#if defined(__aarch64__)
+    lib_handle_ = load_library("deps/onnxruntime/lib/linux-aarch64/libonnxruntime.so");
+#else
     lib_handle_ = load_library("deps/onnxruntime/lib/linux-x64/libonnxruntime.so");
+#endif
     if (!lib_handle_) {
         /* Fallback: rely on LD_LIBRARY_PATH (e.g. pointing at the same dir) */
         lib_handle_ = load_library("libonnxruntime.so");

@@ -43,11 +43,19 @@ elseif(WIN32)
         set(TARGET_SUFFIX "win-x86")
     endif()
 elseif(UNIX AND NOT ANDROID)
-    # Linux desktop: vendored prebuilt libs live under linux-x64
-    # (deps/onnxruntime/lib/linux-x64, deps/ncnn/lib/linux-x64). The suffix is
-    # kept as "linux-x64" so the produced binary name is self-describing.
-    set(ARCH_DIR "linux-x64")
-    set(TARGET_SUFFIX "linux-x64")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$"
+       OR (CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64"))
+        # Jetson / ARM64 Linux: vendored prebuilt libs (when present) live under
+        # linux-aarch64. Kept as "linux-aarch64" so the binary name is self-describing.
+        set(ARCH_DIR "linux-aarch64")
+        set(TARGET_SUFFIX "linux-aarch64")
+    else()
+        # Linux x64 desktop: vendored prebuilt libs live under linux-x64
+        # (deps/onnxruntime/lib/linux-x64, deps/ncnn/lib/linux-x64). The suffix is
+        # kept as "linux-x64" so the produced binary name is self-describing.
+        set(ARCH_DIR "linux-x64")
+        set(TARGET_SUFFIX "linux-x64")
+    endif()
 endif()
 
 # ---- Include paths ----
@@ -152,6 +160,12 @@ if(HAVE_ONNX_BACKEND AND NOT WIN32)
         "${DEPS_DIR}/onnxruntime/lib/${ARCH_DIR}/libonnxruntime.so")
 endif()
 
+# MNN: the glibc aarch64 libMNN.so staged from the CPython wheel is a Python
+# extension, so on linux-aarch64 we pull in libpython to satisfy its Py* refs.
+if(HAVE_MNN_BACKEND AND NOT WIN32 AND ARCH_DIR STREQUAL "linux-aarch64")
+    target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE python3.10)
+endif()
+
 if(HAVE_NCNN_BACKEND)
     if(WIN32)
         target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
@@ -160,18 +174,24 @@ if(HAVE_NCNN_BACKEND)
         target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
             "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.so")
     else()
-        # Linux desktop: official Ubuntu prebuilt ships a static libncnn.a
-        # built with OpenMP + Vulkan/Glslang, so we must pull in libgomp and
-        # the bundled glslang static libraries.
-        target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
-            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.a"
-            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang.a"
-            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang-default-resource-limits.a"
-            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libMachineIndependent.a"
-            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libGenericCodeGen.a"
-            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libOSDependent.a"
-            "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libSPIRV.a"
-            OpenMP::OpenMP_CXX)
+        # Linux: built a static libncnn.a. The desktop Ubuntu prebuilt is built
+        # with OpenMP + Vulkan/Glslang (needs the bundled glslang statics), while
+        # the linux-aarch64 build is Vulkan-off (no glslang) - mirror backends.cmake.
+        if(ARCH_DIR STREQUAL "linux-aarch64")
+            target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
+                "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.a"
+                OpenMP::OpenMP_CXX)
+        else()
+            target_link_libraries(unified_bench_${TARGET_SUFFIX} PRIVATE
+                "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.a"
+                "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang.a"
+                "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang-default-resource-limits.a"
+                "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libMachineIndependent.a"
+                "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libGenericCodeGen.a"
+                "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libOSDependent.a"
+                "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libSPIRV.a"
+                OpenMP::OpenMP_CXX)
+        endif()
     endif()
 endif()
 

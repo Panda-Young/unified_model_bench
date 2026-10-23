@@ -41,6 +41,12 @@ __pycache__/
 
 # Dependencies (large binaries, copy manually or via script)
 deps/
+
+# ONNX Runtime CUDA provider aarch64: 291 MB, exceeds GitHub's 100 MB per-file
+# limit, so it cannot be committed. Obtain it separately (see
+# tools/setup_linux_aarch64_deps.sh) and stage under
+# deps/onnxruntime/lib/linux-aarch64/.
+deps/onnxruntime/lib/linux-aarch64/libonnxruntime_providers_cuda.so
 *.pyc
 
 # Local scratch / one-off analysis artifacts (never commit)

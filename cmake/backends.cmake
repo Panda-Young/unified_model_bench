@@ -68,6 +68,21 @@ ub_row(TFLITE
 
 # NCNN: static on Android/Linux (no __declspec), NCNN_STATIC_DEFINE required.
 # Linux desktop additionally needs the bundled glslang static libs + OpenMP.
+# On linux-aarch64 the arch prebuilt libncnn.a is built with Vulkan OFF (no
+# glslang), matching the extra/glslang-less Arch Linux ARM ncnn shared build, so
+# only libncnn.a + gomp are needed there.
+if(ARCH_DIR STREQUAL "linux-aarch64")
+    set(UB_NCNN_LINUX_LIBS "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.a")
+else()
+    set(UB_NCNN_LINUX_LIBS
+        "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.a"
+        "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang.a"
+        "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang-default-resource-limits.a"
+        "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libMachineIndependent.a"
+        "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libGenericCodeGen.a"
+        "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libOSDependent.a"
+        "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libSPIRV.a")
+endif()
 ub_row(NCNN
     DEFINITION HAVE_NCNN_BACKEND
     INCLUDE_DIR "${NCNN_INC}"
@@ -75,14 +90,7 @@ ub_row(NCNN
     UNIX_DEFS  NCNN_STATIC_DEFINE
     WIN32_LIBS "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/ncnn.lib"
     ANDROID_LIBS "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.so"
-    LINUX_LIBS   "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libncnn.a"
-                 "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang.a"
-                 "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libglslang-default-resource-limits.a"
-                 "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libMachineIndependent.a"
-                 "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libGenericCodeGen.a"
-                 "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libOSDependent.a"
-                 "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/libSPIRV.a"
-                 OpenMP::OpenMP_CXX
+    LINUX_LIBS   ${UB_NCNN_LINUX_LIBS} OpenMP::OpenMP_CXX
     WIN32_DLLS "${DEPS_DIR}/ncnn/lib/${ARCH_DIR}/ncnn.dll")
 
 ub_row(MNN
@@ -90,10 +98,13 @@ ub_row(MNN
     INCLUDE_DIR "${MNN_INC}"
     SOURCES mnn_backend.cpp
     WIN32_LIBS "${DEPS_DIR}/mnn/lib/${ARCH_DIR}/MNN.lib"
-    # NOTE: upstream uses arm64-v8a unconditionally in the non-Windows branch,
-    # so Android and Linux share the same path here.
+    # NOTE: upstream uses arm64-v8a unconditionally in the non-Windows branch
+    # (Android-bionic). On Linux we instead use the per-ARCH_DIR libMNN.so so a
+    # glibc aarch64 wheel can provide libMNN.so (linux-aarch64) as well. The pip
+    # wheel libMNN.so is a CPython extension, so on linux-aarch64 we must also
+    # link python for its Py* references.
     ANDROID_LIBS "${DEPS_DIR}/mnn/lib/arm64-v8a/libMNN.so"
-    LINUX_LIBS   "${DEPS_DIR}/mnn/lib/arm64-v8a/libMNN.so"
+    LINUX_LIBS   "${DEPS_DIR}/mnn/lib/${ARCH_DIR}/libMNN.so"
     WIN32_DLLS "${DEPS_DIR}/mnn/lib/${ARCH_DIR}/MNN.dll")
 
 # LiteRT: the Qualcomm options stubs ship with this backend. The DXC (DirectX
