@@ -13,9 +13,12 @@
 #include <string>
 
 // One entry of the Snapdragon -> QNN socId / HTP arch map (source: QAIRT 2.48.40
-// docs, overview.html "Supported Snapdragon devices"). arch is the HTP
-// architecture number (81 = hexagon v81, 79 = v79, 75 = v75, 73 = v73, 69 = v69,
-// 68 = v68, ...).
+// docs, overview.html "Supported Snapdragon devices" + the "HTP TARGET CONFIG
+// TABLE" (Target Name / Target dsp_arch / Target soc_id) in the docs page
+// htp_auto_single_nsp.html). arch is the HTP architecture number (81 = hexagon
+// v81, 79 = v79, 75 = v75, 73 = v73, 69 = v69, 68 = v68, ...). dsp_arch is the
+// same value in the generator's string form ("v69"), which is what the HTP
+// backend-extensions JSON "devices[].dsp_arch" field expects.
 struct QnnSocEntry {
     const char *name;   // ro.soc.model string, e.g. "SM8850"
     uint32_t socId;     // QNN soc id (QNN_SOC_MODEL_*), e.g. 87
@@ -32,6 +35,11 @@ bool qnn_soc_detect(std::string &soc_model, std::string &htp_arch);
 // True when the (bare) arch string is a number >= min_arch. Unknown/empty or
 // non-numeric arch returns false (conservative: caller picks safe defaults).
 bool qnn_arch_at_least(const std::string &htp_arch, int min_arch);
+
+// "v<arch>" string form of a bare arch number ("69" -> "v69"), as required by
+// the HTP backend-extensions JSON field devices[].dsp_arch used with
+// qnn-context-binary-generator. Returns an empty string for an unknown arch.
+std::string qnn_dsp_arch_string(const std::string &htp_arch);
 
 // Recommended VTCM size in MB for the detected arch. Returns 0 meaning "use
 // the target SoC's maximum VTCM" (QNN_HTP_GRAPH_CONFIG_OPTION_MAX) for every

@@ -122,9 +122,13 @@ ub_row(LITERT
 
 # QNN SDK: only meaningful on Android with the SDK present, hence CONDITION.
 # The QNN libraries are dlopen'd at runtime, so there is no link entry.
+# NOTE: use ANDROID_PLATFORM (always set by the NDK toolchain / our CMake flags)
+# instead of ANDROID; the bare `ANDROID` variable is not reliably visible in the
+# if(NOT (${_cond})) evaluation once the toolchain scope exits, which silently
+# disabled the whole QNN SDK backend on every Android build.
 ub_row(QNN_SDK
     DEFINITION HAVE_QNN_SDK_BACKEND
-    CONDITION "HAVE_QNN_SDK_BACKEND AND ANDROID AND HAVE_QNN_DELEGATE"
+    CONDITION "HAVE_QNN_SDK_BACKEND AND ANDROID_PLATFORM AND HAVE_QNN_DELEGATE"
     SOURCES qnn_backend.cpp)
 
 # ---------------------------------------------------------------------------
@@ -138,10 +142,18 @@ function(ub_backends_phase1 out_sources)
         if(NOT ${_def})
             continue()
         endif()
-        if(_cond AND NOT (${_cond}))
-            message(STATUS "Backend ${_name}: option is ON but platform "
-                           "preconditions are not met - disabled")
-            continue()
+        if(_cond)
+            # Evaluate the condition into a value first: `if(NOT (${_cond}))`
+            # (compound-AND string re-expansion) does NOT work in CMake and
+            # silently evaluates false even when all terms are truthy, which
+            # permanently disabled the QNN SDK backend. Deref to a scalar then
+            # test its truthiness instead.
+            set(_cond_eval ${_cond})
+            if(NOT _cond_eval)
+                message(STATUS "Backend ${_name}: option is ON but platform "
+                               "preconditions are not met - disabled")
+                continue()
+            endif()
         endif()
 
         add_definitions(-D${_def})
@@ -171,8 +183,11 @@ function(ub_backends_phase2)
         if(NOT ${_def})
             continue()
         endif()
-        if(_cond AND NOT (${_cond}))
-            continue()
+        if(_cond)
+            set(_cond_eval ${_cond})
+            if(NOT _cond_eval)
+                continue()
+            endif()
         endif()
 
         if(WIN32)

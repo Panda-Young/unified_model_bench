@@ -817,15 +817,20 @@ bool QnnSdkBackend::CreateBackendDeviceContext()
             char hvx_str[8] = {0};
             snprintf(o_str, sizeof(o_str), "%u", o_level);
             snprintf(hvx_str, sizeof(hvx_str), "%llu", (unsigned long long)hvx_threads);
+            /* dsp_arch in the generator's string form ("v69"), selected from the
+             * docs "HTP TARGET CONFIG TABLE" (soc_id <-> dsp_arch). */
+            std::string dsp_arch = qnn_dsp_arch_string(htp_arch);
             LOGI("QNN: HTP graph config: vtcm=%uMB(%s) O=%s hvx=%s aaf=%d full=%d "
-                 "graph=%s arch=%s",
+                 "graph=%s arch=%s dsp_arch=%s soc_id=%s",
                  vtcm_mb,
                  vtcm_mb == QNN_HTP_GRAPH_CONFIG_OPTION_MAX ? "SoC-max" : "fixed",
                  full_tuning ? o_str : "off",
                  full_tuning ? hvx_str : "off",
                  full_tuning ? (aaf ? 1 : 0) : 0,
                  full_tuning ? 1 : 0,
-                 graph_name.c_str(), htp_arch.c_str());
+                 graph_name.c_str(), htp_arch.c_str(),
+                 dsp_arch.empty() ? "auto" : dsp_arch.c_str(),
+                 soc_model == "0" ? "auto" : soc_model.c_str());
         }
 
         qnn_wrapper_api::GraphInfo_t **gi = nullptr;

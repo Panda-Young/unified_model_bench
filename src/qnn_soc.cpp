@@ -28,6 +28,21 @@ const QnnSocEntry kSocMap[] = {
     {"SM7635", 73, 73},   {"SC8380XP", 60, 73}, {"SM8475", 42, 69},
     {"SM8450", 36, 69},   {"SM7450", 41, 69}, {"SM8350", 30, 68},
     {"SM7325", 35, 68},   {"SC8280X", 37, 68},
+    // --- Automotive SA-series (snapdragonride / cockpit) ---
+    // Per the QAIRT docs "HTP TARGET CONFIG TABLE" (Target Name / Target
+    // dsp_arch / Target soc_id, htp_auto_single_nsp.html):
+    //   SA8295 v68 soc_id 39, SA8540 v68 soc_id 62, SA8650/SA8775/SA8255 v73
+    //   soc_id 52, SA8620/SA7255 v75 soc_id 67, SA8797 v81 soc_id 72.
+    // Device reports ro.soc.model as the marketing name ("SA8295P"), so match
+    // both the bare and the "P" suffix variants via explicit entries.
+    {"SA8295P", 39, 68},  {"SA8295", 39, 68},
+    {"SA8540P", 62, 68},  {"SA8540", 62, 68},
+    {"SA8650P", 52, 73},  {"SA8650", 52, 73},
+    {"SA8775P", 52, 73},  {"SA8775", 52, 73},
+    {"SA8255P", 52, 73},  {"SA8255", 52, 73},
+    {"SA8620P", 67, 75},  {"SA8620", 67, 75},
+    {"SA7255P", 67, 75},  {"SA7255", 67, 75},
+    {"SA8797P", 72, 81},  {"SA8797", 72, 81},
 };
 
 } // namespace
@@ -71,6 +86,21 @@ bool qnn_arch_at_least(const std::string &htp_arch, int min_arch)
         return false; // not a bare decimal number
     }
     return value >= min_arch;
+}
+
+std::string qnn_dsp_arch_string(const std::string &htp_arch)
+{
+    // The generator's HTP backend-extensions JSON wants "v69", not "69".
+    // Reject anything that is not a bare positive decimal (e.g. "0" = auto).
+    if (htp_arch.empty() || htp_arch == "0") {
+        return std::string();
+    }
+    for (char c : htp_arch) {
+        if (c < '0' || c > '9') {
+            return std::string();
+        }
+    }
+    return "v" + htp_arch;
 }
 
 uint32_t qnn_recommended_vtcm_mb(const std::string &htp_arch)

@@ -340,12 +340,13 @@ void RecordFailure(ResultCollector &collector, const BackendConfig &bcfg,
 /* ---------------------------------------------------------------------------
  * RunPerProcess - the scheduler (the only mode of the tool)
  *
- * The CPU backend of the ENTRY model format is the SINGLE global accuracy
+ * The ONNX model's CPU backend (ONNX_CPU) is the SINGLE global accuracy
  * baseline: its output is dumped once and handed to EVERY other backend
- * worker (all model variants included) via --baseline-file, so every
- * backend's diff is measured against that reference - never against another
- * converted model format. E.g. entry test_model.onnx -> ONNX_CPU baseline,
- * test_model.mnn -> MNN_CPU baseline, test_model.ncnn.bin -> NCNN_CPU.
+ * worker (all converted variants included) via --baseline-file, so every
+ * backend's diff is measured against the original ONNX graph - directly
+ * comparable across TFLite/NCNN/MNN/QNN instead of each format being judged
+ * against its own conversion. If the bundle has no ONNX variant, the
+ * entry-format CPU backend is used as a fallback reference.
  *
  * For every (variant, backend) the runner spawns a FRESH worker process of
  * this executable with "--worker --backend <name> --batch-time <t>", so:
@@ -374,18 +375,29 @@ bool BenchmarkRunner::RunPerProcess()
         return false;
     }
 
-    /* ---- 1) Global baseline: the CPU backend of the ENTRY model format ----
-     * e.g. entry test_model.onnx -> ONNX_CPU, test_model.mnn -> MNN_CPU,
-     * test_model.ncnn.bin -> NCNN_CPU, and so on. Its output is dumped once
-     * and handed to EVERY other backend worker (all model variants included)
-     * via --baseline-file, so every backend's diff is measured against the
-     * entry-format CPU reference - never against another converted format. */
+    /* ---- 1) Global baseline: ALWAYS the ONNX variant + ONNX_CPU ----
+     * The ONNX model is the original / ground-truth graph in this workflow, so
+     * its ONNX_CPU output is the single accuracy reference EVERY other backend
+     * (all converted variants included: TFLite/NCNN/MNN/QNN) is diffed
+     * against. This makes the diff column directly comparable across formats
+     * instead of each format being judged against its own conversion.
+     * If no ONNX variant exists, fall back to the entry-format CPU baseline so
+     * non-ONNX-only bundles still get a reference. Its output is dumped once
+     * and handed to every worker via --baseline-file. */
     ModelFormat entry_fmt = detect_model_format(cfg_.model_path);
     const ModelSearchResult *base_var = nullptr;
     for (const auto *var : variants) {
-        if (var->format == entry_fmt) {
-            base_var = var;
+        if (var->format == ModelFormat::ONNX) {
+            base_var = var; /* ONNX is the preferred universal reference */
             break;
+        }
+    }
+    if (!base_var) {
+        for (const auto *var : variants) {
+            if (var->format == entry_fmt) {
+                base_var = var;
+                break;
+            }
         }
     }
     std::string base_out;
