@@ -1038,6 +1038,272 @@ QNN_SDK_HTP  avg=16.5~18.1 ms（与基线一致，无回归、无崩溃）
 
 **结论性经验（回答"如果是 sm8450 呢"）**：不要硬编码 vtcm——用 QNN 官方 `MAX(0)` 让 QNN 自动选该 SoC 上限（SM8850→8MB，SM8450/v69→其更小上限），永不失配；原生完整调优按 arch≥v73 门控、env 可强制；ORT 在 v81 保持 "8" 避免 EPContext 重生成。AAF 是激活融合进前驱算子、减少存储往返的图级优化，v81 上 aaf=1 无副作用（2026-08-12）。
 
+### 5.30 scnet 模型 ONNX_QNN_HTP 失败根因：2 个全零 Pad 无法 QNN 分区（2026-11-03，已定位+修复+实测）
+
+**现象**：`scnet_tfc_tdf_v3_20260821.onnx` + `ONNX_QNN_HTP` 在 SM8850 上 `CreateSession` 失败：
+
+```
+ONNX: CreateSession failed: This session contains graph nodes that are assigned to
+the default CPU EP, but fallback to CPU EP has been explicitly disabled by the user.
+Init failed: ONNX_QNN_HTP          →  avg=0.000 ms, accel=-1.00x
+```
+
+注意报错发生在 **创建会话（图分区）** 阶段，不是 QNN 图编译阶段，也不是 DSP 执行阶段——
+与 5.27 记录的 `disable_cpu_ep_fallback=1` 设计一致：它是**故意**把"CPU 混跑"变成硬失败。
+
+**根因定位（决定性证据：EPContext 缓存里的残留节点）**
+
+`ONNX_QNN_HTP` 失败时仍写出了一个 `…-ONNX_QNN_HTP-epContext.onnx`，它**精确记录了 ORT 的分区结果**：
+
+| 模型 | epContext 图内容 | 判定 |
+|---|---|---|
+| `scnet_tfc_tdf_v3_20260821.onnx` | 5 节点 = **3 个 EPContext + 2 个裸 `Pad`** | ❌ 2 个 Pad 留在 CPU |
+| `scnet_tfc-tdf-v3_1frame_20260818.onnx` | 5 节点 = **3 个 EPContext + 2 个裸 `Pad`** | ❌ 同一缺陷（历史遗留） |
+| `…_20260821_qnnfix.onnx`（修复后） | **1 节点 = 单个 EPContext** | ✅ 整图落在 HTP |
+| `scnet_tfc_tdf_v3_20260821-ONNX_QNN_GPU` | 1 节点 = 单个 EPContext | ✅ GPU 后端为何"没事" |
+
+**两个残留节点**：`/Pad_4`（喂给 `/down_convs.1/depthwise/Conv`）与 `/Pad_17`（喂给
+`/down_convs.2/depthwise_1/Conv`），其中间张量正是 QNN 三个分区之间的**跨分区边界**
+（`/Slice_11`、`/Slice_47`）。
+
+**更深一层的机制**（`pads` 输入的类型导致）：
+
+- 模型 41 个 `Pad` 的 `pads` 输入**全部是动态计算**（`Cast→Reshape→Transpose→Slice` 链），
+  **没有一个**是静态 initializer。
+- 这类 Pad 必须靠 ORT 常量折叠才变成可分区节点。折叠后 39 个 `pads` 非零
+  （如 `[0,0,2,1,0,0,0,1]`），**只有 2 个是全零**（`/Pad_4`、`/Pad_17`）。
+- ORT 对非零 Pad：折叠后 `pads` 变成常量，转换阶段作为 `pad_amount` 并入相邻 Conv
+  （归档实测 30 个 depthwise 卷积的 `*_pad_amount = {2,0,1,1}`，而其 ONNX `pads` 全为 0）→ 可分区。
+  对**全零 Pad**：`Pad` 的 `pads` 输入被换成了名为
+  `const_transpose_optimizer_token_480/516` 的 initializer（8 个 int64 全零，实测确认这
+  两个 initializer **只出现在失败模型的 epContext 里**，CPU 优化图里为 0 个），
+  节点本身却**保留为独立 `Pad`** → 落在 CPU EP。
+  （该 initializer 命名指向 QNN EP 的布局/转置优化器所做的常量重接线，此为推断，
+  但"全零 pads 且节点未被折叠成 Identity"是实测事实。）
+- 0 padding 是恒等变换，保留成节点纯属多余；但 `disable_cpu_ep_fallback=1` 不允许它留在 CPU。
+
+**为什么 GPU 后端看不出问题**：`ONNX_QNN_GPU` 分支（`src/onnx_backend.cpp` 459-474 行）
+**没有** `disable_cpu_ep_fallback`，跨分区 Pad 静默在 CPU 上跑，所以"看起来正常"——
+这正是 5.27 引入该开关的价值：它把隐式 CPU 混跑暴露出来。
+
+**修复（已实装于 `tools/fix_onnx_for_qnn.py`）**：把全零 Pad 折成 `Identity`。
+零 padding 数学等价，实测 CPU 端 3 组随机输入 `worst max-abs-diff = 0.000000 PASS`。
+
+> 注意：**不能**直接下发 ORT 优化后的模型——`ORT_ENABLE_ALL` 会烘入
+> `com.microsoft.nchwc:Conv` / `ReorderInput` 等桌面 EP 专属算子，设备端 ORT 加载不了。
+> 该工具只用 ORT 优化**识别**哪些 Pad 是全零（按节点名），再改**原始**模型。
+
+**实测（SM8850 / QAIRT 2.48.40，`--repeat 50 --warmup 12`）**：
+
+| 后端 | avg | max_diff | accel | peak mem |
+|---|---|---|---|---|
+| `ONNX_CPU`（基线） | 10.17 ms | 0 | 1.00x | 144.15 MB |
+| `ONNX_QNN_HTP`（qnnfix） | **9.99 ms** | 0.00371218 | 1.02x | 135.77 MB |
+
+HTP context binary 由 3 段降为 **2,985,872 B 单段**（失败时 3,032,608 B），
+`CreateSession` 与执行均成功，整图无 CPU 混跑。
+
+**结论性经验**：
+
+1. **`disable_cpu_ep_fallback=1` 的报错位置很关键**——"assigned to the default CPU EP"
+   是**图分区**问题，不要去查 QNN 图编译或 DSP 日志（那属于 5.29 / FARF 的范畴）。
+   最省事的取证手段是**直接看失败时写出的 `*-epContext.onnx`**：`EPContext` 节点数
+   = 分区数，剩下的裸节点就是 CPU 残留，一目了然，不需要 VERBOSE 日志（本机
+   `--log-level debug` 也**没有**把 ORT 分区日志转发出来，stdout/stderr 均只有应用自身日志）。
+2. **全零 Pad 是 QNN 分区的隐形杀手**。导出器（scnet/TFC-TDF 类）为动态 crop/pad 对产生
+   大量 Pad，其中少数是 0 padding；ORT 会把它留成跨分区节点而非折叠成 Identity。
+3. **性能上 HTP 对该模型几乎无收益（1.02x）**——该模型是 31 输入/31 输出的流式结构，
+   单帧 ~10 ms 里 ORT/QNN 的调度与 IO 开销占主导。要提速应走原生 QNN SDK（5.26/5.29）
+   或量化路径，而不是依赖 ORT QNN EP。
+4. 与归档 `千里_SA8295_QNN_项目归档`（v68/SA8295）的结论**互为印证**：scnet 在 HTP 上的
+   障碍始终是**图结构层面的分区/格式问题**，而非算力不足。
+
+---
+
+### 5.31 由修复后模型重建 QNN model.so：产物与旧版逐位等价（2026-11-03）
+
+**做法**：把 5.30 的修复应用到**原文件名**（`scnet_tfc_tdf_v3_20260821.onnx`，原件留
+`.onnx.orig`），让 tflite/ncnn/mnn/so 等 8 个派生文件继续成套——因为 `Pad(0)→Identity`
+是恒等变换，`.shapes` 甚至字节相同，其余派生文件无需重建即可继续对比
+（`model_loader.cpp` 按**文件名基名**匹配变体，改名 `_qnnfix` 会导致只剩 ONNX 一路被测）。
+
+**重建 .so**（OMEN / WSL2，QAIRT 2.48.0.260626）：
+
+```bash
+export QNN_SDK_ROOT=/opt/qcom/aistack/qairt/2.48.0.260626
+export PATH=/opt/android-ndk-r26c:$QNN_SDK_ROOT/bin/x86_64-linux-clang:$PATH
+export PYTHONPATH=$QNN_SDK_ROOT/lib/python:$PYTHONPATH
+export LD_LIBRARY_PATH=$QNN_SDK_ROOT/lib/x86_64-linux-clang:$LD_LIBRARY_PATH
+
+# 1) 转换（FP16，与 2026-10-26 原产出的参数完全一致）
+python3 $QNN_SDK_ROOT/bin/x86_64-linux-clang/qnn-onnx-converter \
+  --input_network scnet_tfc_tdf_v3_20260821.onnx \
+  --output_path scnet_tfc_tdf_v3_20260821 \
+  --float_bitwidth 16 --preserve_io layout --debug
+
+# 2) 关键一步：转换器输出的源码**没有扩展名**，必须补成 .cpp
+cp scnet_tfc_tdf_v3_20260821 scnet_tfc_tdf_v3_20260821.cpp
+
+# 3) 生成 aarch64-android 模型库（ndk-build 必须在 PATH，否则报 "ndk-build: not found"）
+$QNN_SDK_ROOT/bin/x86_64-linux-clang/qnn-model-lib-generator \
+  -c scnet_tfc_tdf_v3_20260821.cpp -b scnet_tfc_tdf_v3_20260821.bin \
+  -o lib -t aarch64-android
+```
+
+**两个易踩的点**：`--preserve_io layout` 是**带子参数**的开关（不是 `--preserve_io_layout`）；
+转换器把 C++ 源码写成 `--output_path` 的原名（无 `.cpp`），漏了 `cp` 会让
+`qnn-model-lib-generator` 报 `Unable to find the model source file`。
+
+**新旧 .so 对比（决定性）**：
+
+| 对比项 | 旧（2026-10-26） | 新（2026-11-03） |
+|---|---|---|
+| 大小 | 3,266,088 B | **3,266,088 B（相同）** |
+| md5 | `3b2050f4…` | `ebb58e38…`（构建元数据不同） |
+| `QNN_OP_*` 算子构成 | — | **完全一致**（diff 为空） |
+| `QNN_OP_PAD` 数量 | **0** | **0** |
+| 张量签名（addTensor 集合） | — | **完全一致**（diff 为 0 行） |
+| `QNN_SDK_HTP` max_diff vs CPU | 3.09708309 | **3.09708309（逐位相同）** |
+
+**结论**：QNN SDK 转换器**本来就**把全部 41 个 `Pad` 折叠掉了（`QNN_OP_PAD = 0`，
+对应归档 §9.2 的 `conv_depthwise *_pad_amount {2,0,1,1}`），所以 5.30 的 Pad 问题
+**只影响 ORT QNN EP 的分区，不影响原生 QNN SDK 路径**。本次重建的产物与旧版功能等价，
+重建的价值在于"源与产物成套"，而非修复了什么。
+
+**顺带发现（待查，非本次引入）**：`QNN_SDK_HTP` / `QNN_SDK_GPU` 对 FP32 CPU 基线的
+`max_diff` 均为 **3.097**，比 `ONNX_QNN_HTP` 的 0.0037 大三个数量级。新旧 `.so` 数值
+完全相同，说明这是 model.so 路径既有的精度/IO 问题（FP16 模型 + 31 个 IO 张量），
+值得单独排查。
+
+---
+
+### 5.32 scnet 全变种同批实测 + 由 .so 生成 context binary（2026-11-03，SM8850）
+
+**context binary 生成**（用 5.31 的 FP16 model.so）：
+
+```bash
+python tools/gen_qnn_context_binary.py --target SM8850 \
+  --model libscnet_tfc_tdf_v3_20260821.so \
+  --out scnet_tfc_tdf_v3_20260821.serialized.bin
+```
+结果 `2,798,328 B`（`libQnnHtp.so` + `htp_backend_extensions.json` soc_id=87/v81，burst/100us）。
+**注意**：生成器写出的文件名是 `scnet_tfc_tdf_v3_20260821.serialized.bin.bin`（多个 `.bin` 后缀），
+必须改名为 `⟨base⟩.serialized.bin` 才能被 `search_qnn_variants` 识别。
+
+**同批 6 变种 / 35 项后端实测**（`--repeat 20 --warmup 3`；变种由基名自动匹配：
+ONNX / TFLite / NCNN / MNN / `lib*.so` / `*.serialized.bin`）：
+
+| 变种 | 后端 | avg (ms) | max_diff | accel | peak (MB) |
+|---|---|---|---|---|---|
+| — | **ONNX_CPU（基线）** | 9.84 | 0 | 1.00x | 143.95 |
+| ONNX | ONNX_QNN_CPU | **5.61** | 0.000001 | **1.75x** | 166.16 |
+| ONNX | ONNX_XNNPACK | 6.96 | 0.000002 | 1.41x | 149.58 |
+| ONNX | ONNX_QNN_HTP | 9.82 | 0.003712 | 1.00x | **135.36** |
+| ONNX | ONNX_QNN_GPU | 24.48 | 2.434974 | 0.40x | 219.66 |
+| ONNX | ONNX_NNAPI | 208.49 | 0.000001 | 0.05x | 146.71 |
+| TFLite | **LiteRT_CPU** | **4.74** | 0.074644 | **2.08x** | 121.96 |
+| TFLite | TFLITE_CPU / XNNPACK / NNAPI | 8.42~8.47 | 0.074644 | ~1.17x | ~111~123 |
+| TFLite | TFLITE_NPU | 45.41 | 0.483453 | 0.22x | 338.61 |
+| TFLite | TFLITE_GPU / GPU_FP16 | **崩溃 exit=139** | — | — | — |
+| TFLite | LiteRT_GPU / GPU_FP16 / NPU / NPU_FP16 | 初始化失败 | — | — | — |
+| NCNN | NCNN_CPU | 5.54 | 2.563392 | 1.78x | 110.68 |
+| NCNN | NCNN_CPU_FP16 / BF16 | 5.90 / 5.74 | 2.563392 | ~1.7x | ~111 |
+| NCNN | NCNN_VK / VK_BF16 / VK_FP16 | 30.87 / 29.92 / 28.63 | ~2.1~2.4 | ~0.33x | ~193 |
+| MNN | MNN_CPU | 8.23 | 3.105618 | 1.20x | 105.14 |
+| MNN | MNN_OpenCL/VULKAN/OPENGL/NN 等 8 项 | 初始化失败 | — | — | — |
+| QNN model.so | **QNN_SDK_HTP** | **7.91** | 3.097083 | **1.24x** | 323.75 |
+| QNN model.so | QNN_SDK_GPU | 13.97 | 3.097083 | 0.70x | 190.85 |
+| QNN model.so | QNN_SDK_CPU | 无法取形状 | — | — | — |
+| **context binary** | **QNN_SDK_HTP** | **8.30** | 3.097083 | **1.19x** | **88.46** |
+
+**关键解读**：
+
+1. **最快的是 `LiteRT_CPU`（4.74 ms / 2.08x）**，其次是 `ONNX_QNN_CPU`（5.61 ms / 1.75x）
+   与 `NCNN_CPU`（5.54 ms / 1.78x）。该模型上 NPU 普遍不如优化过的 CPU 路径。
+2. **context binary 的真正价值是内存**：`QNN_SDK_HTP` 用 model.so 峰值 **323.75 MB**，
+   用 context binary 只要 **88.46 MB**（-73%），耗时几乎不变（8.30 vs 7.91 ms）。
+   → 流式部署应优先用 context binary。
+3. **精度分野明显**：`ONNX_QNN_HTP` 0.0037 < `TFLite` 0.0746 < `NCNN` 2.56 ≈ `MNN` 3.11 ≈ `QNN_SDK` 3.10。
+   `QNN_SDK_*` 的 3.097 与 5.31 记录一致，是 model.so 路径既有问题。
+4. **MNN 全系初始化失败、TFLite GPU 段错误**——与本模型无关的既有环境问题，未在本次范围内处理。
+
+原始日志：`build/scnet_batch_full.log`。
+
+---
+
+### 5.33 QNN_SDK_CPU 失败根因：FP16 model.so 无法在 CPU 后端构图（2026-11-03，已修复）
+
+**现象**：`QNN_SDK_CPU` 对 `libscnet_tfc_tdf_v3_20260821.so` 恒失败，报错有两种：
+
+```
+[QNN_LOG:1] [QNN_CPU] OpConfig validation failed for Transpose
+QNN: composeGraphs rc=11 graphs=0
+[ ERROR ] QnnModel::addNode() validating node input_nchw failed.
+[ ERROR ] model.addNode(..., "input_nchw", ..., "Transpose", ...)
+          expected MODEL_NO_ERROR, got MODEL_GRAPH_OP_VALIDATION_ERROR
+```
+
+**根因：该 model.so 是 FP16 的，而 `libQnnCpu.so` 只接受 fp32 张量。**
+
+归因靠**变量隔离**（同一模型、同一 SDK、同一设备，三次对照）：
+
+| 实验 | 转换参数 | 数据类型 | QNN_SDK_CPU |
+|---|---|---|---|
+| A（原 .so） | `--float_bitwidth 16 --preserve_io layout` | FLOAT_16 ×289 | ❌ rc=11 `Transpose` 校验失败 |
+| B | 默认（fp32） | FLOAT_32 ×611 | ✅ rc=0，9.31 ms |
+| **C** | 默认 + `--preserve_io layout` | FLOAT_32 ×671，nchw Transpose ×38 | ✅ rc=0，17.33 ms |
+
+**C 是关键反证**：它同样带 38 个 `input_nchw` 转置节点，因为是 fp32 就通过了 →
+所以**失败原因不是 Transpose 算子本身，而是 FLOAT_16 数据类型**。
+（`input_nchw` 是 `--preserve_io layout` 为保持 NCHW 输入布局插入的转置节点。）
+
+**修复**：改用 **FP32 model.so**，三个 QNN 后端全部可用：
+
+| 后端 | FP16 .so（原） | **FP32 .so（修复后）** |
+|---|---|---|
+| QNN_SDK_CPU | ❌ rc=11 | ✅ **6.75 ms / 1.52x** |
+| QNN_SDK_GPU | ✅ 19.27 ms | ✅ 19.27 ms |
+| QNN_SDK_HTP | ✅ 7.65 ms | ✅ 7.65 ms |
+| max_diff vs FP32 CPU | 3.097 | **2.369（更准）** |
+
+意外收获：FP32 版**在 HTP 上照样能跑**（图内降精由 `enable_htp_fp16_precision` 完成），
+所以一个 FP32 `.so` 可通吃 CPU/GPU/HTP，不必为 CPU 单独维持变体。
+
+**第二个坑（重要）：model.so 的内部图名必须与 `lib<base>.so` 推导名一致。**
+
+若把 `--output_path` 写成别的名字（如 `..._fp32`），图名就变成 `..._fp32`，
+而后端按 `lib<base>.so` 推出 `...`，于是：
+
+```
+QNN: HTP graph config: ... graph=scnet_tfc_tdf_v3_20260821     ← 推导名
+[ ERROR ] getQnnGraphConfigFromInfo() unable to find graphName:scnet_tfc_tdf_v3_20260821_fp32
+composeGraphs rc=8 graphs=0
+```
+
+这个 `rc=8` 与数据类型**无关**，纯属命名不匹配——极易被误判成"HTP 不支持 FP32"
+（本排查过程中就一度误判）。
+
+**结论性经验**：
+1. 要跑 `QNN_SDK_CPU`，model.so 必须是 **fp32**（转换时**不要**加 `--float_bitwidth 16`）。
+2. `--preserve_io layout` 插入的 `input_nchw` 本身无害，但会放大 FP16 的校验失败面。
+3. `--output_path` 必须与 `lib<base>.so` 的基名一致，否则 `composeGraphs rc=8` 报找不到图名。
+4. 5.31 / 5.32 记录的 3.097 max_diff 主因是 FP16，换 FP32 后降到 **2.369**。
+
+**同批最终实测（SM8850，`--repeat 20 --warmup 3`，6 变种 23 项全通过）**：
+
+| 后端 | avg | accel | max_diff |
+|---|---|---|---|
+| LiteRT_CPU | 4.7 ms | 2.17x | 0.0746 |
+| NCNN_CPU | 5.1 ms | 2.01x | 2.563 |
+| ONNX_QNN_CPU | 5.5 ms | 1.85x | 0.000001 |
+| **QNN_SDK_CPU** | **6.7 ms** | **1.52x** | 2.369 |
+| QNN_SDK_HTP（.so） | 7.7 ms | 1.32x | 2.369 |
+| QNN_SDK_HTP（context bin） | 8.0 ms | 1.27x | 2.369 |
+| MNN_CPU | 8.1 ms | 1.26x | 3.106 |
+| ONNX_QNN_HTP | 9.8 ms | 1.04x | 0.0037 |
+
+原始日志：`build/scnet_batch_fp32_final.log`。
+
 ---
 
 ## 6. 验证命令速查

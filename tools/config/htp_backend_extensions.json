@@ -1,0 +1,18 @@
+{
+  "graphs": [
+    {}
+  ],
+  "devices": [
+    {
+      "soc_id": 87,
+      "dsp_arch": "v81",
+      "cores": [
+        {
+          "core_id": 0,
+          "perf_profile": "burst",
+          "rpc_control_latency": 100
+        }
+      ]
+    }
+  ]
+}
